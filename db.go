@@ -272,6 +272,7 @@ func (db *DB) reinstate() error {
 	})
 
 	if len(walFiles) == 0 {
+		db.log("No WAL files found, creating new memtable and WAL...")
 		// No WAL files found, create a new memtable and WAL
 
 		db.memtable.Store(&Memtable{
@@ -292,6 +293,8 @@ func (db *DB) reinstate() error {
 		// Initialize empty transactions slice
 		txns := make([]*Txn, 0)
 		db.txns.Store(&txns)
+
+		db.log(fmt.Sprintf("Created new memtable and WAL at %s", db.memtable.Load().(*Memtable).wal.path))
 
 		return nil // No WAL files, just return as we created a new memtable and WAL
 	}
