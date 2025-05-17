@@ -211,12 +211,12 @@ OrinDB employs a hybrid compaction strategy:
 - **Leveled Compaction (L3 and above)** Maintains disjoint key ranges within each level to optimize lookup performance. Overlapping SSTables from the lower level are merged into the appropriate ranges in the higher level, minimizing read amplification and ensuring predictable query cost.
 
 **Compaction is triggered when**
-1. A Level Size Exceeds Capacity
-2. Number of SSTables Exceeds Threshold (CompactionSizeThreshold)
-3. Compaction Score Exceeds 1.0 `score = sizeScore * WeightSize + countScore * WeightCount` default:
+1. A level size exceeds capacity
+2. Number of sstables exceeds threshold (CompactionSizeThreshold)
+3. Compaction score exceeds 1.0 `score = sizeScore * WeightSize + countScore * WeightCount` default:
     - CompactionScoreSizeWeight = 0.7
     - CompactionScoreCountWeight = 0.3
-4. Cooldown Period Passed (CompactionCooldownPeriod)
+4. Cooldown period passed (CompactionCooldownPeriod)
 
 
 ### MVCC and Transactions
