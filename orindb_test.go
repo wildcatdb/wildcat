@@ -27,7 +27,7 @@ import (
 
 func TestTransactionSerialization(t *testing.T) {
 	// Create a sample transaction
-	tx := &Transaction{
+	tx := &Txn{
 		ReadSet:   map[string]int64{"key1": 123456789},
 		WriteSet:  map[string][]byte{"key2": []byte("value2")},
 		DeleteSet: map[string]bool{"key3": true},
@@ -42,7 +42,7 @@ func TestTransactionSerialization(t *testing.T) {
 	}
 
 	// Deserialize the transaction into a new object
-	newTx := &Transaction{}
+	newTx := &Txn{}
 	err = newTx.deserializeTransaction(serializedData)
 	if err != nil {
 		t.Fatalf("Failed to deserialize transaction: %v", err)

@@ -106,15 +106,15 @@ type SSTable struct {
 }
 
 type DB struct {
-	opts      *Options                       // Configuration options
-	lru       *lru.LRU                       // Atomic LRU used for block managers.
-	immutable *queue.Queue                   // Atomic queue for immutable memtables.
-	memtable  atomic.Value                   // The current memtable
-	flushLock *sync.Mutex                    // Mutex for flushing the memtable (mainly swapping)
-	levels    atomic.Pointer[[]*Level]       // Atomic pointer to the levels
-	wg        *sync.WaitGroup                // WaitGroup for synchronization
-	txns      atomic.Pointer[[]*Transaction] // Atomic pointer to the transactions
-	closeCh   chan struct{}                  // Channel for closing the database
+	opts      *Options                 // Configuration options
+	lru       *lru.LRU                 // Atomic LRU used for block managers.
+	immutable *queue.Queue             // Atomic queue for immutable memtables.
+	memtable  atomic.Value             // The current memtable
+	flushLock *sync.Mutex              // Mutex for flushing the memtable (mainly swapping)
+	levels    atomic.Pointer[[]*Level] // Atomic pointer to the levels
+	wg        *sync.WaitGroup          // WaitGroup for synchronization
+	txns      atomic.Pointer[[]*Txn]   // Atomic pointer to the transactions
+	closeCh   chan struct{}            // Channel for closing the database
 }
 
 // KLogEntry represents a key-value entry in the KLog
@@ -130,8 +130,8 @@ type BlockSet struct {
 	Size    int64        // Size of the block set
 }
 
-// Transaction represents a transaction in the database
-type Transaction struct {
+// Txn represents a transaction in the database
+type Txn struct {
 	id        string
 	db        *DB
 	ReadSet   map[string]int64
@@ -185,7 +185,7 @@ func Open(opts *Options) (*DB, error) {
 		immutable: queue.New(),
 		wg:        &sync.WaitGroup{},
 		opts:      opts,
-		txns:      atomic.Pointer[[]*Transaction]{},
+		txns:      atomic.Pointer[[]*Txn]{},
 		flushLock: &sync.Mutex{},
 		closeCh:   make(chan struct{}),
 	}
@@ -276,7 +276,7 @@ func (db *DB) openWALs() error {
 		db.lru.Put(db.memtable.Load().(*Memtable).wal.path, walBm)
 
 		// Initialize empty transactions slice
-		txns := make([]*Transaction, 0)
+		txns := make([]*Txn, 0)
 		db.txns.Store(&txns)
 
 		log.Println("Created new WAL:", db.memtable.Load().(*Memtable).wal.path)
@@ -285,7 +285,7 @@ func (db *DB) openWALs() error {
 	}
 
 	// Initialize the transactions map
-	allTxns := make([]*Transaction, 0)
+	allTxns := make([]*Txn, 0)
 
 	// Process all but the latest WAL file as immutable memtables
 	for _, walFile := range walFiles[:len(walFiles)-1] {
@@ -343,7 +343,7 @@ func (db *DB) openWALs() error {
 	db.lru.Put(activeWALPath, walBm)
 
 	// For the active WAL, we need to track transactions that are not yet committed
-	activeTxns := make([]*Transaction, 0)
+	activeTxns := make([]*Txn, 0)
 
 	// Replay transactions from active WAL to the memtable and collect active transactions
 	err = db.replayWAL(walBm, db.memtable.Load().(*Memtable), &activeTxns)
@@ -363,12 +363,12 @@ func (db *DB) openWALs() error {
 
 // replayWAL reads all transactions from a WAL and applies them to the given memtable
 // If activeTxns is not nil, it collects transactions that are still active
-func (db *DB) replayWAL(walBm *blockmanager.BlockManager, memtable *Memtable, activeTxns *[]*Transaction) error {
+func (db *DB) replayWAL(walBm *blockmanager.BlockManager, memtable *Memtable, activeTxns *[]*Txn) error {
 	iter := walBm.Iterator()
 	var memtSize int64
 
 	// Track the latest state of each transaction by ID
-	txnMap := make(map[string]*Transaction)
+	txnMap := make(map[string]*Txn)
 
 	for {
 		data, _, err := iter.Next()
@@ -378,7 +378,7 @@ func (db *DB) replayWAL(walBm *blockmanager.BlockManager, memtable *Memtable, ac
 		}
 
 		// Deserialize the transaction
-		var txn Transaction
+		var txn Txn
 		err = txn.deserializeTransaction(data)
 		if err != nil {
 			return fmt.Errorf("failed to deserialize transaction: %w", err)
@@ -442,7 +442,7 @@ func (db *DB) Close() error {
 }
 
 // appendWal appends state of transaction to a WAL
-func (db *DB) appendWal(txn *Transaction) error {
+func (db *DB) appendWal(txn *Txn) error {
 	// serialize the transaction
 	data, err := txn.serializeTransaction()
 	if err != nil {
@@ -463,7 +463,8 @@ func (db *DB) appendWal(txn *Transaction) error {
 	return nil
 }
 
-func (db *DB) GetTransaction(id string) (*Transaction, error) {
+// GetTxn retrieves a transaction by ID
+func (db *DB) GetTxn(id string) (*Txn, error) {
 	// Find the transaction by ID
 	txns := db.txns.Load()
 	if txns == nil {
@@ -479,8 +480,34 @@ func (db *DB) GetTransaction(id string) (*Transaction, error) {
 	return nil, fmt.Errorf("transaction not found")
 }
 
-func (db *DB) Begin() *Transaction {
-	txn := &Transaction{
+// remove removes the transaction from the database
+func (txn *Txn) remove() {
+	txn.mutex.Lock()
+	defer txn.mutex.Unlock()
+
+	// Clear all sets
+	txn.ReadSet = make(map[string]int64)
+	txn.WriteSet = make(map[string][]byte)
+	txn.DeleteSet = make(map[string]bool)
+
+	txn.Committed = false
+
+	// Remove from the transaction list
+	txns := txn.db.txns.Load()
+	if txns != nil {
+		for i, t := range *txns {
+			if t.id == txn.id {
+				*txns = append((*txns)[:i], (*txns)[i+1:]...)
+				break
+			}
+		}
+		txn.db.txns.Store(txns)
+
+	}
+}
+
+func (db *DB) Begin() *Txn {
+	txn := &Txn{
 		id:        uuid.New().String(),
 		db:        db,
 		ReadSet:   make(map[string]int64),
@@ -494,7 +521,7 @@ func (db *DB) Begin() *Transaction {
 	// Add the transaction to the list of transactions, do a swap to make it atomic
 	txnList := db.txns.Load()
 	if txnList == nil {
-		txns := make([]*Transaction, 0)
+		txns := make([]*Txn, 0)
 
 		txns = append(txns, txn)
 		db.txns.Store(&txns)
@@ -532,16 +559,16 @@ func (db *DB) stackMemtable() error {
 	return nil
 }
 
-func (tx *Transaction) Put(key []byte, value []byte) error {
-	tx.mutex.Lock()
-	defer tx.mutex.Unlock()
+func (txn *Txn) Put(key []byte, value []byte) error {
+	txn.mutex.Lock()
+	defer txn.mutex.Unlock()
 
 	// Add to write set
-	tx.WriteSet[string(key)] = value
-	delete(tx.DeleteSet, string(key)) // Remove from delete set if exists
+	txn.WriteSet[string(key)] = value
+	delete(txn.DeleteSet, string(key)) // Remove from delete set if exists
 
 	// We append to the WAL here
-	err := tx.db.appendWal(tx)
+	err := txn.db.appendWal(txn)
 	if err == nil {
 		return err
 	}
@@ -549,16 +576,16 @@ func (tx *Transaction) Put(key []byte, value []byte) error {
 	return nil
 }
 
-func (tx *Transaction) Delete(key []byte) error {
-	tx.mutex.Lock()
-	defer tx.mutex.Unlock()
+func (txn *Txn) Delete(key []byte) error {
+	txn.mutex.Lock()
+	defer txn.mutex.Unlock()
 
 	// Add to delete set
-	tx.DeleteSet[string(key)] = true
-	delete(tx.WriteSet, string(key)) // Remove from write set if exists
+	txn.DeleteSet[string(key)] = true
+	delete(txn.WriteSet, string(key)) // Remove from write set if exists
 
 	// We append to the WAL here
-	err := tx.db.appendWal(tx)
+	err := txn.db.appendWal(txn)
 	if err == nil {
 		return err
 	}
@@ -566,39 +593,41 @@ func (tx *Transaction) Delete(key []byte) error {
 	return nil
 }
 
-func (tx *Transaction) Commit() error {
-	tx.mutex.Lock()
-	defer tx.mutex.Unlock()
+// Commit commits the transaction
+func (txn *Txn) Commit() error {
+	txn.mutex.Lock()
+	defer txn.mutex.Unlock()
+	defer txn.remove()
 
-	if tx.Committed {
+	if txn.Committed {
 		return nil // Already committed
 	}
 
 	// Apply writes
-	for key, value := range tx.WriteSet {
-		tx.db.memtable.Load().(*Memtable).skiplist.Put([]byte(key), value, tx.Timestamp)
+	for key, value := range txn.WriteSet {
+		txn.db.memtable.Load().(*Memtable).skiplist.Put([]byte(key), value, txn.Timestamp)
 		// Increment the size of the memtable
-		atomic.AddInt64(&tx.db.memtable.Load().(*Memtable).Size, int64(len(key)+len(value)))
+		atomic.AddInt64(&txn.db.memtable.Load().(*Memtable).Size, int64(len(key)+len(value)))
 	}
 
 	// Apply deletes
-	for key := range tx.DeleteSet {
-		tx.db.memtable.Load().(*Memtable).skiplist.Delete([]byte(key), tx.Timestamp)
+	for key := range txn.DeleteSet {
+		txn.db.memtable.Load().(*Memtable).skiplist.Delete([]byte(key), txn.Timestamp)
 		// Decrement the size of the memtable
-		atomic.AddInt64(&tx.db.memtable.Load().(*Memtable).Size, -int64(len(key)))
+		atomic.AddInt64(&txn.db.memtable.Load().(*Memtable).Size, -int64(len(key)))
 	}
 
-	tx.Committed = true
+	txn.Committed = true
 
 	// We append to the WAL here
-	err := tx.db.appendWal(tx)
+	err := txn.db.appendWal(txn)
 	if err != nil {
 		return err
 	}
 
 	// Check if we need to flush the memtable to stack
-	if atomic.LoadInt64(&tx.db.memtable.Load().(*Memtable).Size) > tx.db.opts.WriteBufferSize {
-		err = tx.db.stackMemtable()
+	if atomic.LoadInt64(&txn.db.memtable.Load().(*Memtable).Size) > txn.db.opts.WriteBufferSize {
+		err = txn.db.stackMemtable()
 		if err != nil {
 			return fmt.Errorf("failed to stack memtable: %w", err)
 		}
@@ -607,19 +636,20 @@ func (tx *Transaction) Commit() error {
 	return nil
 }
 
-func (tx *Transaction) Rollback() error {
-	tx.mutex.Lock()
-	defer tx.mutex.Unlock()
+func (txn *Txn) Rollback() error {
+	txn.mutex.Lock()
+	defer txn.mutex.Unlock()
+	defer txn.remove()
 
 	// Clear all pending changes
-	tx.WriteSet = make(map[string][]byte)
-	tx.DeleteSet = make(map[string]bool)
-	tx.ReadSet = make(map[string]int64)
+	txn.WriteSet = make(map[string][]byte)
+	txn.DeleteSet = make(map[string]bool)
+	txn.ReadSet = make(map[string]int64)
 
-	tx.Committed = false
+	txn.Committed = false
 
 	// We append to the WAL here
-	err := tx.db.appendWal(tx)
+	err := txn.db.appendWal(txn)
 	if err == nil {
 		return err
 	}
@@ -627,29 +657,29 @@ func (tx *Transaction) Rollback() error {
 	return nil
 }
 
-func (tx *Transaction) Get(key []byte) ([]byte, error) {
-	tx.mutex.Lock()
-	defer tx.mutex.Unlock()
+func (txn *Txn) Get(key []byte) ([]byte, error) {
+	txn.mutex.Lock()
+	defer txn.mutex.Unlock()
 
 	// Check write set first
-	if val, exists := tx.WriteSet[string(key)]; exists {
+	if val, exists := txn.WriteSet[string(key)]; exists {
 		return val, nil
 	}
 
 	// Record read for conflict detection
-	tx.ReadSet[string(key)] = tx.Timestamp
+	txn.ReadSet[string(key)] = txn.Timestamp
 
 	// Fetch from skiplist
-	val := tx.db.memtable.Load().(*Memtable).skiplist.Get(key, tx.Timestamp)
+	val := txn.db.memtable.Load().(*Memtable).skiplist.Get(key, txn.Timestamp)
 	if val != nil {
 
 		return val.([]byte), nil
 	}
 
 	// Check immutable memtables
-	tx.db.immutable.ForEach(func(item interface{}) bool {
+	txn.db.immutable.ForEach(func(item interface{}) bool {
 		memt := item.(*Memtable)
-		val = memt.skiplist.Get(key, tx.Timestamp)
+		val = memt.skiplist.Get(key, txn.Timestamp)
 		if val != nil {
 			return false // Found in immutable memtable
 		}
@@ -661,7 +691,7 @@ func (tx *Transaction) Get(key []byte) ([]byte, error) {
 	}
 
 	// Check levels
-	levels := tx.db.levels.Load()
+	levels := txn.db.levels.Load()
 	for _, level := range *levels {
 		sstables := level.sstables.Load()
 		if sstables == nil {
@@ -669,7 +699,7 @@ func (tx *Transaction) Get(key []byte) ([]byte, error) {
 		}
 
 		for _, sstable := range *sstables {
-			val = sstable.Get(key, tx.Timestamp)
+			val = sstable.get(key, txn.Timestamp)
 			if val != nil {
 				return val.([]byte), nil
 			}
@@ -680,18 +710,18 @@ func (tx *Transaction) Get(key []byte) ([]byte, error) {
 }
 
 // Update performs an atomic update using a transaction
-func (db *DB) Update(fn func(tx *Transaction) error) error {
+func (db *DB) Update(fn func(txn *Txn) error) error {
 
-	tx := db.Begin()
-	err := fn(tx)
+	txn := db.Begin()
+	err := fn(txn)
 	if err != nil {
-		err = tx.Rollback()
+		err = txn.Rollback()
 		if err != nil {
 			return err
 		}
 		return err
 	}
-	return tx.Commit()
+	return txn.Commit()
 }
 
 // serializeSSTable uses gob to serialize the sstable metadata
@@ -723,12 +753,12 @@ func (sst *SSTable) deserializeSSTable(data []byte) error {
 }
 
 // serializeTransaction uses gob to serialize the transaction
-func (tx *Transaction) serializeTransaction() ([]byte, error) {
+func (txn *Txn) serializeTransaction() ([]byte, error) {
 	var buffer bytes.Buffer
 	encoder := gob.NewEncoder(&buffer)
 
 	// Serialize the transaction
-	err := encoder.Encode(tx)
+	err := encoder.Encode(txn)
 	if err != nil {
 		return nil, err
 	}
@@ -737,12 +767,12 @@ func (tx *Transaction) serializeTransaction() ([]byte, error) {
 }
 
 // deserializeTransaction uses gob to deserialize the transaction
-func (tx *Transaction) deserializeTransaction(data []byte) error {
+func (txn *Txn) deserializeTransaction(data []byte) error {
 	buffer := bytes.NewBuffer(data)
 	decoder := gob.NewDecoder(buffer)
 
 	// Deserialize the transaction
-	err := decoder.Decode(tx)
+	err := decoder.Decode(txn)
 	if err != nil {
 		return err
 	}
@@ -997,7 +1027,7 @@ func (db *DB) compact() error {
 }
 
 // Get retrieves a value from the SSTable using the key and timestamp
-func (sst *SSTable) Get(key []byte, timestamp int64) interface{} {
+func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
 	// Fix the range check - only proceed if key is in range
 	if bytes.Compare(key, sst.Min) < 0 || bytes.Compare(key, sst.Max) > 0 {
 		return nil // Key not in range
