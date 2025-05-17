@@ -125,6 +125,19 @@ func (q *Queue) IsEmpty() bool {
 	return atomic.LoadPointer(&head.next) == nil
 }
 
+// Peek returns the value at the front of the queue without removing it
+// Returns nil if the queue is empty
+func (q *Queue) Peek() interface{} {
+	headPtr := atomic.LoadPointer(&q.head)
+	head := (*Node)(headPtr)
+	nextPtr := atomic.LoadPointer(&head.next)
+	if nextPtr == nil {
+		return nil // Queue is empty
+	}
+	next := (*Node)(nextPtr)
+	return next.value
+}
+
 // ForEach iterates over the queue and applies the function f to each item
 func (q *Queue) ForEach(f func(item interface{}) bool) {
 	headPtr := atomic.LoadPointer(&q.head)
