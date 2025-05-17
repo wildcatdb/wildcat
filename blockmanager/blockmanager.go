@@ -22,7 +22,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
-	"log"
 	"orindb/queue"
 	"os"
 	"sync"
@@ -125,28 +124,28 @@ func Open(filename string, flag int, perm os.FileMode, syncOpt SyncOption, durat
 
 	if stats.Size() == 0 {
 		// If the file is empty, we need to write the header
-		if err := bm.writeHeader(); err != nil {
+		if err = bm.writeHeader(); err != nil {
 			return nil, err
 		}
 
 		// After creating a new file, append initial free blocks
-		if err := bm.appendFreeBlocks(); err != nil {
+		if err = bm.appendFreeBlocks(); err != nil {
 			return nil, err
 		}
 	} else {
 		// If the file is not empty, we need to read the header and check if it matches
-		if err := bm.readHeader(); err != nil {
+		if err = bm.readHeader(); err != nil {
 			return nil, err
 		}
 
 		// Scan existing blocks to find free ones and add them to the allocation table
-		if err := bm.scanForFreeBlocks(); err != nil {
+		if err = bm.scanForFreeBlocks(); err != nil {
 			return nil, err
 		}
 
 		// If we don't have any free blocks, append new ones
 		if bm.allocationTable.IsEmpty() {
-			if err := bm.appendFreeBlocks(); err != nil {
+			if err = bm.appendFreeBlocks(); err != nil {
 				return nil, err
 			}
 		}
@@ -260,7 +259,7 @@ func (bm *BlockManager) backgroundSync() {
 	for {
 		select {
 		case <-ticker.C:
-			syscall.Fdatasync(int(bm.fd)) // Use fdatasync for better performance
+			_ = syscall.Fdatasync(int(bm.fd)) // Use fdatasync for better performance
 
 		case <-bm.closeChan:
 			return
@@ -270,7 +269,6 @@ func (bm *BlockManager) backgroundSync() {
 
 // appendFreeBlocks appends free blocks to the file.
 func (bm *BlockManager) appendFreeBlocks() error {
-	log.Println("Appending free blocks to file")
 	// Get current file size to determine next block ID
 	fileInfo, err := bm.file.Stat()
 	if err != nil {
@@ -293,7 +291,6 @@ func (bm *BlockManager) appendFreeBlocks() error {
 	// Append Allotment number of free blocks
 	for i := uint64(0); i < Allotment; i++ {
 		newBlockID := blockCount + (i + 1) // New block ID is the current count + 1
-		log.Println("Appending free block ID:", newBlockID)
 
 		// Block ID 0 is reserved, skip it
 		if newBlockID == 0 {
@@ -344,7 +341,7 @@ func (bm *BlockManager) appendFreeBlocks() error {
 
 	// Sync changes to disk
 	if bm.syncOption == SyncFull {
-		syscall.Fdatasync(int(bm.fd))
+		_ = syscall.Fdatasync(int(bm.fd))
 	}
 	return nil
 }
@@ -394,9 +391,6 @@ func (bm *BlockManager) allocateBlock() (uint64, error) {
 }
 
 // scanForFreeBlocks scans the file for free blocks and populates the allocation table.
-// scanForFreeBlocks scans the file for free blocks and populates the allocation table.
-// It optimizes by first checking from the end of the file until it finds the first used block
-// or end of chain block, since newly appended blocks are guaranteed to be free.
 func (bm *BlockManager) scanForFreeBlocks() error {
 	// Get file size
 	fileInfo, err := bm.file.Stat()
@@ -420,7 +414,7 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 	blockHeaderSize := binary.Size(BlockHeader{})
 	headerBuf := make([]byte, blockHeaderSize)
 
-	// First pass: scan from the end until we find a used block or end of chain block
+	// First pass we scan from the end until we find a used block or end of chain block
 	var firstNonFreeBlockFromEnd uint64 = blockCount
 	for i := blockCount - 1; i >= 1; i-- { // Start from the end, go backward to block ID 1
 		// Calculate position for this block
@@ -466,8 +460,8 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 	}
 
 	// All blocks from firstNonFreeBlockFromEnd+1 to blockCount-1 are free
-	// Add them directly to the allocation table (in reverse order to maintain LIFO ordering)
-	for i := blockCount - 1; i > firstNonFreeBlockFromEnd; i-- {
+	// Add them directly to the allocation table in ASCENDING order to prioritize lower block IDs
+	for i := firstNonFreeBlockFromEnd + 1; i <= blockCount-1; i++ {
 		bm.allocationTable.Enqueue(i)
 	}
 
@@ -532,8 +526,8 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 	}
 
 	// Add all blocks from 1 to firstNonFreeBlockFromEnd that are not used to the allocation table
-	// Add in reverse order to maintain LIFO ordering
-	for i := firstNonFreeBlockFromEnd; i >= 1; i-- {
+	// Add in ascending order to prioritize lower block IDs
+	for i := uint64(1); i <= firstNonFreeBlockFromEnd; i++ {
 		if !usedBlocks[i] {
 			bm.allocationTable.Enqueue(i)
 		}
@@ -544,7 +538,7 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 
 // Close closes the file and releases any resources held by the BlockManager.
 func (bm *BlockManager) Close() error {
-	// Check if the channel is already closed
+
 	select {
 	case <-bm.closeChan:
 		// Channel is already closed, do nothing
@@ -566,7 +560,6 @@ func (bm *BlockManager) Close() error {
 // Append writes data to the file by allocating one or more blocks
 // and returns the ID of the first block containing the data.
 func (bm *BlockManager) Append(data []byte) (int64, error) {
-	// Check if there's any data to append
 	if len(data) == 0 {
 		return -1, errors.New("no data to append")
 	}
@@ -583,7 +576,6 @@ func (bm *BlockManager) Append(data []byte) (int64, error) {
 	// Total blocks needed to store all data
 	totalBlocks := (len(data) + dataSpacePerBlock - 1) / dataSpacePerBlock
 
-	// Allocate the first block
 	firstBlockID, err := bm.allocateBlock()
 	if err != nil {
 		return -1, err
@@ -595,6 +587,7 @@ func (bm *BlockManager) Append(data []byte) (int64, error) {
 
 	// Loop until all data is written
 	for blockNum := 0; blockNum < totalBlocks; blockNum++ {
+
 		// Calculate position of the current block
 		position := int64(headerSize) + int64(currentBlockID)*int64(BlockSize)
 
@@ -607,7 +600,6 @@ func (bm *BlockManager) Append(data []byte) (int64, error) {
 			dataToWrite = remainingData[:dataSpacePerBlock]
 			remainingData = remainingData[dataSpacePerBlock:]
 
-			// Allocate next block
 			nextBlockID, err = bm.allocateBlock()
 			if err != nil {
 				return -1, err
@@ -617,7 +609,6 @@ func (bm *BlockManager) Append(data []byte) (int64, error) {
 			remainingData = nil
 		}
 
-		// Create a block header
 		blockHeader := BlockHeader{
 			BlockID:   currentBlockID,
 			DataSize:  uint64(len(dataToWrite)),
@@ -641,10 +632,8 @@ func (bm *BlockManager) Append(data []byte) (int64, error) {
 			return -1, err
 		}
 
-		// Copy header to block buffer
 		copy(blockBuffer, headerBuf.Bytes())
 
-		// Copy data to block buffer after the header
 		copy(blockBuffer[blockHeaderSize:], dataToWrite)
 
 		// Zero out the rest of the buffer to prevent junk data
@@ -663,8 +652,8 @@ func (bm *BlockManager) Append(data []byte) (int64, error) {
 	}
 
 	if bm.syncOption == SyncFull {
-		// Sync changes to disk
-		syscall.Fdatasync(int(bm.fd))
+
+		_ = syscall.Fdatasync(int(bm.fd))
 	}
 
 	return int64(firstBlockID), nil
@@ -688,18 +677,17 @@ func (bm *BlockManager) Read(blockID int64) ([]byte, int64, error) {
 		return nil, -1, errors.New("failed to calculate block header size")
 	}
 
-	// Buffer to hold the result
 	var resultBuffer bytes.Buffer
 	currentBlockID := uint64(blockID)
 	initialBlockID := currentBlockID
 	lastBlockID := currentBlockID
 	isMultiBlock := false
 
-	// Buffer for reading a block
 	blockBuffer := make([]byte, BlockSize)
 
 	// Loop until we've read all blocks in the chain
 	for currentBlockID != EndOfChain {
+
 		// Calculate the position of the current block
 		position := int64(headerSize) + int64(currentBlockID)*int64(BlockSize)
 
@@ -734,12 +722,10 @@ func (bm *BlockManager) Read(blockID int64) ([]byte, int64, error) {
 			return nil, -1, errors.New("block header CRC mismatch")
 		}
 
-		// Verify that this is the block we expect
 		if blockHeader.BlockID != currentBlockID {
 			return nil, -1, errors.New("block ID mismatch")
 		}
 
-		// Check if the block has any data
 		if blockHeader.DataSize == 0 {
 			return nil, -1, errors.New("block contains no data")
 		}
@@ -774,7 +760,6 @@ func (bm *BlockManager) Read(blockID int64) ([]byte, int64, error) {
 		returnBlockID = int64(lastBlockID)
 	}
 
-	// Return the collected data and the relevant block ID
 	return resultBuffer.Bytes(), returnBlockID, nil
 }
 
@@ -835,11 +820,10 @@ func (it *Iterator) Prev() ([]byte, int64, error) {
 	it.blockID = it.history[len(it.history)-1]
 	it.history = it.history[:len(it.history)-1]
 
-	// Read the block data
 	data, blockID, err := it.blockManager.Read(int64(it.blockID))
 	if err != nil {
 		return nil, -1, err
 	}
 
-	return data, int64(blockID), nil
+	return data, blockID, nil
 }
