@@ -200,14 +200,14 @@ opts := &orindb.Options{
 ### Data Storage Architecture
 OrinDB uses a multi-level Log-Structured Merge (LSM) tree architecture.
 
-- **Memtable** In-memory skiplist for recent writes
+- **Memtable** In-memory skiplist for recent writes (L0)
 - **Immutable Memtables** Memtables awaiting flush to disk
 - **SSTables** On-disk sorted string tables organized into levels
 - **Write-Ahead Log (WAL)** Ensures durability of in-memory data
 
 ### Compaction Strategy
 OrinDB employs a hybrid compaction strategy:
-- **Size-Tiered Compaction** For lower levels (L0-L2), merges similarly sized SSTables
+- **Size-Tiered Compaction** For lower levels (L1-L2), merges similarly sized SSTables
 - **Leveled Compaction** For higher levels (L3+), maintains key ranges for efficient lookups
 
 **Compaction is triggered when**
