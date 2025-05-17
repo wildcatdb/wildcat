@@ -29,11 +29,11 @@ import (
 	"time"
 )
 
-const MagicNumber = uint32(0x4F52494E) // "ORIN" for OrinDB
-const Version = uint32(1)              // Version of the file format
-const BlockSize = uint32(512)          // Smaller the better, faster in our tests
-const Allotment = uint32(16)           // How many blocks we can allot at once from the file
-const EndOfChain = uint32(0xFFFFFFFF)  // Marker for end of blockchain (overflowed block)
+const MagicNumber = uint32(0x4F52494E)        // "ORIN" for OrinDB
+const Version = uint32(1)                     // Version of the file format
+const BlockSize = uint32(512)                 // Smaller the better, faster in our tests
+const Allotment = uint64(16)                  // How many blocks we can allot at once from the file
+const EndOfChain = uint64(0xFFFFFFFFFFFFFFFF) // Marker for end of blockchain (overflowed block)
 
 // SyncOption defines the synchronization options for the file
 type SyncOption int
@@ -50,15 +50,15 @@ type Header struct {
 	MagicNumber uint32 // Magic number to identify the file format
 	Version     uint32 // Version of the file format
 	BlockSize   uint32 // Size of each block in bytes
-	Allotment   uint32 // Number of blocks to allot at once
+	Allotment   uint64 // Number of blocks to allot at once
 }
 
 // BlockHeader represents the header of a block in the file
 type BlockHeader struct {
 	CRC       uint32 // CRC32 checksum of the block header
-	BlockID   uint32 // Unique ID of the block
-	DataSize  uint32 // Size of the data in the block
-	NextBlock uint32 // ID of the next block in the chain (0xFFFFFFFF if end of chain)
+	BlockID   uint64 // Changed from uint32 to uint64
+	DataSize  uint64 // Changed from uint32 to uint64
+	NextBlock uint64 // Changed from uint32 to uint64
 }
 
 // BlockManager manages the allocation and deallocation of blocks in a file
@@ -283,7 +283,7 @@ func (bm *BlockManager) appendFreeBlocks() error {
 
 	// Calculate how many blocks we currently have
 	dataSize := fileSize - int64(headerSize)
-	blockCount := uint32(dataSize) / BlockSize
+	blockCount := uint64(dataSize / int64(BlockSize))
 
 	// Create a buffer for a free block
 	blockBuffer := make([]byte, BlockSize)
@@ -347,7 +347,7 @@ func (bm *BlockManager) appendFreeBlocks() error {
 }
 
 // allocateBlock allocates a block ID from the allocation table.
-func (bm *BlockManager) allocateBlock() (uint32, error) {
+func (bm *BlockManager) allocateBlock() (uint64, error) {
 	// Check if we have free blocks
 	if bm.allocationTable.IsEmpty() {
 		// If not, append more free blocks
@@ -376,7 +376,7 @@ func (bm *BlockManager) allocateBlock() (uint32, error) {
 	}
 
 	// Convert the interface{} value to uint32
-	blockID, ok := blockIDValue.(uint32)
+	blockID, ok := blockIDValue.(uint64)
 	if !ok {
 		return 0, errors.New("failed to allocate block: invalid block ID type")
 	}
@@ -406,19 +406,19 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 
 	// Calculate how many blocks we have
 	dataSize := fileSize - int64(headerSize)
-	blockCount := uint32(dataSize) / BlockSize
+	blockCount := uint64(dataSize / int64(BlockSize))
 
 	// Create a map to track which blocks are used
-	usedBlocks := make(map[uint32]bool)
+	usedBlocks := make(map[uint64]bool)
 
 	// Create a set to track blocks that are part of chains
-	chainBlocks := make(map[uint32]bool)
+	chainBlocks := make(map[uint64]bool)
 
 	blockHeaderSize := binary.Size(BlockHeader{})
 	headerBuf := make([]byte, blockHeaderSize)
 
 	// First pass: find all blocks with data and identify chain blocks
-	for i := uint32(1); i < blockCount; i++ { // Start from 1 to skip block ID 0
+	for i := uint64(1); i < blockCount; i++ { // Start from 1 to skip block ID 0
 		// Calculate position for this block
 		position := int64(headerSize) + int64(i)*int64(BlockSize)
 
@@ -470,7 +470,7 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 	bm.allocationTable = stack.New()
 
 	// Add all blocks that are not used to the allocation table
-	for i := uint32(1); i < blockCount; i++ { // Start from 1 to skip block ID 0
+	for i := uint64(1); i < blockCount; i++ { // Start from 1 to skip block ID 0
 		if !usedBlocks[i] {
 			bm.allocationTable.Push(i)
 		}
@@ -537,7 +537,7 @@ func (bm *BlockManager) Append(data []byte) (int64, error) {
 
 		// Determine how much data to write in this block
 		dataToWrite := remainingData
-		var nextBlockID uint32 = EndOfChain // Default to end of chain
+		var nextBlockID uint64 = EndOfChain // Default to end of chain
 
 		if len(dataToWrite) > dataSpacePerBlock {
 			// We need another block
@@ -557,7 +557,7 @@ func (bm *BlockManager) Append(data []byte) (int64, error) {
 		// Create a block header
 		blockHeader := BlockHeader{
 			BlockID:   currentBlockID,
-			DataSize:  uint32(len(dataToWrite)),
+			DataSize:  uint64(len(dataToWrite)),
 			NextBlock: nextBlockID,
 		}
 
@@ -627,7 +627,7 @@ func (bm *BlockManager) Read(blockID int64) ([]byte, int64, error) {
 
 	// Buffer to hold the result
 	var resultBuffer bytes.Buffer
-	currentBlockID := uint32(blockID)
+	currentBlockID := uint64(blockID)
 	initialBlockID := currentBlockID
 	lastBlockID := currentBlockID
 	isMultiBlock := false
