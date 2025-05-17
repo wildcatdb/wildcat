@@ -20,6 +20,7 @@ package lru
 import (
 	"math"
 	"runtime"
+	"sort"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -271,15 +272,9 @@ func (list *LRU) evict() {
 	}
 
 	// Sort by score (ascending, lowest first)
-	// Using a simple bubble sort for simplicity
-	// In production, you might want a more efficient sort
-	for i := 0; i < len(scoredNodes); i++ {
-		for j := i + 1; j < len(scoredNodes); j++ {
-			if scoredNodes[i].score > scoredNodes[j].score {
-				scoredNodes[i], scoredNodes[j] = scoredNodes[j], scoredNodes[i]
-			}
-		}
-	}
+	sort.Slice(scoredNodes, func(i, j int) bool {
+		return scoredNodes[i].score < scoredNodes[j].score
+	})
 
 	// Evict the nodes with lowest scores
 	for i := 0; i < toEvict && i < len(scoredNodes); i++ {
