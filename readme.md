@@ -168,6 +168,49 @@ if err != nil {
 }
 ```
 
+## Log Channel
+OrinDB provides a log channel for real-time logging. You can set up a goroutine to listen for log messages.
+```go
+// Create a log channel
+logChannel := make(chan string, 100) // Buffer size of 100 messages
+
+// Set up options with the log channel
+opts := &orindb.Options{
+    Directory:       "/path/to/db",
+    LogChannel:      logChannel,
+    // Other options...
+}
+
+// Open the database
+db, err := orindb.Open(opts)
+if err != nil {
+    // Handle error
+}
+
+wg := &sync.WaitGroup{}
+
+wg.Add(1)
+
+// Start a goroutine to listen to the log channel
+go func() {
+    defer wg.Done()
+    for msg := range logChannel {
+    // Process log messages
+    fmt.Println("OrinDB Log:", msg)
+
+    // You could also write to a file, send to a logging service, etc.
+    // log.Println(msg)
+    }
+}()
+
+// Use..
+
+wg.Wait() // Wait for the goroutine to finish
+
+// When you're done, close the database
+defer db.Close()
+```
+
 ## Advanced Configuration
 OrinDB provides several configuration options for fine-tuning.
 ```go
