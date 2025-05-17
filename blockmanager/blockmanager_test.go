@@ -19,38 +19,346 @@ package blockmanager
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
+	"hash/crc32"
+	"io/ioutil"
 	"math/rand"
 	"orindb/queue"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
 
-//func TestWriteAndReadHeader(t *testing.T) {
-//	// Create a temporary file for testing
-//	tempFile, err := os.CreateTemp("", "blockmanager_test")
-//	if err != nil {
-//		t.Fatalf("Failed to create temp file: %v", err)
-//	}
-//	defer os.Remove(tempFile.Name()) // Clean up the file after the test
-//	defer tempFile.Close()
-//
-//	// Write the header to the file
-//	if err := writeHeader(tempFile); err != nil {
-//		t.Fatalf("Failed to write header: %v", err)
-//	}
-//
-//	// Reset the file pointer to the beginning
-//	if _, err := tempFile.Seek(0, 0); err != nil {
-//		t.Fatalf("Failed to seek to the beginning of the file: %v", err)
-//	}
-//
-//	// Read the header from the file
-//	if err := readHeader(tempFile); err != nil {
-//		t.Fatalf("Failed to read header: %v", err)
-//	}
-//}
+func TestWriteHeader(t *testing.T) {
+	// Create a temporary directory for test files
+	tmpDir, err := ioutil.TempDir("", "blockmanager-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create a test file path
+	testFilePath := filepath.Join(tmpDir, "test-write-header.db")
+
+	// Open the file for writing
+	file, err := os.OpenFile(testFilePath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+	defer file.Close()
+
+	// Create a BlockManager with the file
+	bm := &BlockManager{
+		file: file,
+		fd:   file.Fd(),
+	}
+
+	// Test the writeHeader method
+	err = bm.writeHeader()
+	if err != nil {
+		t.Fatalf("writeHeader failed: %v", err)
+	}
+
+	// Verify file size matches expected header size
+	fileInfo, err := file.Stat()
+	if err != nil {
+		t.Fatalf("Failed to get file info: %v", err)
+	}
+
+	expectedHeaderSize := binary.Size(Header{})
+	if fileInfo.Size() != int64(expectedHeaderSize) {
+		t.Errorf("File size mismatch. Expected: %d, Got: %d", expectedHeaderSize, fileInfo.Size())
+	}
+
+	// Read the header back to verify
+	header := make([]byte, expectedHeaderSize)
+	_, err = file.ReadAt(header, 0)
+	if err != nil {
+		t.Fatalf("Failed to read header: %v", err)
+	}
+
+	// Parse the header to verify values
+	var parsedHeader Header
+	err = binary.Read(bytes.NewReader(header), binary.LittleEndian, &parsedHeader)
+	if err != nil {
+		t.Fatalf("Failed to parse header: %v", err)
+	}
+
+	// Verify header fields
+	if parsedHeader.MagicNumber != MagicNumber {
+		t.Errorf("Magic number mismatch. Expected: %d, Got: %d", MagicNumber, parsedHeader.MagicNumber)
+	}
+	if parsedHeader.Version != Version {
+		t.Errorf("Version mismatch. Expected: %d, Got: %d", Version, parsedHeader.Version)
+	}
+	if parsedHeader.BlockSize != BlockSize {
+		t.Errorf("Block size mismatch. Expected: %d, Got: %d", BlockSize, parsedHeader.BlockSize)
+	}
+	if parsedHeader.Allotment != Allotment {
+		t.Errorf("Allotment mismatch. Expected: %d, Got: %d", Allotment, parsedHeader.Allotment)
+	}
+
+	// Verify CRC
+	expectedCRC := parsedHeader.CRC
+	parsedHeader.CRC = 0
+
+	// Create buffer with CRC set to 0 to calculate expected CRC
+	bufWithoutCRC := new(bytes.Buffer)
+	err = binary.Write(bufWithoutCRC, binary.LittleEndian, &parsedHeader)
+	if err != nil {
+		t.Fatalf("Failed to write header for CRC check: %v", err)
+	}
+	calculatedCRC := crc32.ChecksumIEEE(bufWithoutCRC.Bytes())
+
+	if calculatedCRC != expectedCRC {
+		t.Errorf("CRC mismatch. Expected: %d, Got: %d", expectedCRC, calculatedCRC)
+	}
+}
+
+func TestReadHeader(t *testing.T) {
+	// Create a temporary directory for test files
+	tmpDir, err := ioutil.TempDir("", "blockmanager-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create a test file path
+	testFilePath := filepath.Join(tmpDir, "test-read-header.db")
+
+	// Open the file for writing
+	file, err := os.OpenFile(testFilePath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+	defer file.Close()
+
+	// Create a BlockManager with the file
+	bm := &BlockManager{
+		file: file,
+		fd:   file.Fd(),
+	}
+
+	// First, write a header to the file
+	err = bm.writeHeader()
+	if err != nil {
+		t.Fatalf("Failed to write header: %v", err)
+	}
+
+	// Test readHeader
+	err = bm.readHeader()
+	if err != nil {
+		t.Fatalf("readHeader failed: %v", err)
+	}
+
+	// Test with invalid magic number
+	invalidFile := filepath.Join(tmpDir, "invalid-magic.db")
+	invalidF, err := os.OpenFile(invalidFile, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		t.Fatalf("Failed to create invalid test file: %v", err)
+	}
+	defer invalidF.Close()
+
+	// Create an invalid header
+	invalidHeader := Header{
+		MagicNumber: 0x12345678, // Wrong magic number
+		Version:     Version,
+		BlockSize:   BlockSize,
+		Allotment:   Allotment,
+	}
+
+	// Calculate CRC
+	buf := new(bytes.Buffer)
+	invalidHeader.CRC = 0
+	err = binary.Write(buf, binary.LittleEndian, &invalidHeader)
+	if err != nil {
+		t.Fatalf("Failed to write invalid header: %v", err)
+	}
+	invalidHeader.CRC = crc32.ChecksumIEEE(buf.Bytes())
+
+	// Write the header to the file
+	buf.Reset()
+	err = binary.Write(buf, binary.LittleEndian, &invalidHeader)
+	if err != nil {
+		t.Fatalf("Failed to write invalid header: %v", err)
+	}
+	_, err = invalidF.Write(buf.Bytes())
+	if err != nil {
+		t.Fatalf("Failed to write to file: %v", err)
+	}
+
+	// Create BlockManager with invalid file
+	invalidBM := &BlockManager{
+		file: invalidF,
+		fd:   invalidF.Fd(),
+	}
+
+	// Test readHeader with invalid magic number
+	err = invalidBM.readHeader()
+	if err == nil || err.Error() != "invalid magic number" {
+		t.Errorf("Expected 'invalid magic number' error, got: %v", err)
+	}
+
+	// Test with invalid CRC
+	invalidCRCFile := filepath.Join(tmpDir, "invalid-crc.db")
+	invalidCRCF, err := os.OpenFile(invalidCRCFile, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		t.Fatalf("Failed to create invalid CRC test file: %v", err)
+	}
+	defer invalidCRCF.Close()
+
+	// Create a valid header
+	validHeader := Header{
+		MagicNumber: MagicNumber,
+		Version:     Version,
+		BlockSize:   BlockSize,
+		Allotment:   Allotment,
+	}
+
+	// Calculate CRC
+	buf = new(bytes.Buffer)
+	validHeader.CRC = 0
+	err = binary.Write(buf, binary.LittleEndian, &validHeader)
+	if err != nil {
+		t.Fatalf("Failed to write valid header: %v", err)
+	}
+	validHeader.CRC = crc32.ChecksumIEEE(buf.Bytes())
+
+	// Corrupt the CRC
+	validHeader.CRC = validHeader.CRC + 1
+
+	// Write the header to the file
+	buf.Reset()
+	err = binary.Write(buf, binary.LittleEndian, &validHeader)
+	if err != nil {
+		t.Fatalf("Failed to write corrupted header: %v", err)
+	}
+	_, err = invalidCRCF.Write(buf.Bytes())
+	if err != nil {
+		t.Fatalf("Failed to write to file: %v", err)
+	}
+
+	// Create BlockManager with invalid CRC file
+	invalidCRCBM := &BlockManager{
+		file: invalidCRCF,
+		fd:   invalidCRCF.Fd(),
+	}
+
+	// Test readHeader with invalid CRC
+	err = invalidCRCBM.readHeader()
+	if err == nil || err.Error() != "header CRC mismatch" {
+		t.Errorf("Expected 'header CRC mismatch' error, got: %v", err)
+	}
+
+	// Test with unsupported version
+	invalidVersionFile := filepath.Join(tmpDir, "invalid-version.db")
+	invalidVersionF, err := os.OpenFile(invalidVersionFile, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		t.Fatalf("Failed to create invalid version test file: %v", err)
+	}
+	defer invalidVersionF.Close()
+
+	// Create a header with invalid version
+	invalidVersionHeader := Header{
+		MagicNumber: MagicNumber,
+		Version:     Version + 1, // Unsupported version
+		BlockSize:   BlockSize,
+		Allotment:   Allotment,
+	}
+
+	// Calculate CRC
+	buf = new(bytes.Buffer)
+	invalidVersionHeader.CRC = 0
+	err = binary.Write(buf, binary.LittleEndian, &invalidVersionHeader)
+	if err != nil {
+		t.Fatalf("Failed to write invalid version header: %v", err)
+	}
+	invalidVersionHeader.CRC = crc32.ChecksumIEEE(buf.Bytes())
+
+	// Write the header to the file
+	buf.Reset()
+	err = binary.Write(buf, binary.LittleEndian, &invalidVersionHeader)
+	if err != nil {
+		t.Fatalf("Failed to write invalid version header: %v", err)
+	}
+	_, err = invalidVersionF.Write(buf.Bytes())
+	if err != nil {
+		t.Fatalf("Failed to write to file: %v", err)
+	}
+
+	// Create BlockManager with invalid version file
+	invalidVersionBM := &BlockManager{
+		file: invalidVersionF,
+		fd:   invalidVersionF.Fd(),
+	}
+
+	// Test readHeader with invalid version
+	err = invalidVersionBM.readHeader()
+	if err == nil || err.Error() != "unsupported version" {
+		t.Errorf("Expected 'unsupported version' error, got: %v", err)
+	}
+}
+
+func TestHeaderRoundTrip(t *testing.T) {
+	// Create a temporary directory for test files
+	tmpDir, err := ioutil.TempDir("", "blockmanager-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create a test file path
+	testFilePath := filepath.Join(tmpDir, "test-round-trip.db")
+
+	// Open the file for writing
+	file, err := os.OpenFile(testFilePath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+	defer file.Close()
+
+	// Create a BlockManager with the file
+	bm := &BlockManager{
+		file: file,
+		fd:   file.Fd(),
+	}
+
+	// Write the header
+	err = bm.writeHeader()
+	if err != nil {
+		t.Fatalf("writeHeader failed: %v", err)
+	}
+
+	// Close the file to ensure data is flushed
+	err = file.Close()
+	if err != nil {
+		t.Fatalf("Failed to close file: %v", err)
+	}
+
+	// Reopen the file
+	reopenedFile, err := os.OpenFile(testFilePath, os.O_RDWR, 0644)
+	if err != nil {
+		t.Fatalf("Failed to reopen test file: %v", err)
+	}
+	defer reopenedFile.Close()
+
+	// Create a new BlockManager with the reopened file
+	reopenedBM := &BlockManager{
+		file: reopenedFile,
+		fd:   reopenedFile.Fd(),
+	}
+
+	// Read the header
+	err = reopenedBM.readHeader()
+	if err != nil {
+		t.Fatalf("readHeader failed: %v", err)
+	}
+
+	// If we get here, the test has passed
+	t.Log("Successfully wrote and read header")
+}
 
 func TestOpenNewFile(t *testing.T) {
 	// Create a path for a new file
@@ -337,47 +645,6 @@ func TestEmptyAppend(t *testing.T) {
 		t.Fatalf("Expected an error when appending empty data")
 	}
 }
-
-//func TestCorruptHeader(t *testing.T) {
-//	// Create a path for a new file
-//	tempFilePath := os.TempDir() + "/blockmanager_corrupt_header_test"
-//	defer os.Remove(tempFilePath) // Clean up after test
-//
-//	// Create a file with a valid header
-//	{
-//		file, err := os.Create(tempFilePath)
-//		if err != nil {
-//			t.Fatalf("Failed to create file: %v", err)
-//		}
-//
-//		if err := writeHeader(file); err != nil {
-//			t.Fatalf("Failed to write header: %v", err)
-//		}
-//
-//		file.Close()
-//	}
-//
-//	// Corrupt the header by writing junk to the beginning of the file
-//	{
-//		file, err := os.OpenFile(tempFilePath, os.O_RDWR, 0666)
-//		if err != nil {
-//			t.Fatalf("Failed to open file for corruption: %v", err)
-//		}
-//
-//		// Write junk to the magic number part
-//		if _, err := file.WriteAt([]byte{0xFF, 0xFF, 0xFF, 0xFF}, 4); err != nil {
-//			t.Fatalf("Failed to corrupt file: %v", err)
-//		}
-//
-//		file.Close()
-//	}
-//
-//	// Try to open the file with the corrupted header
-//	_, err := Open(tempFilePath, os.O_RDWR, 0666, SyncNone)
-//	if err == nil {
-//		t.Fatalf("Expected an error when opening file with corrupted header")
-//	}
-//}
 
 func TestGetInitialBlockID(t *testing.T) {
 	// Create a temporary file for testing
@@ -687,6 +954,107 @@ func TestScanForFreeBlocks(t *testing.T) {
 		t.Fatalf("Verification data mismatch. Expected: %s, Got: %s",
 			string(verifyData), string(readVerifyData))
 	}
+}
+
+func TestPartialBlockWriteRecovery(t *testing.T) {
+	tempFilePath := os.TempDir() + "/bm_partial_block_test"
+	defer os.Remove(tempFilePath)
+
+	// Write a broken block manually
+	f, err := os.OpenFile(tempFilePath, os.O_RDWR|os.O_CREATE, 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	header := Header{
+		MagicNumber: MagicNumber,
+		Version:     Version,
+		BlockSize:   BlockSize,
+		Allotment:   Allotment,
+	}
+	header.CRC = 0
+	buf := new(bytes.Buffer)
+	_ = binary.Write(buf, binary.LittleEndian, &header)
+	header.CRC = crc32.ChecksumIEEE(buf.Bytes())
+
+	buf.Reset()
+	_ = binary.Write(buf, binary.LittleEndian, &header)
+
+	// Write header
+	_, _ = f.WriteAt(buf.Bytes(), 0)
+
+	// Manually write a truncated block header (simulate crash mid-write)
+	incompleteBlockHeader := make([]byte, 4) // only CRC field
+	copy(incompleteBlockHeader, []byte{0x00, 0x00, 0x00, 0x00})
+	_, _ = f.WriteAt(incompleteBlockHeader, int64(binary.Size(Header{})+int(BlockSize)))
+
+	f.Close()
+
+	// Now open with blockmanager (should not panic or fail)
+	bm, err := Open(tempFilePath, os.O_RDWR, 0666, SyncNone)
+	if err != nil {
+		t.Fatalf("Open failed on partial block recovery: %v", err)
+	}
+
+	defer bm.Close()
+
+	// Append some data to trigger recovery
+	data := []byte("Test data after partial block write")
+
+	blockID, err := bm.Append(data)
+
+	if err != nil {
+		t.Fatalf("Failed to append data after partial block write: %v", err)
+	}
+
+	// Read back the data
+	readData, _, err := bm.Read(blockID)
+	if err != nil {
+		t.Fatalf("Failed to read data after partial block write: %v", err)
+	}
+
+	// Verify the data
+	if !bytes.Equal(data, readData) {
+		t.Fatalf("Data mismatch after partial block write. Expected: %s, Got: %s", string(data), string(readData))
+
+	}
+
+}
+
+func TestPowerOutageDuringHeaderWrite(t *testing.T) {
+	tempFilePath := os.TempDir() + "/blockmanager_power_outage_test"
+	defer os.Remove(tempFilePath)
+
+	// Simulate writing only half the header
+	file, err := os.Create(tempFilePath)
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+
+	header := Header{
+		MagicNumber: MagicNumber,
+		Version:     Version,
+		BlockSize:   BlockSize,
+		Allotment:   Allotment,
+	}
+
+	buf := new(bytes.Buffer)
+	_ = binary.Write(buf, binary.LittleEndian, &header)
+
+	// Write only part of the header
+	corruptedBytes := buf.Bytes()[:10]
+	if _, err := file.Write(corruptedBytes); err != nil {
+		t.Fatalf("Failed to write corrupted header: %v", err)
+	}
+	file.Close()
+
+	// Try to open the block manager — it should fail
+	_, err = Open(tempFilePath, os.O_RDWR, 0666, SyncNone)
+	if err == nil {
+		t.Fatalf("Expected error due to corrupted header, got nil")
+	}
+
+	t.Logf("Power outage test passed. Error: %v", err)
 }
 
 func BenchmarkBlockManagerWriteSmall(b *testing.B) {
