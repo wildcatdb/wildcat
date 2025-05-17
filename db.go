@@ -187,7 +187,7 @@ func Open(opts *Options) (*DB, error) {
 			return nil, fmt.Errorf("failed to create level directory: %v", err)
 		}
 
-		// Read level
+		// Reopen the level to load existing SSTable information
 		if err := level.reopen(); err != nil {
 			return nil, fmt.Errorf("failed to reopen level: %v", err)
 		}
