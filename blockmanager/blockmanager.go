@@ -29,54 +29,55 @@ import (
 	"time"
 )
 
-const MagicNumber = uint32(0x4F52494E) // "ORIN"
-const Version = uint32(1)
-const BlockSize = uint32(512)
-const Allotment = uint32(16)          // How many blocks we can allot at once
-const EndOfChain = uint32(0xFFFFFFFF) // Marker for end of blockchain
+const MagicNumber = uint32(0x4F52494E) // "ORIN" for OrinDB
+const Version = uint32(1)              // Version of the file format
+const BlockSize = uint32(512)          // Smaller the better, faster in our tests
+const Allotment = uint32(16)           // How many blocks we can allot at once from the file
+const EndOfChain = uint32(0xFFFFFFFF)  // Marker for end of blockchain (overflowed block)
 
+// SyncOption defines the synchronization options for the file
 type SyncOption int
 
 const (
-	SyncNone SyncOption = iota
-	SyncFull
-	SyncPartial
+	SyncNone    SyncOption = iota // Don't sync at all
+	SyncFull                      // Do a sync after every write
+	SyncPartial                   // Do a sync in the background at intervals
 )
 
 // Header represents the header of the file
 type Header struct {
-	CRC         uint32
-	MagicNumber uint32
-	Version     uint32
-	BlockSize   uint32
-	Allotment   uint32
+	CRC         uint32 // CRC32 checksum of the header
+	MagicNumber uint32 // Magic number to identify the file format
+	Version     uint32 // Version of the file format
+	BlockSize   uint32 // Size of each block in bytes
+	Allotment   uint32 // Number of blocks to allot at once
 }
 
 // BlockHeader represents the header of a block in the file
 type BlockHeader struct {
-	CRC       uint32
-	BlockID   uint32
-	DataSize  uint32
-	NextBlock uint32
+	CRC       uint32 // CRC32 checksum of the block header
+	BlockID   uint32 // Unique ID of the block
+	DataSize  uint32 // Size of the data in the block
+	NextBlock uint32 // ID of the next block in the chain (0xFFFFFFFF if end of chain)
 }
 
 // BlockManager manages the allocation and deallocation of blocks in a file
 type BlockManager struct {
-	allocationTable *stack.Stack // An atomic stack we store free available block ids
-	file            *os.File
-	fd              uintptr // File descriptor for direct syscalls
-	syncOption      SyncOption
-	syncInterval    time.Duration
-	closeChan       chan struct{}
-	wg              *sync.WaitGroup
+	allocationTable *stack.Stack    // An atomic stack we store free available block ids
+	file            *os.File        // File handle for the block manager
+	fd              uintptr         // File descriptor for direct syscalls
+	syncOption      SyncOption      // Synchronization option for the file
+	syncInterval    time.Duration   // Interval for background sync (if applicable)
+	closeChan       chan struct{}   // Channel to signal closure of the background sync
+	wg              *sync.WaitGroup // WaitGroup to wait for background sync to finish
 }
 
 // Iterator is used to traverse the blocks in the file
 type Iterator struct {
-	blockManager *BlockManager
-	blockID      uint32
-	lastBlockID  uint32
-	history      []uint32
+	blockManager *BlockManager // Reference to the BlockManager
+	blockID      uint32        // Current block ID in the iteration
+	lastBlockID  uint32        // Last block ID in the file
+	history      []uint32      // History of block IDs visited during iteration
 }
 
 // pwrite performs an atomic write at a specific offset without needing to Seek first

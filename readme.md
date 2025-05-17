@@ -15,6 +15,5 @@ It focuses on massive concurrency, transactional support, and high performance.
 - MVCC with snapshot isolation (with read timestamp)
 
 ## Todo
-- Compaction policy
 - Merge iterator with optional point query for transactions
 - Possible bloom filter for member queries

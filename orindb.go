@@ -1070,7 +1070,7 @@ func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
 		klogBm, err = blockmanager.Open(klogPath, os.O_RDONLY, 0666,
 			blockmanager.SyncOption(sst.db.opts.SyncOption))
 		if err != nil {
-			log.Printf("Failed to open KLog block manager: %v", err)
+			//log.Printf("Failed to open KLog block manager: %v", err)
 			return nil
 		}
 		sst.db.lru.Put(klogPath, klogBm)
@@ -1126,7 +1126,7 @@ func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
 			vlogBm, err = blockmanager.Open(vlogPath, os.O_RDONLY, 0666,
 				blockmanager.SyncOption(sst.db.opts.SyncOption))
 			if err != nil {
-				log.Printf("Failed to open VLog block manager: %v", err)
+				//log.Printf("Failed to open VLog block manager: %v", err)
 				return nil
 			}
 			sst.db.lru.Put(vlogPath, vlogBm)
@@ -1660,7 +1660,7 @@ func newSSTIterator(sst *SSTable) *SSTIterator {
 		klogBm, err = blockmanager.Open(klogPath, os.O_RDONLY, 0666,
 			blockmanager.SyncOption(sst.db.opts.SyncOption))
 		if err != nil {
-			log.Printf("Failed to open KLog block manager: %v", err)
+			//log.Printf("Failed to open KLog block manager: %v", err)
 			return &SSTIterator{eof: true}
 		}
 		sst.db.lru.Put(klogPath, klogBm)
@@ -1740,7 +1740,7 @@ func (iter *SSTIterator) Next() ([]byte, interface{}, int64, bool) {
 		vlogBm, err = blockmanager.Open(vlogPath, os.O_RDONLY, 0666,
 			blockmanager.SyncOption(iter.sstable.db.opts.SyncOption))
 		if err != nil {
-			log.Printf("Failed to open VLog block manager: %v", err)
+			//log.Printf("Failed to open VLog block manager: %v", err)
 			iter.eof = true
 			return nil, nil, 0, false
 		}
