@@ -195,11 +195,11 @@ wg.Add(1)
 go func() {
     defer wg.Done()
     for msg := range logChannel {
-    // Process log messages
-    fmt.Println("OrinDB Log:", msg)
+        // Process log messages
+        fmt.Println("OrinDB Log:", msg)
 
-    // You could also write to a file, send to a logging service, etc.
-    // log.Println(msg)
+        // You could also write to a file, send to a logging service, etc.
+        // log.Println(msg)
     }
 }()
 
