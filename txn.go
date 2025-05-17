@@ -29,20 +29,20 @@ import (
 
 // Txn represents a transaction in OrinDB
 type Txn struct {
-	id        string
-	db        *DB
+	Id        string
 	ReadSet   map[string]int64
 	WriteSet  map[string][]byte
 	DeleteSet map[string]bool
 	Timestamp int64
-	mutex     sync.Mutex
 	Committed bool
+	db        *DB        // Not exported
+	mutex     sync.Mutex // Not exported
 }
 
 // Begin starts a new transaction
 func (db *DB) Begin() *Txn {
 	txn := &Txn{
-		id:        uuid.New().String(),
+		Id:        uuid.New().String(),
 		db:        db,
 		ReadSet:   make(map[string]int64),
 		WriteSet:  make(map[string][]byte),
@@ -73,7 +73,7 @@ func (db *DB) GetTxn(id string) (*Txn, error) {
 	}
 
 	for _, txn := range *txns {
-		if txn.id == id {
+		if txn.Id == id {
 			return txn, nil
 		}
 	}
@@ -384,7 +384,7 @@ func (txn *Txn) remove() {
 	txns := txn.db.txns.Load()
 	if txns != nil {
 		for i, t := range *txns {
-			if t.id == txn.id {
+			if t.Id == txn.Id {
 				*txns = append((*txns)[:i], (*txns)[i+1:]...)
 				break
 			}

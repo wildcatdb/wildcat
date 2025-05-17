@@ -82,7 +82,7 @@ func (memtable *Memtable) replay(activeTxns *[]*Txn) error {
 		txn.db = memtable.db
 
 		// Update our transaction map with the latest state of this transaction
-		txnMap[txn.id] = &txn
+		txnMap[txn.Id] = &txn
 
 		// Only apply committed transactions to the memtable
 		if txn.Committed {
