@@ -217,12 +217,29 @@ func (compactor *Compactor) scheduleLeveledCompaction(level *Level, levelNum int
 		return
 	}
 
-	// For leveled compaction, pick the oldest SSTable
-	// (often this would be picking by smallest key range, but we'll use oldest for simplicity)
-	oldestTable := (*sstables)[0]
-	for _, table := range *sstables {
-		if table.Id < oldestTable.Id {
-			oldestTable = table
+	// For leveled compaction, pick the SSTable with the smallest key range
+	// This is often more efficient than simply picking the oldest SSTable
+	var selectedTable *SSTable
+	var smallestRange int
+
+	for i, table := range *sstables {
+		// Calculate the key range size
+		keyRangeSize := bytes.Compare(table.Max, table.Min)
+
+		// Initialize on first table or update if we find a smaller range
+		if i == 0 || keyRangeSize < smallestRange {
+			smallestRange = keyRangeSize
+			selectedTable = table
+		}
+	}
+
+	// If we couldn't determine by key range (equal ranges), fall back to oldest
+	if selectedTable == nil {
+		selectedTable = (*sstables)[0]
+		for _, table := range *sstables {
+			if table.Id < selectedTable.Id {
+				selectedTable = table
+			}
 		}
 	}
 
@@ -239,7 +256,7 @@ func (compactor *Compactor) scheduleLeveledCompaction(level *Level, levelNum int
 		compactor.compactionQueue = append(compactor.compactionQueue, &compactorJob{
 			level:       levelNum,
 			priority:    score,
-			ssTables:    []*SSTable{oldestTable},
+			ssTables:    []*SSTable{selectedTable},
 			targetLevel: nextLevelNum,
 			inProgress:  false,
 		})
@@ -249,13 +266,13 @@ func (compactor *Compactor) scheduleLeveledCompaction(level *Level, levelNum int
 	// Find overlapping tables in next level
 	var overlappingTables []*SSTable
 	for _, table := range *nextLevelTables {
-		if bytes.Compare(table.Max, oldestTable.Min) >= 0 && bytes.Compare(table.Min, oldestTable.Max) <= 0 {
+		if bytes.Compare(table.Max, selectedTable.Min) >= 0 && bytes.Compare(table.Min, selectedTable.Max) <= 0 {
 			overlappingTables = append(overlappingTables, table)
 		}
 	}
 
 	// Create compaction job with selected table and overlapping tables
-	selectedTables := []*SSTable{oldestTable}
+	selectedTables := []*SSTable{selectedTable}
 	selectedTables = append(selectedTables, overlappingTables...)
 
 	compactor.compactionQueue = append(compactor.compactionQueue, &compactorJob{
