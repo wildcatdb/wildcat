@@ -19,7 +19,6 @@ package orindb
 
 import (
 	"fmt"
-	"log"
 	"orindb/blockmanager"
 	"orindb/queue"
 	"orindb/skiplist"
@@ -85,7 +84,7 @@ func (flusher *Flusher) backgroundProcess() {
 	for {
 		select {
 		case <-flusher.db.closeCh:
-			log.Println("Flusher stopped")
+			flusher.db.log("Flusher: shutting down background process")
 			return
 		case <-ticker.C:
 			immutableMemt := flusher.immutable.Dequeue()
@@ -93,12 +92,11 @@ func (flusher *Flusher) backgroundProcess() {
 				continue // No immutable memtable to flush
 			}
 
-			log.Println("Flushing immutable memtable to disk:", immutableMemt.(*Memtable).wal.path)
+			flusher.db.log(fmt.Sprintf("Flusher: flushing immutable memtable %s", immutableMemt.(*Memtable).wal.path))
 
 			// Flush the immutable memtable to disk
 			err := flusher.flushMemtable(immutableMemt.(*Memtable))
 			if err != nil {
-				log.Printf("Failed to flush immutable memtable: %v", err)
 				continue
 			}
 		}

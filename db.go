@@ -68,7 +68,7 @@ const (
 	DefaultLevelMultiplier     = 4
 	DefaultBlockManagerLRUSize = 128             // Size of the LRU cache for block managers
 	DefaultBlockSetSize        = 8 * 1024 * 1024 // Size of the block set
-	DefaultPermission          = 0644
+	DefaultPermission          = 0750
 )
 
 // Options represents the configuration options for OrinDB
@@ -178,9 +178,11 @@ func Open(opts *Options) (*DB, error) {
 		}
 
 		level.sstables = atomic.Pointer[[]*SSTable]{}
-		level.path = fmt.Sprintf("%s%s%s%d%s", db.opts.Directory, string(os.PathSeparator), LevelPrefix, i+1, string(os.PathSeparator))
+		level.path = fmt.Sprintf("%s%s%d%s", db.opts.Directory, LevelPrefix, i+1, string(os.PathSeparator))
 
 		levels[i] = level
+
+		db.log(fmt.Sprintf("Creating level %d with capacity %d bytes at path %s", level.id, level.capacity, level.path))
 
 		// Create or ensure the level directory exists
 		if err := os.MkdirAll(level.path, db.opts.Permission); err != nil {
@@ -245,6 +247,10 @@ func (db *DB) Close() error {
 
 	db.log("Database closed successfully.")
 
+	if db.opts.LogChannel != nil {
+		close(db.opts.LogChannel)
+	}
+
 	return nil
 }
 
@@ -278,7 +284,7 @@ func (db *DB) reinstate() error {
 		db.memtable.Store(&Memtable{
 			skiplist: skiplist.New(),
 			wal: &WAL{
-				path: fmt.Sprintf("%s%s%d%s", db.opts.Directory, string(os.PathSeparator), time.Now().UnixNano(), WALFileExtension),
+				path: fmt.Sprintf("%s%d%s", db.opts.Directory, time.Now().UnixNano(), WALFileExtension),
 			},
 		})
 
