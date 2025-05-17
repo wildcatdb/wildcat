@@ -1,3 +1,20 @@
+// Package orindb
+//
+// (C) Copyright OrinDB
+//
+// Original Author: Alex Gaetano Padula
+//
+// Licensed under the Mozilla Public License, v. 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// https://www.mozilla.org/en-US/MPL/2.0/
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 package orindb
 
 import (
@@ -18,6 +35,19 @@ type SSTCompactionIterator struct {
 	blockset   *BlockSet
 	blockIndex int
 	eof        bool
+}
+
+// MergeCompactionIterator merges multiple SSTable iterators
+type MergeCompactionIterator struct {
+	iters   []*SSTCompactionIterator
+	current []*KeyValueEntry
+}
+
+// KeyValueEntry represents a key-value entry with timestamp
+type KeyValueEntry struct {
+	Key       []byte
+	Value     interface{}
+	Timestamp int64
 }
 
 // NewCompactor creates a new compactor
@@ -616,19 +646,6 @@ func (iter *SSTCompactionIterator) Next() ([]byte, interface{}, int64, bool) {
 	}
 
 	return entry.Key, value, entry.Timestamp, true
-}
-
-// MergeCompactionIterator merges multiple SSTable iterators
-type MergeCompactionIterator struct {
-	iters   []*SSTCompactionIterator
-	current []*KeyValueEntry
-}
-
-// KeyValueEntry represents a key-value entry with timestamp
-type KeyValueEntry struct {
-	Key       []byte
-	Value     interface{}
-	Timestamp int64
 }
 
 // newMergeCompactionIterator creates a new merge iterator

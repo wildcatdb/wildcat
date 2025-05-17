@@ -175,11 +175,11 @@ opts := &orindb.Options{
     Directory:           "/path/to/database",
     WriteBufferSize:     32 * 1024 * 1024, // 32MB memtable size
     SyncOption:          orindb.SyncFull,  // Full sync for maximum durability
-    SyncInterval:        500 * time.Millisecond,
+    SyncInterval:        128 * time.Millisecond, // Only set when using SyncPartial, can be 0 otherwise
     LevelCount:          7,                // Number of LSM levels
     LevelMultiplier:     10,               // Size multiplier between levels
     BlockManagerLRUSize: 256,              // Cache size for block managers
-    BlockSetSize:        4 * 1024 * 1024,  // 4MB block set size, each klog block will have BlockSetSize of entries
+    BlockSetSize:        8 * 1024 * 1024,  // 8MB block set size, each klog block will have BlockSetSize of entries
 }
 ```
 
