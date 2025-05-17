@@ -207,12 +207,17 @@ OrinDB uses a multi-level Log-Structured Merge (LSM) tree architecture.
 
 ### Compaction Strategy
 OrinDB employs a hybrid compaction strategy:
-- **Size-Tiered Compaction** For lower levels (L1-L2), merges similarly sized SSTables
-- **Leveled Compaction** For higher levels (L3+), maintains key ranges for efficient lookups
+- **Size-Tiered Compaction (L1–L2)** Merges similarly sized SSTables to reduce write amplification and flush pressure. This strategy groups SSTables of comparable size and merges them into the next level. Ideal for absorbing high write throughput efficiently.
+- **Leveled Compaction (L3 and above)** Maintains disjoint key ranges within each level to optimize lookup performance. Overlapping SSTables from the lower level are merged into the appropriate ranges in the higher level, minimizing read amplification and ensuring predictable query cost.
 
 **Compaction is triggered when**
-- A level exceeds its capacity threshold
-- A level contains too many files
+1. A Level Size Exceeds Capacity
+2. Number of SSTables Exceeds Threshold (CompactionSizeThreshold)
+3. Compaction Score Exceeds 1.0 `score = sizeScore * WeightSize + countScore * WeightCount` default:
+    - CompactionScoreSizeWeight = 0.7
+    - CompactionScoreCountWeight = 0.3
+4. Cooldown Period Passed (CompactionCooldownPeriod)
+
 
 ### MVCC and Transactions
 All operations in OrinDB use Multi-Version Concurrency Control.
