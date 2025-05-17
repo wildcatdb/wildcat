@@ -19,6 +19,7 @@ package orindb
 
 import (
 	"bytes"
+	"container/heap"
 	"encoding/gob"
 	"errors"
 	"fmt"
@@ -169,8 +170,8 @@ type CompactionJob struct {
 	InProgress  bool
 }
 
-// CompactionManager manages database compactions
-type CompactionManager struct {
+// Compactor manages database compactions
+type Compactor struct {
 	db              *DB
 	compactionQueue []*CompactionJob
 	activeJobs      int32
@@ -225,7 +226,7 @@ func Open(opts *Options) (*DB, error) {
 		txns:        atomic.Pointer[[]*Txn]{},
 		flushLock:   &sync.Mutex{},
 		closeCh:     make(chan struct{}),
-		idGenerator: NewSSTableIDGenerator(),
+		idGenerator: newSSTableIDGenerator(),
 	}
 
 	if !strings.HasSuffix(db.opts.Directory, string(os.PathSeparator)) {
@@ -647,7 +648,6 @@ func (txn *Txn) Delete(key []byte) error {
 func (txn *Txn) Commit() error {
 	txn.mutex.Lock()
 	defer txn.mutex.Unlock()
-	defer txn.remove()
 
 	if txn.Committed {
 		return nil // Already committed
@@ -908,7 +908,7 @@ func (db *DB) backgroundFlusher() {
 func (db *DB) flushMemtable(memt *Memtable) error {
 	// Create a new SSTable
 	sstable := &SSTable{
-		Id:    db.idGenerator.NextID(),
+		Id:    db.idGenerator.nextID(),
 		db:    db,
 		Level: 1,
 	}
@@ -1051,6 +1051,32 @@ func (db *DB) flushMemtable(memt *Memtable) error {
 	return nil
 }
 
+// newSSTableIDGenerator creates a new SSTable ID generator
+func newSSTableIDGenerator() *SSTableIDGenerator {
+	return &SSTableIDGenerator{
+		lastID: time.Now().UnixNano(),
+	}
+}
+
+// NextID generates the next unique SSTable ID
+func (g *SSTableIDGenerator) nextID() int64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	// Get current timestamp
+	ts := time.Now().UnixNano()
+
+	// Ensure monotonicity by using max of current time and last ID + 1
+	if ts <= g.lastID {
+		ts = g.lastID + 1
+	}
+
+	// Update last ID
+	g.lastID = ts
+
+	return ts
+}
+
 // Get retrieves a value from the SSTable using the key and timestamp
 func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
 	// Fix the range check - only proceed if key is in range
@@ -1070,7 +1096,6 @@ func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
 		klogBm, err = blockmanager.Open(klogPath, os.O_RDONLY, 0666,
 			blockmanager.SyncOption(sst.db.opts.SyncOption))
 		if err != nil {
-			//log.Printf("Failed to open KLog block manager: %v", err)
 			return nil
 		}
 		sst.db.lru.Put(klogPath, klogBm)
@@ -1097,7 +1122,6 @@ func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
 		var blockset BlockSet
 		err = blockset.deserializeBlockSet(data)
 		if err != nil {
-			log.Printf("Failed to deserialize block set: %v", err)
 			continue
 		}
 
@@ -1126,7 +1150,6 @@ func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
 			vlogBm, err = blockmanager.Open(vlogPath, os.O_RDONLY, 0666,
 				blockmanager.SyncOption(sst.db.opts.SyncOption))
 			if err != nil {
-				//log.Printf("Failed to open VLog block manager: %v", err)
 				return nil
 			}
 			sst.db.lru.Put(vlogPath, vlogBm)
@@ -1135,7 +1158,6 @@ func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
 		// Read the value from VLog
 		value, _, err := vlogBm.Read(foundEntry.ValueBlockID)
 		if err != nil {
-			log.Printf("Failed to read value from VLog: %v", err)
 			return nil
 		}
 
@@ -1145,512 +1167,450 @@ func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
 	return nil // Key not found or no valid version for the timestamp
 }
 
-// NewCompactionManager creates a new compaction manager
-func NewCompactionManager(db *DB, maxConcurrency int) *CompactionManager {
-	if maxConcurrency <= 0 {
-		maxConcurrency = MaxCompactionConcurrency
-	}
+// MergeIterator is a bidirectional iterator that merges results from multiple sources
+// while maintaining transaction isolation at the given read timestamp
+type MergeIterator struct {
+	txn            *Txn                 // Transaction for isolation
+	memtableIter   *skiplist.Iterator   // Iterator for current memtable
+	immutableIters []*skiplist.Iterator // Iterators for immutable memtables
+	sstableIters   [][]*SSTableIterator // Iterators for SSTables by level
 
-	return &CompactionManager{
-		db:              db,
-		compactionQueue: make([]*CompactionJob, 0),
-		maxConcurrency:  maxConcurrency,
-		lastCompaction:  time.Now(),
-	}
+	// Current position data
+	current       *iteratorHeapItem // Current item
+	lastDirection int               // Last direction of iteration (1 for forward, -1 for backward)
+
+	// Heap for merging
+	minHeap minHeapItems // Min heap for Next operations
+	maxHeap maxHeapItems // Max heap for Prev operations
+
+	// Track seen keys to avoid duplicates (MVCC)
+	seenKeys map[string]bool
 }
 
-// backgroundCompactor is the main compaction routine
-func (db *DB) backgroundCompactor() {
-	defer db.wg.Done()
-	cm := NewCompactionManager(db, MaxCompactionConcurrency)
-	ticker := time.NewTicker(time.Millisecond * 24)
-	defer ticker.Stop()
+// iteratorHeapItem represents an item in the iterator heaps
+type iteratorHeapItem struct {
+	key       []byte      // Key of the item
+	value     interface{} // Value of the item
+	source    int         // Source identifier (0=memtable, 1=immutable, 2+=sstables)
+	sourceIdx int         // Index within the source type
+	timestamp int64       // Timestamp of the item
+}
 
-	for {
-		select {
-		case <-db.closeCh:
-			log.Println("Compactor stopped")
-			return
-		case <-ticker.C:
-			// Check and schedule compactions
-			cm.checkAndScheduleCompactions()
+// SSTableIterator is an iterator for a specific SSTable
+type SSTableIterator struct {
+	sstable *SSTable
+	readTs  int64
+	db      *DB
+	klogBm  *blockmanager.BlockManager
+	vlogBm  *blockmanager.BlockManager
 
-			// Execute pending compactions if under concurrency limit
-			cm.executeCompactions()
+	// Current state
+	currentSet *BlockSet
+	currentIdx int
+	currentKey []byte
+
+	// For bidirectional traversal
+	history     []blockIterState
+	initialized bool
+	finished    bool
+}
+
+// blockIterState tracks state for bidirectional traversal
+type blockIterState struct {
+	blockID   int64
+	setIdx    int
+	key       []byte
+	timestamp int64
+	value     interface{}
+}
+
+// minHeapItems implements heap.Interface for min heap (Next operations)
+type minHeapItems []*iteratorHeapItem
+
+func (h minHeapItems) Len() int { return len(h) }
+func (h minHeapItems) Less(i, j int) bool {
+	// First compare keys
+	cmp := bytes.Compare(h[i].key, h[j].key)
+	if cmp != 0 {
+		return cmp < 0
+	}
+	// For same keys, newer versions come first (higher timestamp)
+	return h[i].timestamp > h[j].timestamp
+}
+func (h minHeapItems) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *minHeapItems) Push(x interface{}) { *h = append(*h, x.(*iteratorHeapItem)) }
+func (h *minHeapItems) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+
+// maxHeapItems implements heap.Interface for max heap (Prev operations)
+type maxHeapItems []*iteratorHeapItem
+
+func (h maxHeapItems) Len() int { return len(h) }
+func (h maxHeapItems) Less(i, j int) bool {
+	// First compare keys in reverse order
+	cmp := bytes.Compare(h[i].key, h[j].key)
+	if cmp != 0 {
+		return cmp > 0 // Note the > instead of < for max heap
+	}
+	// For same keys, newer versions come first (higher timestamp)
+	return h[i].timestamp > h[j].timestamp
+}
+func (h maxHeapItems) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *maxHeapItems) Push(x interface{}) { *h = append(*h, x.(*iteratorHeapItem)) }
+func (h *maxHeapItems) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+
+// NewMergeIterator creates a new iterator that merges all sources
+// startKey can be nil to start from the beginning
+func (txn *Txn) NewMergeIterator(startKey []byte) *MergeIterator {
+	iter := &MergeIterator{
+		txn:           txn,
+		minHeap:       make(minHeapItems, 0),
+		maxHeap:       make(maxHeapItems, 0),
+		seenKeys:      make(map[string]bool),
+		lastDirection: 0, // No direction yet
+	}
+
+	// Initialize the heap
+	heap.Init(&iter.minHeap)
+	heap.Init(&iter.maxHeap)
+
+	// Initialize memtable iterator
+	iter.memtableIter = txn.db.memtable.Load().(*Memtable).skiplist.NewIterator(startKey, txn.Timestamp)
+
+	// Initialize immutable memtable iterators
+	immutableMemtables := txn.db.immutable.List()
+	iter.immutableIters = make([]*skiplist.Iterator, len(immutableMemtables))
+	for i, memt := range immutableMemtables {
+		if memt == nil {
+			continue
+		}
+		iter.immutableIters[i] = memt.(*Memtable).skiplist.NewIterator(startKey, txn.Timestamp)
+	}
+
+	// Initialize SSTable iterators by level
+	levels := txn.db.levels.Load()
+	if levels != nil {
+		iter.sstableIters = make([][]*SSTableIterator, len(*levels))
+
+		for levelIdx, level := range *levels {
+			sstables := level.sstables.Load()
+			if sstables == nil {
+				continue
+			}
+
+			iter.sstableIters[levelIdx] = make([]*SSTableIterator, len(*sstables))
+			for sstIdx, sst := range *sstables {
+				// Skip SSTables that don't contain the key range we're looking for
+				if startKey != nil && bytes.Compare(startKey, sst.Min) < 0 {
+					continue
+				}
+				if startKey != nil && bytes.Compare(startKey, sst.Max) > 0 {
+					continue
+				}
+
+				iter.sstableIters[levelIdx][sstIdx] = newSSTableIterator(sst, txn.Timestamp)
+			}
 		}
 	}
+
+	// Prime the iterators
+	iter.initHeaps()
+
+	return iter
 }
 
-// checkAndScheduleCompactions evaluates all levels for needed compactions
-func (cm *CompactionManager) checkAndScheduleCompactions() {
-	cm.scoreLock.Lock()
-	defer cm.scoreLock.Unlock()
+// initHeaps initializes both min and max heaps with the first elements from each iterator
+func (iter *MergeIterator) initHeaps() {
+	// Clear existing heaps
+	iter.minHeap = make(minHeapItems, 0)
+	iter.maxHeap = make(maxHeapItems, 0)
+	iter.seenKeys = make(map[string]bool)
 
-	// Only check for new compactions after cooldown period
-	if time.Since(cm.lastCompaction) < CompactionCooldownPeriod {
-		return
+	// Add first items from memtable iterator
+	key, value, ts, ok := iter.memtableIter.Next()
+	if ok {
+		item := &iteratorHeapItem{
+			key:       key,
+			value:     value,
+			timestamp: ts,
+			source:    0, // Memtable source
+			sourceIdx: 0,
+		}
+		heap.Push(&iter.minHeap, item)
+		heap.Push(&iter.maxHeap, item)
 	}
 
-	levels := cm.db.levels.Load()
-	if levels == nil {
-		return
-	}
-
-	// Evaluate each level for compaction
-	for i, level := range *levels {
-		// Skip last level
-		if i == len(*levels)-1 {
+	// Add first items from immutable memtable iterators
+	for i, immutableIter := range iter.immutableIters {
+		if immutableIter == nil {
 			continue
 		}
 
-		sstables := level.sstables.Load()
-		if sstables == nil || len(*sstables) == 0 {
+		key, value, ts, ok := immutableIter.Next()
+		if ok {
+			item := &iteratorHeapItem{
+				key:       key,
+				value:     value,
+				timestamp: ts,
+				source:    1, // Immutable memtable source
+				sourceIdx: i,
+			}
+			heap.Push(&iter.minHeap, item)
+			heap.Push(&iter.maxHeap, item)
+		}
+	}
+
+	// Add first items from SSTable iterators
+	for levelIdx, levelIters := range iter.sstableIters {
+		for sstIdx, sstIter := range levelIters {
+			if sstIter == nil {
+				continue
+			}
+
+			key, value, ts, ok := sstIter.Next()
+			if ok {
+				item := &iteratorHeapItem{
+					key:       key,
+					value:     value,
+					timestamp: ts,
+					source:    2 + levelIdx, // SSTable source (level + 2)
+					sourceIdx: sstIdx,
+				}
+				heap.Push(&iter.minHeap, item)
+				heap.Push(&iter.maxHeap, item)
+			}
+		}
+	}
+}
+
+// Next returns the next key-value pair in ascending order
+func (iter *MergeIterator) Next() ([]byte, interface{}, bool) {
+	// If we were going backward, we need to reset and reinitialize
+	if iter.lastDirection == -1 {
+		iter.initHeaps()
+	}
+	iter.lastDirection = 1
+
+	// Get items from the min heap until we find one that hasn't been seen
+	// This ensures we only return one version of each key (MVCC)
+	for iter.minHeap.Len() > 0 {
+		item := heap.Pop(&iter.minHeap).(*iteratorHeapItem)
+		keyStr := string(item.key)
+
+		// Skip this key if we've seen it before
+		if iter.seenKeys[keyStr] {
+			// Get the next item from this source to replace what we just popped
+			iter.advanceSourceForward(item.source, item.sourceIdx)
 			continue
 		}
 
-		// Calculate compaction score
-		sizeScore := float64(atomic.LoadInt64(&level.currentSize)) / float64(level.capacity)
-		countScore := float64(len(*sstables)) / float64(CompactionSizeThreshold)
+		// Mark this key as seen
+		iter.seenKeys[keyStr] = true
+		iter.current = item
 
-		// Weight the scores
-		score := sizeScore*CompactionScoreSizeWeight + countScore*CompactionScoreCountWeight
+		// Get the next item from this source to replace what we just popped
+		iter.advanceSourceForward(item.source, item.sourceIdx)
 
-		// Schedule compaction if score exceeds threshold
-		if score > 1.0 {
-			// For lower levels (0-2), use size-tiered compaction
-			if i < 2 {
-				cm.scheduleSizeTieredCompaction(level, i, score)
-			} else {
-				// For higher levels, use leveled compaction
-				cm.scheduleLeveledCompaction(level, i, score)
-			}
-
-			cm.lastCompaction = time.Now()
+		// Check if this key is in our transaction's write set (would override anything from storage)
+		if val, exists := iter.txn.WriteSet[keyStr]; exists {
+			return item.key, val, true
 		}
+
+		// Check if this key is in the delete set
+		if iter.txn.DeleteSet[keyStr] {
+			// This key was deleted in the current transaction, skip it
+			continue
+		}
+
+		return item.key, item.value, true
 	}
 
-	// Sort compaction queue by priority
-	sort.Slice(cm.compactionQueue, func(i, j int) bool {
-		return cm.compactionQueue[i].Priority > cm.compactionQueue[j].Priority
-	})
+	return nil, nil, false
 }
 
-// scheduleSizeTieredCompaction schedules a size-tiered compaction
-func (cm *CompactionManager) scheduleSizeTieredCompaction(level *Level, levelNum int, score float64) {
-	sstables := level.sstables.Load()
-	if len(*sstables) < CompactionSizeThreshold {
-		return
+// Prev returns the previous key-value pair in descending order
+func (iter *MergeIterator) Prev() ([]byte, interface{}, bool) {
+	// If we were going forward, we need to reset and reinitialize
+	if iter.lastDirection == 1 {
+		iter.initHeaps()
 	}
+	iter.lastDirection = -1
 
-	// Sort SSTables by size for size-tiered compaction
-	sortedTables := make([]*SSTable, len(*sstables))
-	copy(sortedTables, *sstables)
+	// Get items from the max heap until we find one that hasn't been seen
+	for iter.maxHeap.Len() > 0 {
+		item := heap.Pop(&iter.maxHeap).(*iteratorHeapItem)
+		keyStr := string(item.key)
 
-	sort.Slice(sortedTables, func(i, j int) bool {
-		return sortedTables[i].Size < sortedTables[j].Size
-	})
-
-	// Find similar-sized SSTables
-	var selectedTables []*SSTable
-
-	// Select up to CompactionBatchSize tables with similar size
-	for i := 0; i < len(sortedTables); {
-		size := sortedTables[i].Size
-		similarSized := []*SSTable{sortedTables[i]}
-
-		j := i + 1
-		for j < len(sortedTables) && float64(sortedTables[j].Size)/float64(size) <= 1.5 && len(similarSized) < CompactionBatchSize {
-			similarSized = append(similarSized, sortedTables[j])
-			j++
+		// Skip this key if we've seen it before
+		if iter.seenKeys[keyStr] {
+			// Get the previous item from this source to replace what we just popped
+			iter.advanceSourceBackward(item.source, item.sourceIdx)
+			continue
 		}
 
-		// If we found enough similar-sized tables, select them
-		if len(similarSized) >= 2 {
-			selectedTables = similarSized
-			break
+		// Mark this key as seen
+		iter.seenKeys[keyStr] = true
+		iter.current = item
+
+		// Get the previous item from this source to replace what we just popped
+		iter.advanceSourceBackward(item.source, item.sourceIdx)
+
+		// Check if this key is in our transaction's write set (would override anything from storage)
+		if val, exists := iter.txn.WriteSet[keyStr]; exists {
+			return item.key, val, true
 		}
 
-		i = j
+		// Check if this key is in the delete set
+		if iter.txn.DeleteSet[keyStr] {
+			// This key was deleted in the current transaction, skip it
+			continue
+		}
+
+		return item.key, item.value, true
 	}
 
-	// If we couldn't find similar-sized tables, just take the smallest ones
-	if len(selectedTables) < 2 && len(sortedTables) >= 2 {
-		selectedTables = sortedTables[:min(CompactionBatchSize, len(sortedTables))]
-	}
-
-	if len(selectedTables) >= 2 {
-		cm.compactionQueue = append(cm.compactionQueue, &CompactionJob{
-			Level:       levelNum,
-			Priority:    score,
-			SSTables:    selectedTables,
-			TargetLevel: levelNum + 1,
-			InProgress:  false,
-		})
-	}
+	return nil, nil, false
 }
 
-// scheduleLeveledCompaction schedules a leveled compaction
-func (cm *CompactionManager) scheduleLeveledCompaction(level *Level, levelNum int, score float64) {
-	sstables := level.sstables.Load()
-	if sstables == nil || len(*sstables) == 0 {
-		return
-	}
+// advanceSourceForward advances the specified source and adds the next item to the min heap
+func (iter *MergeIterator) advanceSourceForward(source int, sourceIdx int) {
+	var key []byte
+	var value interface{}
+	var ts int64
+	var ok bool
 
-	// For leveled compaction, pick the oldest SSTable
-	// (often this would be picking by smallest key range, but we'll use oldest for simplicity)
-	oldestTable := (*sstables)[0]
-	for _, table := range *sstables {
-		if table.Id < oldestTable.Id {
-			oldestTable = table
+	// Get the next item from the appropriate source
+	if source == 0 {
+		// Memtable
+		key, value, ts, ok = iter.memtableIter.Next()
+	} else if source == 1 {
+		// Immutable memtable
+		if sourceIdx < len(iter.immutableIters) && iter.immutableIters[sourceIdx] != nil {
+			key, value, ts, ok = iter.immutableIters[sourceIdx].Next()
 		}
-	}
-
-	// Find overlapping SSTables in the next level
-	nextLevelNum := levelNum + 1
-	if nextLevelNum >= len(*cm.db.levels.Load()) {
-		return
-	}
-
-	nextLevel := (*cm.db.levels.Load())[nextLevelNum]
-	nextLevelTables := nextLevel.sstables.Load()
-	if nextLevelTables == nil {
-		// No tables in next level, just move the table down
-		cm.compactionQueue = append(cm.compactionQueue, &CompactionJob{
-			Level:       levelNum,
-			Priority:    score,
-			SSTables:    []*SSTable{oldestTable},
-			TargetLevel: nextLevelNum,
-			InProgress:  false,
-		})
-		return
-	}
-
-	// Find overlapping tables in next level
-	var overlappingTables []*SSTable
-	for _, table := range *nextLevelTables {
-		if bytes.Compare(table.Max, oldestTable.Min) >= 0 && bytes.Compare(table.Min, oldestTable.Max) <= 0 {
-			overlappingTables = append(overlappingTables, table)
-		}
-	}
-
-	// Create compaction job with selected table and overlapping tables
-	selectedTables := []*SSTable{oldestTable}
-	selectedTables = append(selectedTables, overlappingTables...)
-
-	cm.compactionQueue = append(cm.compactionQueue, &CompactionJob{
-		Level:       levelNum,
-		Priority:    score,
-		SSTables:    selectedTables,
-		TargetLevel: nextLevelNum,
-		InProgress:  false,
-	})
-}
-
-// executeCompactions processes pending compaction jobs
-func (cm *CompactionManager) executeCompactions() {
-	// Skip if we've reached max concurrency
-	if atomic.LoadInt32(&cm.activeJobs) >= int32(cm.maxConcurrency) {
-		return
-	}
-
-	// Find the highest priority non-in-progress job
-	var selectedJob *CompactionJob
-	var selectedIdx int
-
-	for i, job := range cm.compactionQueue {
-		if !job.InProgress {
-			selectedJob = job
-			selectedIdx = i
-			break
-		}
-	}
-
-	if selectedJob == nil {
-		return
-	}
-
-	// Mark the job as in progress
-	selectedJob.InProgress = true
-	atomic.AddInt32(&cm.activeJobs, 1)
-
-	// Execute the compaction in a goroutine
-	go func(job *CompactionJob, idx int) {
-		defer func() {
-			atomic.AddInt32(&cm.activeJobs, -1)
-
-			// Remove job from queue when done
-			cm.scoreLock.Lock()
-			defer cm.scoreLock.Unlock()
-
-			// Only remove if it's still in the queue at the same position
-			if idx < len(cm.compactionQueue) && cm.compactionQueue[idx] == job {
-				cm.compactionQueue = append(cm.compactionQueue[:idx], cm.compactionQueue[idx+1:]...)
-			}
-		}()
-
-		// Execute the actual compaction
-		err := cm.db.compactSSTables(job.SSTables, job.Level+1, job.TargetLevel)
-		if err != nil {
-			log.Printf("Failed to compact SSTables: %v", err)
-		}
-	}(selectedJob, selectedIdx)
-}
-
-// compactSSTables performs the actual compaction of SSTables
-func (db *DB) compactSSTables(sstables []*SSTable, sourceLevel, targetLevel int) error {
-	if len(sstables) == 0 {
-		return nil
-	}
-
-	log.Printf("Starting compaction: %d SSTables from level %d to level %d",
-		len(sstables), sourceLevel, targetLevel)
-
-	// Create a new SSTable for the target level
-	newSSTable := &SSTable{
-		Id:    db.idGenerator.NextID(),
-		db:    db,
-		Level: targetLevel,
-	}
-
-	// Find min and max keys across all input tables
-	newSSTable.Min = sstables[0].Min
-	newSSTable.Max = sstables[0].Max
-
-	for _, table := range sstables {
-		if bytes.Compare(table.Min, newSSTable.Min) < 0 {
-			newSSTable.Min = table.Min
-		}
-		if bytes.Compare(table.Max, newSSTable.Max) > 0 {
-			newSSTable.Max = table.Max
-		}
-
-		// Mark table as being merged to prevent concurrent access
-		atomic.StoreInt32(&table.isMerging, 1)
-	}
-
-	// Create new SSTable files for the compacted result
-	klogPath := fmt.Sprintf("%s%s%d%s%s%d%s", db.opts.Directory, LevelPrefix, targetLevel,
-		string(os.PathSeparator), SSTablePrefix, newSSTable.Id, KLogExtension)
-	vlogPath := fmt.Sprintf("%s%s%d%s%s%d%s", db.opts.Directory, LevelPrefix, targetLevel,
-		string(os.PathSeparator), SSTablePrefix, newSSTable.Id, VLogExtension)
-
-	klogBm, err := blockmanager.Open(klogPath, os.O_RDWR|os.O_CREATE, 0666,
-		blockmanager.SyncOption(db.opts.SyncOption))
-	if err != nil {
-		return fmt.Errorf("failed to open KLog block manager: %w", err)
-	}
-
-	vlogBm, err := blockmanager.Open(vlogPath, os.O_RDWR|os.O_CREATE, 0666,
-		blockmanager.SyncOption(db.opts.SyncOption))
-	if err != nil {
-		return fmt.Errorf("failed to open VLog block manager: %w", err)
-	}
-
-	// Merge the SSTables
-	err = db.mergeSSTables(sstables, klogBm, vlogBm, newSSTable)
-	if err != nil {
-		// Clean up on error
-		os.Remove(klogPath)
-		os.Remove(vlogPath)
-		return fmt.Errorf("failed to merge SSTables: %w", err)
-	}
-
-	// Add the new SSTable to the target level
-	targetLevelPtr := (*db.levels.Load())[targetLevel]
-	currSSTables := targetLevelPtr.sstables.Load()
-
-	var newSSTables []*SSTable
-	if currSSTables != nil {
-		newSSTables = make([]*SSTable, len(*currSSTables)+1)
-		copy(newSSTables, *currSSTables)
-		newSSTables[len(*currSSTables)] = newSSTable
 	} else {
-		newSSTables = []*SSTable{newSSTable}
-	}
-
-	targetLevelPtr.sstables.Store(&newSSTables)
-
-	// Update the level size
-	atomic.AddInt64(&targetLevelPtr.currentSize, newSSTable.Size)
-
-	// Remove the original SSTables from the source level
-	if sourceLevel != targetLevel {
-		sourceLevelPtr := (*db.levels.Load())[sourceLevel]
-		currentSSTables := sourceLevelPtr.sstables.Load()
-
-		if currentSSTables != nil {
-			// Create a map for fast lookup of SSTables to remove
-			toRemove := make(map[int64]bool)
-			for _, table := range sstables {
-				toRemove[table.Id] = true
-			}
-
-			// Filter out the SSTables that were merged
-			remainingSSTables := make([]*SSTable, 0, len(*currentSSTables))
-			for _, table := range *currentSSTables {
-				if !toRemove[table.Id] {
-					remainingSSTables = append(remainingSSTables, table)
-				} else {
-					// Update level size
-					atomic.AddInt64(&sourceLevelPtr.currentSize, -table.Size)
-				}
-			}
-
-			sourceLevelPtr.sstables.Store(&remainingSSTables)
+		// SSTable
+		levelIdx := source - 2
+		if levelIdx < len(iter.sstableIters) &&
+			sourceIdx < len(iter.sstableIters[levelIdx]) &&
+			iter.sstableIters[levelIdx][sourceIdx] != nil {
+			key, value, ts, ok = iter.sstableIters[levelIdx][sourceIdx].Next()
 		}
 	}
 
-	// Add KLog and VLog managers to LRU cache
-	db.lru.Put(klogPath, klogBm)
-	db.lru.Put(vlogPath, vlogBm)
-
-	// Clean up the old SSTable files (asynchronously to avoid blocking)
-	go func() {
-		for _, table := range sstables {
-			oldKlogPath := fmt.Sprintf("%s%s%d%s%s%d%s", db.opts.Directory, LevelPrefix, sourceLevel,
-				string(os.PathSeparator), SSTablePrefix, table.Id, KLogExtension)
-			oldVlogPath := fmt.Sprintf("%s%s%d%s%s%d%s", db.opts.Directory, LevelPrefix, sourceLevel,
-				string(os.PathSeparator), SSTablePrefix, table.Id, VLogExtension)
-
-			// Wait a bit before deleting to ensure no ongoing reads
-			time.Sleep(100 * time.Millisecond)
-
-			// Remove from LRU first
-			if bm, ok := db.lru.Get(oldKlogPath); ok {
-				if bm, ok := bm.(*blockmanager.BlockManager); ok {
-					bm.Close()
-				}
-				db.lru.Delete(oldKlogPath)
-			}
-
-			if bm, ok := db.lru.Get(oldVlogPath); ok {
-				if bm, ok := bm.(*blockmanager.BlockManager); ok {
-					bm.Close()
-				}
-				db.lru.Delete(oldVlogPath)
-			}
-
-			// Delete the files
-			os.Remove(oldKlogPath)
-			os.Remove(oldVlogPath)
+	// If we got a valid item, add it to the min heap
+	if ok {
+		item := &iteratorHeapItem{
+			key:       key,
+			value:     value,
+			timestamp: ts,
+			source:    source,
+			sourceIdx: sourceIdx,
 		}
-	}()
-
-	log.Printf("Completed compaction: %d SSTables from level %d to level %d, new table size: %d",
-		len(sstables), sourceLevel, targetLevel, newSSTable.Size)
-
-	return nil
+		heap.Push(&iter.minHeap, item)
+	}
 }
 
-// mergeSSTables merges multiple SSTables into a new SSTable
-func (db *DB) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *blockmanager.BlockManager, newSSTable *SSTable) error {
-	// Write metadata as first block
-	sstableData, err := newSSTable.serializeSSTable()
-	if err != nil {
-		return fmt.Errorf("failed to serialize SSTable: %w", err)
-	}
+// advanceSourceBackward advances the specified source backward and adds the previous item to the max heap
+func (iter *MergeIterator) advanceSourceBackward(source int, sourceIdx int) {
+	var key []byte
+	var value interface{}
+	var ts int64
+	var ok bool
 
-	_, err = klogBm.Append(sstableData)
-	if err != nil {
-		return fmt.Errorf("failed to write KLog: %w", err)
-	}
-
-	// Create a merged iterator over all input SSTables
-	iterators := make([]*SSTIterator, len(sstables))
-	for i, table := range sstables {
-		iterators[i] = newSSTIterator(table)
-	}
-
-	mergeIter := newMergeIterator(iterators)
-
-	// Create a block set for the merged data
-	blockset := &BlockSet{
-		Entries: make([]*KLogEntry, 0),
-		Size:    0,
-	}
-
-	entryCount := 0
-	var totalSize int64 = 0
-
-	// Iterate through all entries and merge them
-	for {
-		key, value, ts, valid := mergeIter.Next()
-		if !valid {
-			break
+	// Get the previous item from the appropriate source
+	if source == 0 {
+		// Memtable
+		key, value, ts, ok = iter.memtableIter.Prev()
+	} else if source == 1 {
+		// Immutable memtable
+		if sourceIdx < len(iter.immutableIters) && iter.immutableIters[sourceIdx] != nil {
+			key, value, ts, ok = iter.immutableIters[sourceIdx].Prev()
 		}
-
-		// Write the value to VLog
-		id, err := vlogBm.Append(value.([]byte))
-		if err != nil {
-			return fmt.Errorf("failed to write VLog: %w", err)
-		}
-
-		klogEntry := &KLogEntry{
-			Key:          key,
-			Timestamp:    ts,
-			ValueBlockID: id,
-		}
-
-		blockset.Entries = append(blockset.Entries, klogEntry)
-		entrySize := int64(len(key) + len(value.([]byte)))
-		blockset.Size += entrySize
-		totalSize += entrySize
-		entryCount++
-
-		// Flush the block set if it reaches the threshold
-		if blockset.Size >= db.opts.BlockSetSize {
-			blocksetData, err := blockset.serializeBlockSet()
-			if err != nil {
-				return fmt.Errorf("failed to serialize BlockSet: %w", err)
-			}
-
-			_, err = klogBm.Append(blocksetData)
-			if err != nil {
-				return fmt.Errorf("failed to write BlockSet to KLog: %w", err)
-			}
-
-			blockset.Entries = make([]*KLogEntry, 0)
-			blockset.Size = 0
+	} else {
+		// SSTable
+		levelIdx := source - 2
+		if levelIdx < len(iter.sstableIters) &&
+			sourceIdx < len(iter.sstableIters[levelIdx]) &&
+			iter.sstableIters[levelIdx][sourceIdx] != nil {
+			key, value, ts, ok = iter.sstableIters[levelIdx][sourceIdx].Prev()
 		}
 	}
 
-	// Write any remaining entries
-	if len(blockset.Entries) > 0 {
-		blocksetData, err := blockset.serializeBlockSet()
-		if err != nil {
-			return fmt.Errorf("failed to serialize BlockSet: %w", err)
+	// If we got a valid item, add it to the max heap
+	if ok {
+		item := &iteratorHeapItem{
+			key:       key,
+			value:     value,
+			timestamp: ts,
+			source:    source,
+			sourceIdx: sourceIdx,
 		}
-
-		_, err = klogBm.Append(blocksetData)
-		if err != nil {
-			return fmt.Errorf("failed to write BlockSet to KLog: %w", err)
-		}
+		heap.Push(&iter.maxHeap, item)
 	}
-
-	// Update the SSTable metadata
-	newSSTable.Size = totalSize
-	newSSTable.EntryCount = entryCount
-
-	return nil
 }
 
-// Helper iterators for compaction
+// Seek positions the iterator at the specified key or the next key if exact match not found
+func (iter *MergeIterator) Seek(key []byte) ([]byte, interface{}, bool) {
+	// Reinitialize with the new start key
+	iter.memtableIter = iter.txn.db.memtable.Load().(*Memtable).skiplist.NewIterator(key, iter.txn.Timestamp)
 
-// SSTIterator allows iteration over an SSTable
-type SSTIterator struct {
-	sstable    *SSTable
-	klogIter   *blockmanager.Iterator
-	blockset   *BlockSet
-	blockIndex int
-	eof        bool
+	// Reinitialize immutable iterators
+	for i, memt := range iter.txn.db.immutable.List() {
+		if memt == nil {
+			continue
+		}
+		iter.immutableIters[i] = memt.(*Memtable).skiplist.NewIterator(key, iter.txn.Timestamp)
+	}
+
+	// Reinitialize SSTable iterators
+	levels := iter.txn.db.levels.Load()
+	if levels != nil {
+		for levelIdx, level := range *levels {
+			sstables := level.sstables.Load()
+			if sstables == nil {
+				continue
+			}
+
+			for sstIdx, sst := range *sstables {
+				// Skip SSTables that don't contain the key range we're looking for
+				if bytes.Compare(key, sst.Min) < 0 || bytes.Compare(key, sst.Max) > 0 {
+					continue
+				}
+
+				if len(iter.sstableIters) > levelIdx && len(iter.sstableIters[levelIdx]) > sstIdx {
+					iter.sstableIters[levelIdx][sstIdx] = newSSTableIterator(sst, iter.txn.Timestamp)
+				}
+			}
+		}
+	}
+
+	// Reset and prime the heaps
+	iter.initHeaps()
+	iter.lastDirection = 1 // Set direction to forward
+
+	// Return the first item
+	return iter.Next()
 }
 
-// newSSTIterator creates a new iterator over an SSTable
-func newSSTIterator(sst *SSTable) *SSTIterator {
-	// Get the KLog block manager
-	klogPath := fmt.Sprintf("%s%s%d%s%s%d%s", sst.db.opts.Directory, LevelPrefix, sst.Level,
-		string(os.PathSeparator), SSTablePrefix, sst.Id, KLogExtension)
+// newSSTableIterator creates a new iterator for an SSTable
+func newSSTableIterator(sst *SSTable, readTs int64) *SSTableIterator {
+	// Create KLog and VLog paths
+	klogPath := sst.db.getSSTablKLogPath(sst)
+	vlogPath := sst.db.getSSTablVLogPath(sst)
 
+	// Get or open the KLog block manager
 	var klogBm *blockmanager.BlockManager
 	var err error
 
@@ -1660,255 +1620,542 @@ func newSSTIterator(sst *SSTable) *SSTIterator {
 		klogBm, err = blockmanager.Open(klogPath, os.O_RDONLY, 0666,
 			blockmanager.SyncOption(sst.db.opts.SyncOption))
 		if err != nil {
-			//log.Printf("Failed to open KLog block manager: %v", err)
-			return &SSTIterator{eof: true}
+			return nil
 		}
 		sst.db.lru.Put(klogPath, klogBm)
 	}
 
-	iter := &SSTIterator{
-		sstable:    sst,
-		klogIter:   klogBm.Iterator(),
-		blockIndex: -1,
-		eof:        false,
+	// Get or open the VLog block manager
+	var vlogBm *blockmanager.BlockManager
+
+	if v, ok := sst.db.lru.Get(vlogPath); ok {
+		vlogBm = v.(*blockmanager.BlockManager)
+	} else {
+		vlogBm, err = blockmanager.Open(vlogPath, os.O_RDONLY, 0666,
+			blockmanager.SyncOption(sst.db.opts.SyncOption))
+		if err != nil {
+			return nil
+		}
+		sst.db.lru.Put(vlogPath, vlogBm)
 	}
 
-	// Skip the first block (metadata)
-	_, _, err = iter.klogIter.Next()
-	if err != nil {
-		iter.eof = true
-		return iter
+	return &SSTableIterator{
+		sstable: sst,
+		readTs:  readTs,
+		db:      sst.db,
+		klogBm:  klogBm,
+		vlogBm:  vlogBm,
+		history: make([]blockIterState, 0),
 	}
-
-	// Load the first block set
-	err = iter.loadNextBlockSet()
-	if err != nil {
-		iter.eof = true
-	}
-
-	return iter
 }
 
-// loadNextBlockSet loads the next block set from the KLog
-func (iter *SSTIterator) loadNextBlockSet() error {
-	data, _, err := iter.klogIter.Next()
-	if err != nil {
-		return err
+// Next returns the next key-value pair from the SSTable
+func (iter *SSTableIterator) Next() ([]byte, interface{}, int64, bool) {
+	// If we've finished, no more items
+	if iter.finished {
+		return nil, nil, 0, false
 	}
 
+	// If we're not initialized, get the first block of data
+	if !iter.initialized {
+		if !iter.initializeForward() {
+			return nil, nil, 0, false
+		}
+	}
+
+	// If we were previously going backward, we need to handle that special case
+	if len(iter.history) > 0 {
+		// Pop the last history item and return it
+		lastState := iter.history[len(iter.history)-1]
+		iter.history = iter.history[:len(iter.history)-1]
+
+		// Update the current state
+		iter.currentKey = lastState.key
+
+		return lastState.key, lastState.value, lastState.timestamp, true
+	}
+
+	// Keep looking until we find a valid entry or exhaust the SSTable
+	for {
+		// If we've reached the end of the current block set, load the next one
+		if iter.currentSet == nil || iter.currentIdx >= len(iter.currentSet.Entries) {
+			if !iter.loadNextBlockSet() {
+				iter.finished = true
+				return nil, nil, 0, false
+			}
+			iter.currentIdx = 0
+		}
+
+		// Get the current entry
+		entry := iter.currentSet.Entries[iter.currentIdx]
+		iter.currentIdx++
+
+		// Skip entries with timestamps after our read timestamp (MVCC)
+		if entry.Timestamp > iter.readTs {
+			continue
+		}
+
+		// Read the value from VLog
+		value, _, err := iter.vlogBm.Read(entry.ValueBlockID)
+		if err != nil {
+			continue
+		}
+
+		// Update current key and save state to history for bidirectional traversal
+		iter.currentKey = entry.Key
+		iter.history = append(iter.history, blockIterState{
+			key:       entry.Key,
+			timestamp: entry.Timestamp,
+			value:     value,
+		})
+
+		return entry.Key, value, entry.Timestamp, true
+	}
+}
+
+// Prev returns the previous key-value pair from the SSTable
+func (iter *SSTableIterator) Prev() ([]byte, interface{}, int64, bool) {
+	// If we're not initialized, initialize backward
+	if !iter.initialized {
+		if !iter.initializeBackward() {
+			return nil, nil, 0, false
+		}
+	}
+
+	// If we have history items, use the most recent one
+	if len(iter.history) > 0 {
+		lastState := iter.history[len(iter.history)-1]
+		iter.history = iter.history[:len(iter.history)-1]
+
+		// Update the current state
+		iter.currentKey = lastState.key
+
+		return lastState.key, lastState.value, lastState.timestamp, true
+	}
+
+	// If we don't have history and we're going backward, we need to build it
+	// This is complex and requires scanning the SSTable from the beginning up to
+	// the current position, which is inefficient but necessary for bidirectional traversal
+	// in SSTable format which is inherently forward-oriented
+
+	// Reset to beginning and build history
+	iter.initialized = false
+	if !iter.buildHistoryUntil(iter.currentKey) {
+		return nil, nil, 0, false
+	}
+
+	// Now try again with rebuilt history
+	return iter.Prev()
+}
+
+// initializeForward initializes the iterator for forward traversal
+func (iter *SSTableIterator) initializeForward() bool {
+	// Skip the first block which contains SSTable metadata
+	blockData, _, err := iter.klogBm.Read(1)
+	if err != nil {
+		return false
+	}
+
+	// Get the second block which should be the first block set
+	blockData, _, err = iter.klogBm.Read(2)
+	if err != nil {
+		return false
+	}
+
+	// Deserialize the block set
 	var blockset BlockSet
-	err = blockset.deserializeBlockSet(data)
+	err = blockset.deserializeBlockSet(blockData)
 	if err != nil {
-		return err
+		return false
 	}
 
-	iter.blockset = &blockset
-	iter.blockIndex = 0
+	iter.currentSet = &blockset
+	iter.currentIdx = 0
+	iter.initialized = true
+
+	return true
+}
+
+// initializeBackward initializes the iterator for backward traversal
+// This is more complex as we need to find the last valid entry
+func (iter *SSTableIterator) initializeBackward() bool {
+	// We need to read all blocks and build history from the beginning
+	// then we'll traverse from the end
+
+	// First, build complete history
+	if !iter.buildCompleteHistory() {
+		return false
+	}
+
+	// Mark as initialized
+	iter.initialized = true
+
+	// Sort history by key in descending order
+	sort.Slice(iter.history, func(i, j int) bool {
+		// First by key in descending order
+		cmp := bytes.Compare(iter.history[i].key, iter.history[j].key)
+		if cmp != 0 {
+			return cmp > 0 // Note: > for descending
+		}
+		// For same key, newer timestamps first
+		return iter.history[i].timestamp > iter.history[j].timestamp
+	})
+
+	// Deduplicate history to keep only the newest version of each key
+	if len(iter.history) > 0 {
+		dedupedHistory := make([]blockIterState, 0, len(iter.history))
+		lastKey := iter.history[0].key
+		dedupedHistory = append(dedupedHistory, iter.history[0])
+
+		for i := 1; i < len(iter.history); i++ {
+			if !bytes.Equal(iter.history[i].key, lastKey) {
+				dedupedHistory = append(dedupedHistory, iter.history[i])
+				lastKey = iter.history[i].key
+			}
+		}
+
+		iter.history = dedupedHistory
+	}
+
+	return len(iter.history) > 0
+}
+
+// buildCompleteHistory reads all valid entries from the SSTable and builds complete history
+func (iter *SSTableIterator) buildCompleteHistory() bool {
+	// Skip the first block which contains SSTable metadata
+	_, _, err := iter.klogBm.Read(1)
+	if err != nil {
+		return false
+	}
+
+	// Read all block sets
+	blockIter := iter.klogBm.Iterator()
+
+	// Skip first block (metadata)
+	_, _, err = blockIter.Next()
+	if err != nil {
+		return false
+	}
+
+	// Process all blocks
+	for {
+		blockData, _, err := blockIter.Next()
+		if err != nil {
+			break // End of blocks
+		}
+
+		// Deserialize the block set
+		var blockset BlockSet
+		err = blockset.deserializeBlockSet(blockData)
+		if err != nil {
+			continue
+		}
+
+		// Process all entries in the block set
+		for _, entry := range blockset.Entries {
+			// Skip entries with timestamps after our read timestamp (MVCC)
+			if entry.Timestamp > iter.readTs {
+				continue
+			}
+
+			// Read the value from VLog
+			value, _, err := iter.vlogBm.Read(entry.ValueBlockID)
+			if err != nil {
+				continue
+			}
+
+			// Add to history
+			iter.history = append(iter.history, blockIterState{
+				key:       entry.Key,
+				timestamp: entry.Timestamp,
+				value:     value,
+			})
+		}
+	}
+
+	return true
+}
+
+// buildHistoryUntil builds history up to the specified key
+func (iter *SSTableIterator) buildHistoryUntil(targetKey []byte) bool {
+	// Similar to buildCompleteHistory but stops when it reaches targetKey
+
+	// Skip the first block which contains SSTable metadata
+	_, _, err := iter.klogBm.Read(1)
+	if err != nil {
+		return false
+	}
+
+	// Read all block sets
+	blockIter := iter.klogBm.Iterator()
+
+	// Skip first block (metadata)
+	_, _, err = blockIter.Next()
+	if err != nil {
+		return false
+	}
+
+	// Process all blocks
+	for {
+		blockData, _, err := blockIter.Next()
+		if err != nil {
+			break // End of blocks
+		}
+
+		// Deserialize the block set
+		var blockset BlockSet
+		err = blockset.deserializeBlockSet(blockData)
+		if err != nil {
+			continue
+		}
+
+		// Process all entries in the block set
+		for _, entry := range blockset.Entries {
+			// Stop if we've reached our target key
+			if bytes.Compare(entry.Key, targetKey) >= 0 {
+				// Sort history and deduplicate before returning
+				sort.Slice(iter.history, func(i, j int) bool {
+					// First by key in descending order
+					cmp := bytes.Compare(iter.history[i].key, iter.history[j].key)
+					if cmp != 0 {
+						return cmp > 0 // Note: > for descending
+					}
+					// For same key, newer timestamps first
+					return iter.history[i].timestamp > iter.history[j].timestamp
+				})
+				return true
+			}
+
+			// Skip entries with timestamps after our read timestamp (MVCC)
+			if entry.Timestamp > iter.readTs {
+				continue
+			}
+
+			// Read the value from VLog
+			value, _, err := iter.vlogBm.Read(entry.ValueBlockID)
+			if err != nil {
+				continue
+			}
+
+			// Add to history
+			iter.history = append(iter.history, blockIterState{
+				key:       entry.Key,
+				timestamp: entry.Timestamp,
+				value:     value,
+			})
+		}
+	}
+
+	// If we get here, we've read all blocks
+	// Sort history in descending order for Prev
+	sort.Slice(iter.history, func(i, j int) bool {
+		// First by key in descending order
+		cmp := bytes.Compare(iter.history[i].key, iter.history[j].key)
+		if cmp != 0 {
+			return cmp > 0 // Note: > for descending
+		}
+		// For same key, newer timestamps first
+		return iter.history[i].timestamp > iter.history[j].timestamp
+	})
+
+	return len(iter.history) > 0
+}
+
+// loadNextBlockSet loads the next block set from the SSTable
+func (iter *SSTableIterator) loadNextBlockSet() bool {
+	if iter.currentSet == nil {
+		// First time loading, get the first data block (skip metadata)
+		blockData, _, err := iter.klogBm.Read(2)
+		if err != nil {
+			return false
+		}
+
+		var blockset BlockSet
+		err = blockset.deserializeBlockSet(blockData)
+		if err != nil {
+			return false
+		}
+
+		iter.currentSet = &blockset
+		return true
+	}
+
+	// Get the next block in sequence
+	blockIter := iter.klogBm.Iterator()
+
+	// Skip blocks until we find where we were
+	_, _, err := blockIter.Next() // Skip metadata
+	if err != nil {
+		return false
+	}
+
+	foundCurrent := false
+	var blockset BlockSet
+
+	for !foundCurrent {
+		blockData, _, err := blockIter.Next()
+		if err != nil {
+			return false
+		}
+
+		err = blockset.deserializeBlockSet(blockData)
+		if err != nil {
+			continue
+		}
+
+		// Compare with current block set to see if we found it
+		if len(blockset.Entries) > 0 && len(iter.currentSet.Entries) > 0 {
+			if bytes.Equal(blockset.Entries[0].Key, iter.currentSet.Entries[0].Key) {
+				foundCurrent = true
+			}
+		}
+	}
+
+	// Now get the next block
+	blockData, _, err := blockIter.Next()
+	if err != nil {
+		return false
+	}
+
+	err = blockset.deserializeBlockSet(blockData)
+	if err != nil {
+		return false
+	}
+
+	iter.currentSet = &blockset
+	return true
+}
+
+// getSSTablKLogPath and getSSTablVLogPath are helper methods for SSTable paths
+func (db *DB) getSSTablKLogPath(sst *SSTable) string {
+	return db.opts.Directory + LevelPrefix + strconv.Itoa(sst.Level) +
+		string(os.PathSeparator) + SSTablePrefix + strconv.FormatInt(sst.Id, 10) + KLogExtension
+}
+
+func (db *DB) getSSTablVLogPath(sst *SSTable) string {
+	return db.opts.Directory + LevelPrefix + strconv.Itoa(sst.Level) +
+		string(os.PathSeparator) + SSTablePrefix + strconv.FormatInt(sst.Id, 10) + VLogExtension
+}
+
+// Transaction Iterator Methods
+
+// NewIterator creates a bidirectional iterator for the transaction
+func (txn *Txn) NewIterator(startKey []byte) *MergeIterator {
+	return txn.NewMergeIterator(startKey)
+}
+
+// GetRange retrieves all key-value pairs in the given key range
+func (txn *Txn) GetRange(startKey, endKey []byte) (map[string][]byte, error) {
+	result := make(map[string][]byte)
+
+	// Get an iterator starting at the start key
+	iter := txn.NewIterator(startKey)
+
+	// Iterate until we reach the end key or run out of keys
+	for {
+		key, value, ok := iter.Next()
+		if !ok {
+			break
+		}
+
+		// Check if we've gone past the end key
+		if endKey != nil && bytes.Compare(key, endKey) > 0 {
+			break
+		}
+
+		// Add to result
+		result[string(key)] = value.([]byte)
+	}
+
+	return result, nil
+}
+
+// Count returns the number of entries in the given key range
+func (txn *Txn) Count(startKey, endKey []byte) (int, error) {
+	count := 0
+
+	// Get an iterator starting at the start key
+	iter := txn.NewIterator(startKey)
+
+	// Iterate until we reach the end key or run out of keys
+	for {
+		key, _, ok := iter.Next()
+		if !ok {
+			break
+		}
+
+		// Check if we've gone past the end key
+		if endKey != nil && bytes.Compare(key, endKey) > 0 {
+			break
+		}
+
+		count++
+	}
+
+	return count, nil
+}
+
+// Scan executes a function on each key-value pair in the given range
+func (txn *Txn) Scan(startKey, endKey []byte, fn func(key []byte, value []byte) bool) error {
+	// Get an iterator starting at the start key
+	iter := txn.NewIterator(startKey)
+
+	// Iterate until we reach the end key or run out of keys
+	for {
+		key, value, ok := iter.Next()
+		if !ok {
+			break
+		}
+
+		// Check if we've gone past the end key
+		if endKey != nil && bytes.Compare(key, endKey) > 0 {
+			break
+		}
+
+		// Apply the function
+		// If it returns false, stop scanning
+		if !fn(key, value.([]byte)) {
+			break
+		}
+	}
 
 	return nil
 }
 
-// Next returns the next key-value pair from the SSTable
-func (iter *SSTIterator) Next() ([]byte, interface{}, int64, bool) {
-	if iter.eof || iter.blockset == nil {
-		return nil, nil, 0, false
-	}
-
-	// If we've reached the end of the current block set, load the next one
-	if iter.blockIndex >= len(iter.blockset.Entries) {
-		err := iter.loadNextBlockSet()
-		if err != nil {
-			iter.eof = true
-			return nil, nil, 0, false
-		}
-	}
-
-	// Get the current entry
-	entry := iter.blockset.Entries[iter.blockIndex]
-	iter.blockIndex++
-
-	// Get the VLog block manager
-	vlogPath := fmt.Sprintf("%s%s%d%s%s%d%s", iter.sstable.db.opts.Directory, LevelPrefix, iter.sstable.Level,
-		string(os.PathSeparator), SSTablePrefix, iter.sstable.Id, VLogExtension)
-
-	var vlogBm *blockmanager.BlockManager
-	var err error
-
-	if v, ok := iter.sstable.db.lru.Get(vlogPath); ok {
-		vlogBm = v.(*blockmanager.BlockManager)
-	} else {
-		vlogBm, err = blockmanager.Open(vlogPath, os.O_RDONLY, 0666,
-			blockmanager.SyncOption(iter.sstable.db.opts.SyncOption))
-		if err != nil {
-			//log.Printf("Failed to open VLog block manager: %v", err)
-			iter.eof = true
-			return nil, nil, 0, false
-		}
-		iter.sstable.db.lru.Put(vlogPath, vlogBm)
-	}
-
-	// Read the value from VLog
-	value, _, err := vlogBm.Read(entry.ValueBlockID)
-	if err != nil {
-		log.Printf("Failed to read value from VLog: %v", err)
-		iter.eof = true
-		return nil, nil, 0, false
-	}
-
-	return entry.Key, value, entry.Timestamp, true
+// ForEach iterates through all entries in the database
+func (txn *Txn) ForEach(fn func(key []byte, value []byte) bool) error {
+	return txn.Scan(nil, nil, fn)
 }
 
-// MergeIterator merges multiple SSTable iterators
-type MergeIterator struct {
-	iters   []*SSTIterator
-	current []*KeyValueEntry
-}
+// Iterate is a higher-level bidirectional iterator using callbacks
+func (txn *Txn) Iterate(startKey []byte, direction int, fn func(key []byte, value []byte) bool) error {
+	// Get a merge iterator starting at the given key
+	iter := txn.NewIterator(startKey)
 
-// KeyValueEntry represents a key-value entry with timestamp
-type KeyValueEntry struct {
-	Key       []byte
-	Value     interface{}
-	Timestamp int64
-}
+	// Iterate in the specified direction
+	var key []byte
+	var value interface{}
+	var ok bool
 
-// newMergeIterator creates a new merge iterator
-func newMergeIterator(iters []*SSTIterator) *MergeIterator {
-	m := &MergeIterator{
-		iters:   iters,
-		current: make([]*KeyValueEntry, len(iters)),
-	}
+	for {
+		if direction >= 0 {
+			// Forward iteration
+			key, value, ok = iter.Next()
+		} else {
+			// Backward iteration
+			key, value, ok = iter.Prev()
+		}
 
-	// Initialize the current entries
-	for i, iter := range iters {
-		key, value, ts, valid := iter.Next()
-		if valid {
-			m.current[i] = &KeyValueEntry{
-				Key:       key,
-				Value:     value,
-				Timestamp: ts,
-			}
+		if !ok {
+			break
+		}
+
+		// Apply the function
+		// If it returns false, stop iterating
+		if !fn(key, value.([]byte)) {
+			break
 		}
 	}
 
-	return m
-}
-
-// Next returns the next key-value pair in sorted order
-func (m *MergeIterator) Next() ([]byte, interface{}, int64, bool) {
-	// Find the smallest key
-	var smallestIdx = -1
-	var smallestKey []byte
-	var latestTS int64
-
-	for i, entry := range m.current {
-		if entry == nil {
-			continue
-		}
-
-		if smallestIdx == -1 || bytes.Compare(entry.Key, smallestKey) < 0 {
-			smallestIdx = i
-			smallestKey = entry.Key
-			latestTS = entry.Timestamp
-		} else if bytes.Equal(entry.Key, smallestKey) && entry.Timestamp > latestTS {
-			// If keys are equal, take the one with the latest timestamp
-			smallestIdx = i
-			latestTS = entry.Timestamp
-		}
-	}
-
-	if smallestIdx == -1 {
-		return nil, nil, 0, false // No more entries
-	}
-
-	// Get the current smallest entry
-	result := m.current[smallestIdx]
-
-	// Advance the iterator that provided this entry
-	key, value, ts, valid := m.iters[smallestIdx].Next()
-	if valid {
-		m.current[smallestIdx] = &KeyValueEntry{
-			Key:       key,
-			Value:     value,
-			Timestamp: ts,
-		}
-	} else {
-		m.current[smallestIdx] = nil
-	}
-
-	// For keys that match but have lower timestamps, skip them
-	for i, entry := range m.current {
-		if entry != nil && bytes.Equal(entry.Key, result.Key) && entry.Timestamp < result.Timestamp {
-			// Advance this iterator
-			key, value, ts, valid := m.iters[i].Next()
-			if valid {
-				m.current[i] = &KeyValueEntry{
-					Key:       key,
-					Value:     value,
-					Timestamp: ts,
-				}
-			} else {
-				m.current[i] = nil
-			}
-		}
-	}
-
-	return result.Key, result.Value, result.Timestamp, true
-}
-
-// shouldCompact determines if compaction is needed
-func (db *DB) shouldCompact() bool {
-	levels := db.levels.Load()
-	if levels == nil {
-		return false
-	}
-
-	// Check if any level has reached its capacity
-	for i, level := range *levels {
-		if i == len(*levels)-1 {
-			continue // Skip the last level
-		}
-
-		sstables := level.sstables.Load()
-		if sstables == nil {
-			continue
-		}
-
-		// Size-based criteria - if level is above capacity * ratio
-		if atomic.LoadInt64(&level.currentSize) > int64(float64(level.capacity)*CompactionSizeRatio) {
-			return true
-		}
-
-		// Count-based criteria - if level has too many files
-		if len(*sstables) >= CompactionSizeThreshold {
-			return true
-		}
-	}
-
-	return false
-}
-
-// NewSSTableIDGenerator creates a new SSTable ID generator
-func NewSSTableIDGenerator() *SSTableIDGenerator {
-	return &SSTableIDGenerator{
-		lastID: time.Now().UnixNano(),
-	}
-}
-
-// NextID generates the next unique SSTable ID
-func (g *SSTableIDGenerator) NextID() int64 {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	// Get current timestamp
-	ts := time.Now().UnixNano()
-
-	// Ensure monotonicity by using max of current time and last ID + 1
-	if ts <= g.lastID {
-		ts = g.lastID + 1
-	}
-
-	// Update last ID
-	g.lastID = ts
-
-	return ts
+	return nil
 }

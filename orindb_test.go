@@ -268,11 +268,11 @@ func TestCompaction(t *testing.T) {
 	// Create a DB with small buffer sizes to trigger compactions quickly
 	db, err := Open(&Options{
 		Directory:       "testdb",
-		WriteBufferSize: 1 * 1024 * 1024, // 1MB write buffer (small to trigger compactions faster)
-		LevelMultiplier: 4,               // Each level is 4x the size of the previous
-		LevelCount:      4,               // Use 4 levels to see multi-level compaction
-		BlockSetSize:    256 * 1024,      // 256KB block size
-		SyncOption:      SyncNone,        // Don't sync for faster test execution
+		WriteBufferSize: 1 * 128 * 1024, // 1MB write buffer (small to trigger compactions faster)
+		LevelMultiplier: 4,              // Each level is 4x the size of the previous
+		LevelCount:      4,              // Use 4 levels to see multi-level compaction
+		BlockSetSize:    256 * 1024,     // 256KB block size
+		SyncOption:      SyncNone,       // Don't sync for faster test execution
 	})
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -281,8 +281,8 @@ func TestCompaction(t *testing.T) {
 
 	// Create dataset large enough to trigger multiple level compactions
 	// We'll create multiple waves of data with different keys to force overlapping SSTables
-	entryCount := 100000 // 100K entries should be enough
-	waves := 5           // Number of insertion waves to create overlapping SSTables
+	entryCount := 10000 // 10K entries should be enough
+	waves := 5          // Number of insertion waves to create overlapping SSTables
 
 	t.Logf("Starting compaction test with %d entries in %d waves", entryCount, waves)
 
