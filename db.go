@@ -286,6 +286,7 @@ func (db *DB) reinstate() error {
 			wal: &WAL{
 				path: fmt.Sprintf("%s%d%s", db.opts.Directory, time.Now().UnixNano(), WALFileExtension),
 			},
+			db: db,
 		})
 
 		walBm, err := blockmanager.Open(db.memtable.Load().(*Memtable).wal.path, os.O_RDWR|os.O_CREATE, db.opts.Permission, blockmanager.SyncOption(db.opts.SyncOption))
@@ -350,6 +351,7 @@ func (db *DB) reinstate() error {
 		wal: &WAL{
 			path: activeWALPath,
 		},
+		db: db,
 	})
 
 	// Open the active WAL
