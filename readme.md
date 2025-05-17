@@ -2,19 +2,19 @@
 OrinDB is a high-performance embedded key-value database written in Go. It incorporates modern database design principles including LSM tree architecture, MVCC (Multi-Version Concurrency Control), and automatic compaction to deliver excellent read/write performance with strong consistency guarantees.
 
 ## Features
-- LSM Tree Architecture optimized for high write throughput
+- LSMT(log-structure-merge-tree) architecture optimized for high write throughput
 - Full non-blocking concurrency for readers and writers
 - Per-transaction WAL logging with recovery and rehydration
 - Version-aware skip list for fast in-memory MVCC access
-- Atomic write path, safe for multi-threaded use
+- Atomic write path, safe for multithreaded use
 - Scalable design with background flushers and compactors
 - Durable and concurrent block storage
 - Atomic LRU for active block manager handles
 - Memtable lifecycle management and snapshot durability
 - Configurable Sync options, None, Partial (background interval), Full
 - MVCC with snapshot isolation (with read timestamp)
-- WAL Ensures durability and crash recovery
-- Automatic background compaction that maintains optimal performance over time
+- WALs ensure durability and crash recovery of state, including active transactions
+- Automatic multi-threaded background compaction that maintains optimal performance over time
 - Full ACID transaction support
 - Bidirectional iteration for efficient data scanning
 
