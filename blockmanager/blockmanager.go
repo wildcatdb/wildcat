@@ -391,6 +391,9 @@ func (bm *BlockManager) allocateBlock() (uint64, error) {
 }
 
 // scanForFreeBlocks scans the file for free blocks and populates the allocation table.
+// scanForFreeBlocks scans the file for free blocks and populates the allocation table.
+// It optimizes by first checking from the end of the file until it finds the first used block
+// or end of chain block, since newly appended blocks are guaranteed to be free.
 func (bm *BlockManager) scanForFreeBlocks() error {
 	// Get file size
 	fileInfo, err := bm.file.Stat()
@@ -408,17 +411,76 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 	dataSize := fileSize - int64(headerSize)
 	blockCount := uint64(dataSize / int64(BlockSize))
 
-	// Create a map to track which blocks are used
-	usedBlocks := make(map[uint64]bool)
-
-	// Create a set to track blocks that are part of chains
-	chainBlocks := make(map[uint64]bool)
+	// Reset allocation table
+	bm.allocationTable = stack.New()
 
 	blockHeaderSize := binary.Size(BlockHeader{})
 	headerBuf := make([]byte, blockHeaderSize)
 
-	// First pass: find all blocks with data and identify chain blocks
-	for i := uint64(1); i < blockCount; i++ { // Start from 1 to skip block ID 0
+	// First pass: scan from the end until we find a used block or end of chain block
+	var firstNonFreeBlockFromEnd uint64 = blockCount
+	for i := blockCount - 1; i >= 1; i-- { // Start from the end, go backward to block ID 1
+		// Calculate position for this block
+		position := int64(headerSize) + int64(i)*int64(BlockSize)
+
+		// Read the block header using pread
+		_, err := pread(bm.fd, headerBuf, position)
+		if err != nil {
+			return err
+		}
+
+		// Decode the header
+		var blockHeader BlockHeader
+		if err := binary.Read(bytes.NewReader(headerBuf), binary.LittleEndian, &blockHeader); err != nil {
+			return err
+		}
+
+		// Verify the CRC of the header
+		expectedCRC := blockHeader.CRC
+		blockHeader.CRC = 0
+		headerWithoutCRC := new(bytes.Buffer)
+		if err := binary.Write(headerWithoutCRC, binary.LittleEndian, &blockHeader); err != nil {
+			return err
+		}
+		calculatedCRC := crc32.ChecksumIEEE(headerWithoutCRC.Bytes())
+
+		// If CRC is invalid, continue to the next block
+		if expectedCRC != calculatedCRC {
+			continue
+		}
+
+		// A block is considered non-free if:
+		// 1. It has data (DataSize > 0)
+		// 2. It's marked as an end of chain (NextBlock == EndOfChain and DataSize > 0)
+		//    Note: Free blocks might also have NextBlock == EndOfChain but they have DataSize == 0
+		if blockHeader.DataSize > 0 {
+			firstNonFreeBlockFromEnd = i
+			break
+		}
+
+		// Also check if this block is referenced by any other block
+		// (We'll do this in a second pass)
+	}
+
+	// All blocks from firstNonFreeBlockFromEnd+1 to blockCount-1 are free
+	// Add them directly to the allocation table (in reverse order to maintain LIFO ordering)
+	for i := blockCount - 1; i > firstNonFreeBlockFromEnd; i-- {
+		bm.allocationTable.Push(i)
+	}
+
+	// If all blocks after firstNonFreeBlockFromEnd are free, and firstNonFreeBlockFromEnd is 0,
+	// we can return early without checking for chain blocks
+	if firstNonFreeBlockFromEnd == 0 {
+		return nil
+	}
+
+	// For the remaining blocks (1 to firstNonFreeBlockFromEnd), we need to do a more careful scan
+	// to find used blocks and chain blocks
+	usedBlocks := make(map[uint64]bool)
+	chainBlocks := make(map[uint64]bool)
+
+	// Scan blocks from 1 to firstNonFreeBlockFromEnd to identify used blocks and chain blocks
+	for i := uint64(1); i <= firstNonFreeBlockFromEnd; i++ {
 		// Calculate position for this block
 		position := int64(headerSize) + int64(i)*int64(BlockSize)
 
@@ -453,7 +515,7 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 			usedBlocks[i] = true
 
 			// If it has a next block, add it to chain blocks
-			if blockHeader.NextBlock != EndOfChain {
+			if blockHeader.NextBlock != EndOfChain && blockHeader.NextBlock <= blockCount {
 				chainBlocks[blockHeader.NextBlock] = true
 			}
 		}
@@ -461,16 +523,14 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 
 	// Add chain blocks to used blocks
 	for blockID := range chainBlocks {
-		if blockID < blockCount {
+		if blockID <= firstNonFreeBlockFromEnd {
 			usedBlocks[blockID] = true
 		}
 	}
 
-	// Reset allocation table
-	bm.allocationTable = stack.New()
-
-	// Add all blocks that are not used to the allocation table
-	for i := uint64(1); i < blockCount; i++ { // Start from 1 to skip block ID 0
+	// Add all blocks from 1 to firstNonFreeBlockFromEnd that are not used to the allocation table
+	// Add in reverse order to maintain LIFO ordering
+	for i := firstNonFreeBlockFromEnd; i >= 1; i-- {
 		if !usedBlocks[i] {
 			bm.allocationTable.Push(i)
 		}

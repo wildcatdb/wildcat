@@ -19,7 +19,9 @@ package blockmanager
 
 import (
 	"bytes"
+	"fmt"
 	"math/rand"
+	"orindb/stack"
 	"os"
 	"testing"
 	"time"
@@ -499,6 +501,191 @@ func TestIterator(t *testing.T) {
 			t.Fatalf("Expected data not found: %s", k)
 		}
 		v = false
+	}
+}
+
+func TestScanForFreeBlocks(t *testing.T) {
+	// Create a temporary file for testing
+	tempFilePath := os.TempDir() + "/blockmanager_scan_free_test"
+	defer os.Remove(tempFilePath) // Clean up after test
+
+	// Open a new file
+	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
+	if err != nil {
+		t.Fatalf("Failed to open file: %v", err)
+	}
+
+	// Write some initial data blocks
+	data1 := []byte("First block data")
+	data2 := []byte("Second block data")
+
+	// Append data blocks
+	_, err = bm.Append(data1)
+	if err != nil {
+		t.Fatalf("Failed to append data1: %v", err)
+	}
+
+	_, err = bm.Append(data2)
+	if err != nil {
+		t.Fatalf("Failed to append data2: %v", err)
+	}
+
+	// Get the number of free blocks before closing
+	freeBlocksBeforeClose := 0
+	originalAllocationTable := bm.allocationTable
+	for !originalAllocationTable.IsEmpty() {
+		originalAllocationTable.Pop()
+		freeBlocksBeforeClose++
+	}
+
+	// Close the file
+	if err := bm.Close(); err != nil {
+		t.Fatalf("Failed to close file: %v", err)
+	}
+
+	// Reopen the file to trigger scanForFreeBlocks
+	bm, err = Open(tempFilePath, os.O_RDWR, 0666, SyncNone)
+	if err != nil {
+		t.Fatalf("Failed to reopen file: %v", err)
+	}
+	defer bm.Close()
+
+	// Count free blocks after reopening
+	freeBlocksAfterReopen := 0
+	for !bm.allocationTable.IsEmpty() {
+		bm.allocationTable.Pop()
+		freeBlocksAfterReopen++
+	}
+
+	// Verify number of free blocks is the same
+	if freeBlocksBeforeClose != freeBlocksAfterReopen {
+		t.Fatalf("Free blocks count mismatch. Before: %d, After: %d",
+			freeBlocksBeforeClose, freeBlocksAfterReopen)
+	}
+
+	// Reset allocation table for the next test
+	bm.allocationTable = stack.New()
+
+	// Append a large number of blocks to verify scanning from end efficiency
+	largeDataCount := 100
+	// Keep track of block IDs we've written to
+	usedBlockIDs := make([]int64, largeDataCount)
+
+	for i := 0; i < largeDataCount; i++ {
+		data := []byte(fmt.Sprintf("Test data block %d", i))
+		blockID, err := bm.Append(data)
+		if err != nil {
+			t.Fatalf("Failed to append data block %d: %v", i, err)
+		}
+		usedBlockIDs[i] = blockID
+	}
+
+	// Close and reopen to force scan
+	if err := bm.Close(); err != nil {
+		t.Fatalf("Failed to close file again: %v", err)
+	}
+
+	// Start measuring time for the optimized scan
+	scanStart := time.Now()
+
+	bm, err = Open(tempFilePath, os.O_RDWR, 0666, SyncNone)
+	if err != nil {
+		t.Fatalf("Failed to reopen file again: %v", err)
+	}
+	defer bm.Close()
+
+	scanDuration := time.Since(scanStart)
+
+	// The optimization should make the scan efficient even with many blocks
+	t.Logf("Scanning %d blocks took %v", largeDataCount, scanDuration)
+
+	// Verify we can still read all the blocks correctly
+	for i, blockID := range usedBlockIDs {
+		expectedData := []byte(fmt.Sprintf("Test data block %d", i))
+		readData, _, err := bm.Read(blockID)
+		if err != nil {
+			t.Fatalf("Failed to read data from block %d: %v", i, err)
+		}
+
+		if !bytes.Equal(expectedData, readData) {
+			t.Fatalf("Data mismatch for block %d. Expected: %s, Got: %s",
+				i, string(expectedData), string(readData))
+		}
+	}
+
+	// Test edge case: Append free blocks at the end, then blocks with data, then scan
+	// First close the current file
+	if err := bm.Close(); err != nil {
+		t.Fatalf("Failed to close file for edge case test: %v", err)
+	}
+
+	// Create a new file for this specific test
+	edgeFilePath := os.TempDir() + "/blockmanager_scan_edge_test"
+	defer os.Remove(edgeFilePath)
+
+	edgeBm, err := Open(edgeFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
+	if err != nil {
+		t.Fatalf("Failed to open edge case file: %v", err)
+	}
+
+	// Exhaust all initial free blocks by writing something to them
+	initialFreeBlocks := 0
+	for !edgeBm.allocationTable.IsEmpty() {
+		edgeBm.allocationTable.Pop()
+		initialFreeBlocks++
+	}
+
+	for i := 0; i < initialFreeBlocks; i++ {
+		data := []byte(fmt.Sprintf("Initial block %d", i))
+		_, err := edgeBm.Append(data)
+		if err != nil {
+			t.Fatalf("Failed to append initial data: %v", err)
+		}
+	}
+
+	// Force allocation of new free blocks at the end
+	if err := edgeBm.appendFreeBlocks(); err != nil {
+		t.Fatalf("Failed to append free blocks: %v", err)
+	}
+
+	// Write data after the free blocks to create a non-continuous pattern
+	data := []byte("Data after free blocks")
+	_, err = edgeBm.Append(data)
+	if err != nil {
+		t.Fatalf("Failed to append data after free blocks: %v", err)
+	}
+
+	// Close and reopen to force scan
+	if err := edgeBm.Close(); err != nil {
+		t.Fatalf("Failed to close edge case file: %v", err)
+	}
+
+	edgeBm, err = Open(edgeFilePath, os.O_RDWR, 0666, SyncNone)
+	if err != nil {
+		t.Fatalf("Failed to reopen edge case file: %v", err)
+	}
+	defer edgeBm.Close()
+
+	// Verify we have free blocks in the allocation table
+	if edgeBm.allocationTable.IsEmpty() {
+		t.Fatalf("Expected free blocks in allocation table after edge case test")
+	}
+
+	// Make sure we can still append and read data
+	verifyData := []byte("Verification data after edge case")
+	verifyBlockID, err := edgeBm.Append(verifyData)
+	if err != nil {
+		t.Fatalf("Failed to append verification data: %v", err)
+	}
+
+	readVerifyData, _, err := edgeBm.Read(verifyBlockID)
+	if err != nil {
+		t.Fatalf("Failed to read verification data: %v", err)
+	}
+
+	if !bytes.Equal(verifyData, readVerifyData) {
+		t.Fatalf("Verification data mismatch. Expected: %s, Got: %s",
+			string(verifyData), string(readVerifyData))
 	}
 }
 
