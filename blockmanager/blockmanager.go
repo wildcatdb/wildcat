@@ -480,8 +480,14 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 
 // Close closes the file and releases any resources held by the BlockManager.
 func (bm *BlockManager) Close() error {
-	// Close channel to stop background sync
-	close(bm.closeChan)
+	// Check if the channel is already closed
+	select {
+	case <-bm.closeChan:
+		// Channel is already closed, do nothing
+	default:
+		// Close the channel to stop background sync
+		close(bm.closeChan)
+	}
 
 	// Wait for the background sync goroutine to finish
 	bm.wg.Wait()

@@ -38,6 +38,17 @@ import (
 	"time"
 )
 
+// Constants for compaction policy
+const (
+	CompactionCooldownPeriod   = 100 * time.Millisecond
+	CompactionBatchSize        = 4   // Max number of SSTables to compact at once
+	CompactionSizeRatio        = 1.2 // Level size ratio that triggers compaction
+	CompactionSizeThreshold    = 4   // Number of files to trigger size-tiered compaction
+	CompactionScoreSizeWeight  = 0.7 // Weight for size-based score
+	CompactionScoreCountWeight = 0.3 // Weight for count-based score
+	MaxCompactionConcurrency   = 2   // Maximum concurrent compactions
+)
+
 const (
 	SSTablePrefix    = "sst_"  // Prefix for SSTable files
 	WALFileExtension = ".wal"  // Extension for Write Ahead Log files <timestamp>.wal
@@ -103,18 +114,25 @@ type SSTable struct {
 	Size       int64  // The size of the SSTable in bytes
 	EntryCount int    // The number of entries in the SSTable
 	db         *DB    // Reference to the database
+	Level      int    // The level of the SSTable
+}
+
+type SSTableIDGenerator struct {
+	mu     sync.Mutex
+	lastID int64
 }
 
 type DB struct {
-	opts      *Options                 // Configuration options
-	lru       *lru.LRU                 // Atomic LRU used for block managers.
-	immutable *queue.Queue             // Atomic queue for immutable memtables.
-	memtable  atomic.Value             // The current memtable
-	flushLock *sync.Mutex              // Mutex for flushing the memtable (mainly swapping)
-	levels    atomic.Pointer[[]*Level] // Atomic pointer to the levels
-	wg        *sync.WaitGroup          // WaitGroup for synchronization
-	txns      atomic.Pointer[[]*Txn]   // Atomic pointer to the transactions
-	closeCh   chan struct{}            // Channel for closing the database
+	opts        *Options                 // Configuration options
+	lru         *lru.LRU                 // Atomic LRU used for block managers.
+	immutable   *queue.Queue             // Atomic queue for immutable memtables.
+	memtable    atomic.Value             // The current memtable
+	flushLock   *sync.Mutex              // Mutex for flushing the memtable (mainly swapping)
+	levels      atomic.Pointer[[]*Level] // Atomic pointer to the levels
+	wg          *sync.WaitGroup          // WaitGroup for synchronization
+	txns        atomic.Pointer[[]*Txn]   // Atomic pointer to the transactions
+	closeCh     chan struct{}            // Channel for closing the database
+	idGenerator *SSTableIDGenerator      // ID generator for SSTables
 }
 
 // KLogEntry represents a key-value entry in the KLog
@@ -140,6 +158,25 @@ type Txn struct {
 	Timestamp int64
 	mutex     sync.Mutex
 	Committed bool
+}
+
+// CompactionJob represents a scheduled compaction
+type CompactionJob struct {
+	Level       int
+	Priority    float64
+	SSTables    []*SSTable
+	TargetLevel int
+	InProgress  bool
+}
+
+// CompactionManager manages database compactions
+type CompactionManager struct {
+	db              *DB
+	compactionQueue []*CompactionJob
+	activeJobs      int32
+	maxConcurrency  int
+	lastCompaction  time.Time
+	scoreLock       sync.Mutex
 }
 
 // Open opens or creates a new database at the specified directory
@@ -181,13 +218,18 @@ func Open(opts *Options) (*DB, error) {
 	}
 
 	db := &DB{
-		lru:       lru.New(int64(opts.BlockManagerLRUSize), 0.25, 0.7),
-		immutable: queue.New(),
-		wg:        &sync.WaitGroup{},
-		opts:      opts,
-		txns:      atomic.Pointer[[]*Txn]{},
-		flushLock: &sync.Mutex{},
-		closeCh:   make(chan struct{}),
+		lru:         lru.New(int64(opts.BlockManagerLRUSize), 0.25, 0.7),
+		immutable:   queue.New(),
+		wg:          &sync.WaitGroup{},
+		opts:        opts,
+		txns:        atomic.Pointer[[]*Txn]{},
+		flushLock:   &sync.Mutex{},
+		closeCh:     make(chan struct{}),
+		idGenerator: NewSSTableIDGenerator(),
+	}
+
+	if !strings.HasSuffix(db.opts.Directory, string(os.PathSeparator)) {
+		db.opts.Directory += string(os.PathSeparator)
 	}
 
 	if _, err := os.Stat(db.opts.Directory); os.IsNotExist(err) {
@@ -207,17 +249,17 @@ func Open(opts *Options) (*DB, error) {
 		}
 
 		level.sstables = atomic.Pointer[[]*SSTable]{}
-		level.path = fmt.Sprintf("%s%s%s%d", db.opts.Directory, string(os.PathSeparator), LevelPrefix, i+1)
+		level.path = fmt.Sprintf("%s%s%s%d%s", db.opts.Directory, string(os.PathSeparator), LevelPrefix, i+1, string(os.PathSeparator))
 
 		levels[i] = level
 
 		// Create or ensure the level directory exists
-		levelDir := fmt.Sprintf("%s%s%s%d", db.opts.Directory, string(os.PathSeparator), LevelPrefix, i+1)
-		if err := os.MkdirAll(levelDir, 0755); err != nil {
+
+		if err := os.MkdirAll(level.path, 0755); err != nil {
 			return nil, fmt.Errorf("failed to create level directory: %v", err)
 		}
 
-		log.Println("Level directory created:", levelDir, "with capacity:", level.capacity)
+		log.Println("Level directory created:", level.path, "with capacity:", level.capacity)
 	}
 
 	// Set the levels in the LSM tree
@@ -230,6 +272,10 @@ func Open(opts *Options) (*DB, error) {
 	// Start the background flusher
 	db.wg.Add(1)
 	go db.backgroundFlusher()
+
+	// Start the compaction manager
+	db.wg.Add(1)
+	go db.backgroundCompactor()
 
 	return db, nil
 
@@ -289,7 +335,7 @@ func (db *DB) openWALs() error {
 
 	// Process all but the latest WAL file as immutable memtables
 	for _, walFile := range walFiles[:len(walFiles)-1] {
-		walPath := fmt.Sprintf("%s%s%s", db.opts.Directory, string(os.PathSeparator), walFile)
+		walPath := fmt.Sprintf("%s%s", db.opts.Directory, walFile)
 		log.Println("Processing immutable WAL:", walPath)
 
 		// Create a memtable for this WAL
@@ -323,7 +369,7 @@ func (db *DB) openWALs() error {
 
 	// Open the latest WAL file as the active WAL
 	activeWAL := walFiles[len(walFiles)-1]
-	activeWALPath := fmt.Sprintf("%s%s%s", db.opts.Directory, string(os.PathSeparator), activeWAL)
+	activeWALPath := fmt.Sprintf("%s%s", db.opts.Directory, activeWAL)
 	log.Println("Processing active WAL:", activeWALPath)
 
 	db.memtable.Store(&Memtable{
@@ -425,7 +471,13 @@ func (db *DB) replayWAL(walBm *blockmanager.BlockManager, memtable *Memtable, ac
 // Close closes the database and all open block managers
 func (db *DB) Close() error {
 	// Send signal to close the database
-	close(db.closeCh)
+	select {
+	case <-db.closeCh:
+		// Channel is already closed, do nothing
+	default:
+		// Close the channel to stop background sync
+		close(db.closeCh)
+	}
 	db.wg.Wait()
 
 	// Close open block managers
@@ -482,8 +534,6 @@ func (db *DB) GetTxn(id string) (*Txn, error) {
 
 // remove removes the transaction from the database
 func (txn *Txn) remove() {
-	txn.mutex.Lock()
-	defer txn.mutex.Unlock()
 
 	// Clear all sets
 	txn.ReadSet = make(map[string]int64)
@@ -858,8 +908,9 @@ func (db *DB) backgroundFlusher() {
 func (db *DB) flushMemtable(memt *Memtable) error {
 	// Create a new SSTable
 	sstable := &SSTable{
-		Id: time.Now().UnixNano(),
-		db: db,
+		Id:    db.idGenerator.NextID(),
+		db:    db,
+		Level: 1,
 	}
 
 	log.Println("Flushing memtable to disk with ID:", sstable.Id)
@@ -881,8 +932,8 @@ func (db *DB) flushMemtable(memt *Memtable) error {
 	sstable.EntryCount = memt.skiplist.Count(time.Now().UnixNano())
 
 	// We create new sstable files (.klog and .vlog) here
-	klogPath := fmt.Sprintf("%s%s%s%d%s", db.opts.Directory, string(os.PathSeparator), SSTablePrefix, sstable.Id, KLogExtension)
-	vlogPath := fmt.Sprintf("%s%s%s%d%s", db.opts.Directory, string(os.PathSeparator), SSTablePrefix, sstable.Id, VLogExtension)
+	klogPath := fmt.Sprintf("%s%s1%s%s%d%s", db.opts.Directory, LevelPrefix, string(os.PathSeparator), SSTablePrefix, sstable.Id, KLogExtension)
+	vlogPath := fmt.Sprintf("%s%s1%s%s%d%s", db.opts.Directory, LevelPrefix, string(os.PathSeparator), SSTablePrefix, sstable.Id, VLogExtension)
 
 	klogBm, err := blockmanager.Open(klogPath, os.O_RDWR|os.O_CREATE, 0666, blockmanager.SyncOption(db.opts.SyncOption))
 	if err != nil {
@@ -1000,32 +1051,6 @@ func (db *DB) flushMemtable(memt *Memtable) error {
 	return nil
 }
 
-func (db *DB) backgroundCompactor() {
-	ticker := time.NewTicker(time.Millisecond * 24)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			// Check if compaction is needed
-			if db.shouldCompact() {
-				err := db.compact()
-				if err != nil {
-					log.Printf("Failed to compact levels: %v", err)
-				}
-			}
-		}
-	}
-}
-
-func (db *DB) shouldCompact() bool {
-	return false
-}
-
-func (db *DB) compact() error {
-	return nil
-}
-
 // Get retrieves a value from the SSTable using the key and timestamp
 func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
 	// Fix the range check - only proceed if key is in range
@@ -1034,7 +1059,7 @@ func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
 	}
 
 	// Get the KLog block manager
-	klogPath := fmt.Sprintf("%s%s%s%d%s", sst.db.opts.Directory, string(os.PathSeparator),
+	klogPath := fmt.Sprintf("%s%s%d%s%s%d%s", sst.db.opts.Directory, LevelPrefix, sst.Level, string(os.PathSeparator),
 		SSTablePrefix, sst.Id, KLogExtension)
 	var klogBm *blockmanager.BlockManager
 	var err error
@@ -1091,7 +1116,7 @@ func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
 	// If we found a valid entry, retrieve the value
 	if foundEntry != nil {
 		// Get the VLog block manager
-		vlogPath := fmt.Sprintf("%s%s%s%d%s", sst.db.opts.Directory, string(os.PathSeparator),
+		vlogPath := fmt.Sprintf("%s%s%d%s%s%d%s", sst.db.opts.Directory, LevelPrefix, sst.Level, string(os.PathSeparator),
 			SSTablePrefix, sst.Id, VLogExtension)
 		var vlogBm *blockmanager.BlockManager
 
@@ -1118,4 +1143,772 @@ func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
 	}
 
 	return nil // Key not found or no valid version for the timestamp
+}
+
+// NewCompactionManager creates a new compaction manager
+func NewCompactionManager(db *DB, maxConcurrency int) *CompactionManager {
+	if maxConcurrency <= 0 {
+		maxConcurrency = MaxCompactionConcurrency
+	}
+
+	return &CompactionManager{
+		db:              db,
+		compactionQueue: make([]*CompactionJob, 0),
+		maxConcurrency:  maxConcurrency,
+		lastCompaction:  time.Now(),
+	}
+}
+
+// backgroundCompactor is the main compaction routine
+func (db *DB) backgroundCompactor() {
+	defer db.wg.Done()
+	cm := NewCompactionManager(db, MaxCompactionConcurrency)
+	ticker := time.NewTicker(time.Millisecond * 24)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-db.closeCh:
+			log.Println("Compactor stopped")
+			return
+		case <-ticker.C:
+			// Check and schedule compactions
+			cm.checkAndScheduleCompactions()
+
+			// Execute pending compactions if under concurrency limit
+			cm.executeCompactions()
+		}
+	}
+}
+
+// checkAndScheduleCompactions evaluates all levels for needed compactions
+func (cm *CompactionManager) checkAndScheduleCompactions() {
+	cm.scoreLock.Lock()
+	defer cm.scoreLock.Unlock()
+
+	// Only check for new compactions after cooldown period
+	if time.Since(cm.lastCompaction) < CompactionCooldownPeriod {
+		return
+	}
+
+	levels := cm.db.levels.Load()
+	if levels == nil {
+		return
+	}
+
+	// Evaluate each level for compaction
+	for i, level := range *levels {
+		// Skip last level
+		if i == len(*levels)-1 {
+			continue
+		}
+
+		sstables := level.sstables.Load()
+		if sstables == nil || len(*sstables) == 0 {
+			continue
+		}
+
+		// Calculate compaction score
+		sizeScore := float64(atomic.LoadInt64(&level.currentSize)) / float64(level.capacity)
+		countScore := float64(len(*sstables)) / float64(CompactionSizeThreshold)
+
+		// Weight the scores
+		score := sizeScore*CompactionScoreSizeWeight + countScore*CompactionScoreCountWeight
+
+		// Schedule compaction if score exceeds threshold
+		if score > 1.0 {
+			// For lower levels (0-2), use size-tiered compaction
+			if i < 2 {
+				cm.scheduleSizeTieredCompaction(level, i, score)
+			} else {
+				// For higher levels, use leveled compaction
+				cm.scheduleLeveledCompaction(level, i, score)
+			}
+
+			cm.lastCompaction = time.Now()
+		}
+	}
+
+	// Sort compaction queue by priority
+	sort.Slice(cm.compactionQueue, func(i, j int) bool {
+		return cm.compactionQueue[i].Priority > cm.compactionQueue[j].Priority
+	})
+}
+
+// scheduleSizeTieredCompaction schedules a size-tiered compaction
+func (cm *CompactionManager) scheduleSizeTieredCompaction(level *Level, levelNum int, score float64) {
+	sstables := level.sstables.Load()
+	if len(*sstables) < CompactionSizeThreshold {
+		return
+	}
+
+	// Sort SSTables by size for size-tiered compaction
+	sortedTables := make([]*SSTable, len(*sstables))
+	copy(sortedTables, *sstables)
+
+	sort.Slice(sortedTables, func(i, j int) bool {
+		return sortedTables[i].Size < sortedTables[j].Size
+	})
+
+	// Find similar-sized SSTables
+	var selectedTables []*SSTable
+
+	// Select up to CompactionBatchSize tables with similar size
+	for i := 0; i < len(sortedTables); {
+		size := sortedTables[i].Size
+		similarSized := []*SSTable{sortedTables[i]}
+
+		j := i + 1
+		for j < len(sortedTables) && float64(sortedTables[j].Size)/float64(size) <= 1.5 && len(similarSized) < CompactionBatchSize {
+			similarSized = append(similarSized, sortedTables[j])
+			j++
+		}
+
+		// If we found enough similar-sized tables, select them
+		if len(similarSized) >= 2 {
+			selectedTables = similarSized
+			break
+		}
+
+		i = j
+	}
+
+	// If we couldn't find similar-sized tables, just take the smallest ones
+	if len(selectedTables) < 2 && len(sortedTables) >= 2 {
+		selectedTables = sortedTables[:min(CompactionBatchSize, len(sortedTables))]
+	}
+
+	if len(selectedTables) >= 2 {
+		cm.compactionQueue = append(cm.compactionQueue, &CompactionJob{
+			Level:       levelNum,
+			Priority:    score,
+			SSTables:    selectedTables,
+			TargetLevel: levelNum + 1,
+			InProgress:  false,
+		})
+	}
+}
+
+// scheduleLeveledCompaction schedules a leveled compaction
+func (cm *CompactionManager) scheduleLeveledCompaction(level *Level, levelNum int, score float64) {
+	sstables := level.sstables.Load()
+	if sstables == nil || len(*sstables) == 0 {
+		return
+	}
+
+	// For leveled compaction, pick the oldest SSTable
+	// (often this would be picking by smallest key range, but we'll use oldest for simplicity)
+	oldestTable := (*sstables)[0]
+	for _, table := range *sstables {
+		if table.Id < oldestTable.Id {
+			oldestTable = table
+		}
+	}
+
+	// Find overlapping SSTables in the next level
+	nextLevelNum := levelNum + 1
+	if nextLevelNum >= len(*cm.db.levels.Load()) {
+		return
+	}
+
+	nextLevel := (*cm.db.levels.Load())[nextLevelNum]
+	nextLevelTables := nextLevel.sstables.Load()
+	if nextLevelTables == nil {
+		// No tables in next level, just move the table down
+		cm.compactionQueue = append(cm.compactionQueue, &CompactionJob{
+			Level:       levelNum,
+			Priority:    score,
+			SSTables:    []*SSTable{oldestTable},
+			TargetLevel: nextLevelNum,
+			InProgress:  false,
+		})
+		return
+	}
+
+	// Find overlapping tables in next level
+	var overlappingTables []*SSTable
+	for _, table := range *nextLevelTables {
+		if bytes.Compare(table.Max, oldestTable.Min) >= 0 && bytes.Compare(table.Min, oldestTable.Max) <= 0 {
+			overlappingTables = append(overlappingTables, table)
+		}
+	}
+
+	// Create compaction job with selected table and overlapping tables
+	selectedTables := []*SSTable{oldestTable}
+	selectedTables = append(selectedTables, overlappingTables...)
+
+	cm.compactionQueue = append(cm.compactionQueue, &CompactionJob{
+		Level:       levelNum,
+		Priority:    score,
+		SSTables:    selectedTables,
+		TargetLevel: nextLevelNum,
+		InProgress:  false,
+	})
+}
+
+// executeCompactions processes pending compaction jobs
+func (cm *CompactionManager) executeCompactions() {
+	// Skip if we've reached max concurrency
+	if atomic.LoadInt32(&cm.activeJobs) >= int32(cm.maxConcurrency) {
+		return
+	}
+
+	// Find the highest priority non-in-progress job
+	var selectedJob *CompactionJob
+	var selectedIdx int
+
+	for i, job := range cm.compactionQueue {
+		if !job.InProgress {
+			selectedJob = job
+			selectedIdx = i
+			break
+		}
+	}
+
+	if selectedJob == nil {
+		return
+	}
+
+	// Mark the job as in progress
+	selectedJob.InProgress = true
+	atomic.AddInt32(&cm.activeJobs, 1)
+
+	// Execute the compaction in a goroutine
+	go func(job *CompactionJob, idx int) {
+		defer func() {
+			atomic.AddInt32(&cm.activeJobs, -1)
+
+			// Remove job from queue when done
+			cm.scoreLock.Lock()
+			defer cm.scoreLock.Unlock()
+
+			// Only remove if it's still in the queue at the same position
+			if idx < len(cm.compactionQueue) && cm.compactionQueue[idx] == job {
+				cm.compactionQueue = append(cm.compactionQueue[:idx], cm.compactionQueue[idx+1:]...)
+			}
+		}()
+
+		// Execute the actual compaction
+		err := cm.db.compactSSTables(job.SSTables, job.Level+1, job.TargetLevel)
+		if err != nil {
+			log.Printf("Failed to compact SSTables: %v", err)
+		}
+	}(selectedJob, selectedIdx)
+}
+
+// compactSSTables performs the actual compaction of SSTables
+func (db *DB) compactSSTables(sstables []*SSTable, sourceLevel, targetLevel int) error {
+	if len(sstables) == 0 {
+		return nil
+	}
+
+	log.Printf("Starting compaction: %d SSTables from level %d to level %d",
+		len(sstables), sourceLevel, targetLevel)
+
+	// Create a new SSTable for the target level
+	newSSTable := &SSTable{
+		Id:    db.idGenerator.NextID(),
+		db:    db,
+		Level: targetLevel,
+	}
+
+	// Find min and max keys across all input tables
+	newSSTable.Min = sstables[0].Min
+	newSSTable.Max = sstables[0].Max
+
+	for _, table := range sstables {
+		if bytes.Compare(table.Min, newSSTable.Min) < 0 {
+			newSSTable.Min = table.Min
+		}
+		if bytes.Compare(table.Max, newSSTable.Max) > 0 {
+			newSSTable.Max = table.Max
+		}
+
+		// Mark table as being merged to prevent concurrent access
+		atomic.StoreInt32(&table.isMerging, 1)
+	}
+
+	// Create new SSTable files for the compacted result
+	klogPath := fmt.Sprintf("%s%s%d%s%s%d%s", db.opts.Directory, LevelPrefix, targetLevel,
+		string(os.PathSeparator), SSTablePrefix, newSSTable.Id, KLogExtension)
+	vlogPath := fmt.Sprintf("%s%s%d%s%s%d%s", db.opts.Directory, LevelPrefix, targetLevel,
+		string(os.PathSeparator), SSTablePrefix, newSSTable.Id, VLogExtension)
+
+	klogBm, err := blockmanager.Open(klogPath, os.O_RDWR|os.O_CREATE, 0666,
+		blockmanager.SyncOption(db.opts.SyncOption))
+	if err != nil {
+		return fmt.Errorf("failed to open KLog block manager: %w", err)
+	}
+
+	vlogBm, err := blockmanager.Open(vlogPath, os.O_RDWR|os.O_CREATE, 0666,
+		blockmanager.SyncOption(db.opts.SyncOption))
+	if err != nil {
+		return fmt.Errorf("failed to open VLog block manager: %w", err)
+	}
+
+	// Merge the SSTables
+	err = db.mergeSSTables(sstables, klogBm, vlogBm, newSSTable)
+	if err != nil {
+		// Clean up on error
+		os.Remove(klogPath)
+		os.Remove(vlogPath)
+		return fmt.Errorf("failed to merge SSTables: %w", err)
+	}
+
+	// Add the new SSTable to the target level
+	targetLevelPtr := (*db.levels.Load())[targetLevel]
+	currSSTables := targetLevelPtr.sstables.Load()
+
+	var newSSTables []*SSTable
+	if currSSTables != nil {
+		newSSTables = make([]*SSTable, len(*currSSTables)+1)
+		copy(newSSTables, *currSSTables)
+		newSSTables[len(*currSSTables)] = newSSTable
+	} else {
+		newSSTables = []*SSTable{newSSTable}
+	}
+
+	targetLevelPtr.sstables.Store(&newSSTables)
+
+	// Update the level size
+	atomic.AddInt64(&targetLevelPtr.currentSize, newSSTable.Size)
+
+	// Remove the original SSTables from the source level
+	if sourceLevel != targetLevel {
+		sourceLevelPtr := (*db.levels.Load())[sourceLevel]
+		currentSSTables := sourceLevelPtr.sstables.Load()
+
+		if currentSSTables != nil {
+			// Create a map for fast lookup of SSTables to remove
+			toRemove := make(map[int64]bool)
+			for _, table := range sstables {
+				toRemove[table.Id] = true
+			}
+
+			// Filter out the SSTables that were merged
+			remainingSSTables := make([]*SSTable, 0, len(*currentSSTables))
+			for _, table := range *currentSSTables {
+				if !toRemove[table.Id] {
+					remainingSSTables = append(remainingSSTables, table)
+				} else {
+					// Update level size
+					atomic.AddInt64(&sourceLevelPtr.currentSize, -table.Size)
+				}
+			}
+
+			sourceLevelPtr.sstables.Store(&remainingSSTables)
+		}
+	}
+
+	// Add KLog and VLog managers to LRU cache
+	db.lru.Put(klogPath, klogBm)
+	db.lru.Put(vlogPath, vlogBm)
+
+	// Clean up the old SSTable files (asynchronously to avoid blocking)
+	go func() {
+		for _, table := range sstables {
+			oldKlogPath := fmt.Sprintf("%s%s%d%s%s%d%s", db.opts.Directory, LevelPrefix, sourceLevel,
+				string(os.PathSeparator), SSTablePrefix, table.Id, KLogExtension)
+			oldVlogPath := fmt.Sprintf("%s%s%d%s%s%d%s", db.opts.Directory, LevelPrefix, sourceLevel,
+				string(os.PathSeparator), SSTablePrefix, table.Id, VLogExtension)
+
+			// Wait a bit before deleting to ensure no ongoing reads
+			time.Sleep(100 * time.Millisecond)
+
+			// Remove from LRU first
+			if bm, ok := db.lru.Get(oldKlogPath); ok {
+				if bm, ok := bm.(*blockmanager.BlockManager); ok {
+					bm.Close()
+				}
+				db.lru.Delete(oldKlogPath)
+			}
+
+			if bm, ok := db.lru.Get(oldVlogPath); ok {
+				if bm, ok := bm.(*blockmanager.BlockManager); ok {
+					bm.Close()
+				}
+				db.lru.Delete(oldVlogPath)
+			}
+
+			// Delete the files
+			os.Remove(oldKlogPath)
+			os.Remove(oldVlogPath)
+		}
+	}()
+
+	log.Printf("Completed compaction: %d SSTables from level %d to level %d, new table size: %d",
+		len(sstables), sourceLevel, targetLevel, newSSTable.Size)
+
+	return nil
+}
+
+// mergeSSTables merges multiple SSTables into a new SSTable
+func (db *DB) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *blockmanager.BlockManager, newSSTable *SSTable) error {
+	// Write metadata as first block
+	sstableData, err := newSSTable.serializeSSTable()
+	if err != nil {
+		return fmt.Errorf("failed to serialize SSTable: %w", err)
+	}
+
+	_, err = klogBm.Append(sstableData)
+	if err != nil {
+		return fmt.Errorf("failed to write KLog: %w", err)
+	}
+
+	// Create a merged iterator over all input SSTables
+	iterators := make([]*SSTIterator, len(sstables))
+	for i, table := range sstables {
+		iterators[i] = newSSTIterator(table)
+	}
+
+	mergeIter := newMergeIterator(iterators)
+
+	// Create a block set for the merged data
+	blockset := &BlockSet{
+		Entries: make([]*KLogEntry, 0),
+		Size:    0,
+	}
+
+	entryCount := 0
+	var totalSize int64 = 0
+
+	// Iterate through all entries and merge them
+	for {
+		key, value, ts, valid := mergeIter.Next()
+		if !valid {
+			break
+		}
+
+		// Write the value to VLog
+		id, err := vlogBm.Append(value.([]byte))
+		if err != nil {
+			return fmt.Errorf("failed to write VLog: %w", err)
+		}
+
+		klogEntry := &KLogEntry{
+			Key:          key,
+			Timestamp:    ts,
+			ValueBlockID: id,
+		}
+
+		blockset.Entries = append(blockset.Entries, klogEntry)
+		entrySize := int64(len(key) + len(value.([]byte)))
+		blockset.Size += entrySize
+		totalSize += entrySize
+		entryCount++
+
+		// Flush the block set if it reaches the threshold
+		if blockset.Size >= db.opts.BlockSetSize {
+			blocksetData, err := blockset.serializeBlockSet()
+			if err != nil {
+				return fmt.Errorf("failed to serialize BlockSet: %w", err)
+			}
+
+			_, err = klogBm.Append(blocksetData)
+			if err != nil {
+				return fmt.Errorf("failed to write BlockSet to KLog: %w", err)
+			}
+
+			blockset.Entries = make([]*KLogEntry, 0)
+			blockset.Size = 0
+		}
+	}
+
+	// Write any remaining entries
+	if len(blockset.Entries) > 0 {
+		blocksetData, err := blockset.serializeBlockSet()
+		if err != nil {
+			return fmt.Errorf("failed to serialize BlockSet: %w", err)
+		}
+
+		_, err = klogBm.Append(blocksetData)
+		if err != nil {
+			return fmt.Errorf("failed to write BlockSet to KLog: %w", err)
+		}
+	}
+
+	// Update the SSTable metadata
+	newSSTable.Size = totalSize
+	newSSTable.EntryCount = entryCount
+
+	return nil
+}
+
+// Helper iterators for compaction
+
+// SSTIterator allows iteration over an SSTable
+type SSTIterator struct {
+	sstable    *SSTable
+	klogIter   *blockmanager.Iterator
+	blockset   *BlockSet
+	blockIndex int
+	eof        bool
+}
+
+// newSSTIterator creates a new iterator over an SSTable
+func newSSTIterator(sst *SSTable) *SSTIterator {
+	// Get the KLog block manager
+	klogPath := fmt.Sprintf("%s%s%d%s%s%d%s", sst.db.opts.Directory, LevelPrefix, sst.Level,
+		string(os.PathSeparator), SSTablePrefix, sst.Id, KLogExtension)
+
+	var klogBm *blockmanager.BlockManager
+	var err error
+
+	if v, ok := sst.db.lru.Get(klogPath); ok {
+		klogBm = v.(*blockmanager.BlockManager)
+	} else {
+		klogBm, err = blockmanager.Open(klogPath, os.O_RDONLY, 0666,
+			blockmanager.SyncOption(sst.db.opts.SyncOption))
+		if err != nil {
+			log.Printf("Failed to open KLog block manager: %v", err)
+			return &SSTIterator{eof: true}
+		}
+		sst.db.lru.Put(klogPath, klogBm)
+	}
+
+	iter := &SSTIterator{
+		sstable:    sst,
+		klogIter:   klogBm.Iterator(),
+		blockIndex: -1,
+		eof:        false,
+	}
+
+	// Skip the first block (metadata)
+	_, _, err = iter.klogIter.Next()
+	if err != nil {
+		iter.eof = true
+		return iter
+	}
+
+	// Load the first block set
+	err = iter.loadNextBlockSet()
+	if err != nil {
+		iter.eof = true
+	}
+
+	return iter
+}
+
+// loadNextBlockSet loads the next block set from the KLog
+func (iter *SSTIterator) loadNextBlockSet() error {
+	data, _, err := iter.klogIter.Next()
+	if err != nil {
+		return err
+	}
+
+	var blockset BlockSet
+	err = blockset.deserializeBlockSet(data)
+	if err != nil {
+		return err
+	}
+
+	iter.blockset = &blockset
+	iter.blockIndex = 0
+
+	return nil
+}
+
+// Next returns the next key-value pair from the SSTable
+func (iter *SSTIterator) Next() ([]byte, interface{}, int64, bool) {
+	if iter.eof || iter.blockset == nil {
+		return nil, nil, 0, false
+	}
+
+	// If we've reached the end of the current block set, load the next one
+	if iter.blockIndex >= len(iter.blockset.Entries) {
+		err := iter.loadNextBlockSet()
+		if err != nil {
+			iter.eof = true
+			return nil, nil, 0, false
+		}
+	}
+
+	// Get the current entry
+	entry := iter.blockset.Entries[iter.blockIndex]
+	iter.blockIndex++
+
+	// Get the VLog block manager
+	vlogPath := fmt.Sprintf("%s%s%d%s%s%d%s", iter.sstable.db.opts.Directory, LevelPrefix, iter.sstable.Level,
+		string(os.PathSeparator), SSTablePrefix, iter.sstable.Id, VLogExtension)
+
+	var vlogBm *blockmanager.BlockManager
+	var err error
+
+	if v, ok := iter.sstable.db.lru.Get(vlogPath); ok {
+		vlogBm = v.(*blockmanager.BlockManager)
+	} else {
+		vlogBm, err = blockmanager.Open(vlogPath, os.O_RDONLY, 0666,
+			blockmanager.SyncOption(iter.sstable.db.opts.SyncOption))
+		if err != nil {
+			log.Printf("Failed to open VLog block manager: %v", err)
+			iter.eof = true
+			return nil, nil, 0, false
+		}
+		iter.sstable.db.lru.Put(vlogPath, vlogBm)
+	}
+
+	// Read the value from VLog
+	value, _, err := vlogBm.Read(entry.ValueBlockID)
+	if err != nil {
+		log.Printf("Failed to read value from VLog: %v", err)
+		iter.eof = true
+		return nil, nil, 0, false
+	}
+
+	return entry.Key, value, entry.Timestamp, true
+}
+
+// MergeIterator merges multiple SSTable iterators
+type MergeIterator struct {
+	iters   []*SSTIterator
+	current []*KeyValueEntry
+}
+
+// KeyValueEntry represents a key-value entry with timestamp
+type KeyValueEntry struct {
+	Key       []byte
+	Value     interface{}
+	Timestamp int64
+}
+
+// newMergeIterator creates a new merge iterator
+func newMergeIterator(iters []*SSTIterator) *MergeIterator {
+	m := &MergeIterator{
+		iters:   iters,
+		current: make([]*KeyValueEntry, len(iters)),
+	}
+
+	// Initialize the current entries
+	for i, iter := range iters {
+		key, value, ts, valid := iter.Next()
+		if valid {
+			m.current[i] = &KeyValueEntry{
+				Key:       key,
+				Value:     value,
+				Timestamp: ts,
+			}
+		}
+	}
+
+	return m
+}
+
+// Next returns the next key-value pair in sorted order
+func (m *MergeIterator) Next() ([]byte, interface{}, int64, bool) {
+	// Find the smallest key
+	var smallestIdx = -1
+	var smallestKey []byte
+	var latestTS int64
+
+	for i, entry := range m.current {
+		if entry == nil {
+			continue
+		}
+
+		if smallestIdx == -1 || bytes.Compare(entry.Key, smallestKey) < 0 {
+			smallestIdx = i
+			smallestKey = entry.Key
+			latestTS = entry.Timestamp
+		} else if bytes.Equal(entry.Key, smallestKey) && entry.Timestamp > latestTS {
+			// If keys are equal, take the one with the latest timestamp
+			smallestIdx = i
+			latestTS = entry.Timestamp
+		}
+	}
+
+	if smallestIdx == -1 {
+		return nil, nil, 0, false // No more entries
+	}
+
+	// Get the current smallest entry
+	result := m.current[smallestIdx]
+
+	// Advance the iterator that provided this entry
+	key, value, ts, valid := m.iters[smallestIdx].Next()
+	if valid {
+		m.current[smallestIdx] = &KeyValueEntry{
+			Key:       key,
+			Value:     value,
+			Timestamp: ts,
+		}
+	} else {
+		m.current[smallestIdx] = nil
+	}
+
+	// For keys that match but have lower timestamps, skip them
+	for i, entry := range m.current {
+		if entry != nil && bytes.Equal(entry.Key, result.Key) && entry.Timestamp < result.Timestamp {
+			// Advance this iterator
+			key, value, ts, valid := m.iters[i].Next()
+			if valid {
+				m.current[i] = &KeyValueEntry{
+					Key:       key,
+					Value:     value,
+					Timestamp: ts,
+				}
+			} else {
+				m.current[i] = nil
+			}
+		}
+	}
+
+	return result.Key, result.Value, result.Timestamp, true
+}
+
+// shouldCompact determines if compaction is needed
+func (db *DB) shouldCompact() bool {
+	levels := db.levels.Load()
+	if levels == nil {
+		return false
+	}
+
+	// Check if any level has reached its capacity
+	for i, level := range *levels {
+		if i == len(*levels)-1 {
+			continue // Skip the last level
+		}
+
+		sstables := level.sstables.Load()
+		if sstables == nil {
+			continue
+		}
+
+		// Size-based criteria - if level is above capacity * ratio
+		if atomic.LoadInt64(&level.currentSize) > int64(float64(level.capacity)*CompactionSizeRatio) {
+			return true
+		}
+
+		// Count-based criteria - if level has too many files
+		if len(*sstables) >= CompactionSizeThreshold {
+			return true
+		}
+	}
+
+	return false
+}
+
+// NewSSTableIDGenerator creates a new SSTable ID generator
+func NewSSTableIDGenerator() *SSTableIDGenerator {
+	return &SSTableIDGenerator{
+		lastID: time.Now().UnixNano(),
+	}
+}
+
+// NextID generates the next unique SSTable ID
+func (g *SSTableIDGenerator) NextID() int64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	// Get current timestamp
+	ts := time.Now().UnixNano()
+
+	// Ensure monotonicity by using max of current time and last ID + 1
+	if ts <= g.lastID {
+		ts = g.lastID + 1
+	}
+
+	// Update last ID
+	g.lastID = ts
+
+	return ts
 }
