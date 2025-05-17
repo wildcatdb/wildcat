@@ -26,13 +26,13 @@ import (
 	"sort"
 )
 
-// MergeIterator is a bidirectional iterator that merges results from multiple sources
+// Iterator is a bidirectional iterator that merges results from multiple sources
 // while maintaining transaction isolation at the given read timestamp
-type MergeIterator struct {
+type Iterator struct {
 	txn            *Txn                 // Transaction for isolation
 	memtableIter   *skiplist.Iterator   // Iterator for current memtable
 	immutableIters []*skiplist.Iterator // Iterators for immutable memtables
-	sstableIters   [][]*SSTableIterator // Iterators for SSTables by level
+	sstableIters   [][]*ssTableIterator // Iterators for SSTables by level
 
 	// Current position data
 	current       *iteratorHeapItem // Current item
@@ -55,8 +55,8 @@ type iteratorHeapItem struct {
 	timestamp int64       // Timestamp of the item
 }
 
-// SSTableIterator is an iterator for a specific SSTable
-type SSTableIterator struct {
+// ssTableIterator is an iterator for a specific SSTable
+type ssTableIterator struct {
 	sstable *SSTable
 	readTs  int64
 	db      *DB
@@ -129,10 +129,10 @@ func (h *maxHeapItems) Pop() interface{} {
 	return x
 }
 
-// NewMergeIterator creates a new iterator that merges all sources
+// newIterator creates a new iterator that merges all sources
 // startKey can be nil to start from the beginning
-func (txn *Txn) NewMergeIterator(startKey []byte) *MergeIterator {
-	iter := &MergeIterator{
+func (txn *Txn) newIterator(startKey []byte) *Iterator {
+	iter := &Iterator{
 		txn:           txn,
 		minHeap:       make(minHeapItems, 0),
 		maxHeap:       make(maxHeapItems, 0),
@@ -148,7 +148,7 @@ func (txn *Txn) NewMergeIterator(startKey []byte) *MergeIterator {
 	iter.memtableIter = txn.db.memtable.Load().(*Memtable).skiplist.NewIterator(startKey, txn.Timestamp)
 
 	// Initialize immutable memtable iterators
-	immutableMemtables := txn.db.immutable.List()
+	immutableMemtables := txn.db.flusher.immutable.List()
 	iter.immutableIters = make([]*skiplist.Iterator, len(immutableMemtables))
 	for i, memt := range immutableMemtables {
 		if memt == nil {
@@ -160,7 +160,7 @@ func (txn *Txn) NewMergeIterator(startKey []byte) *MergeIterator {
 	// Initialize SSTable iterators by level
 	levels := txn.db.levels.Load()
 	if levels != nil {
-		iter.sstableIters = make([][]*SSTableIterator, len(*levels))
+		iter.sstableIters = make([][]*ssTableIterator, len(*levels))
 
 		for levelIdx, level := range *levels {
 			sstables := level.sstables.Load()
@@ -168,7 +168,7 @@ func (txn *Txn) NewMergeIterator(startKey []byte) *MergeIterator {
 				continue
 			}
 
-			iter.sstableIters[levelIdx] = make([]*SSTableIterator, len(*sstables))
+			iter.sstableIters[levelIdx] = make([]*ssTableIterator, len(*sstables))
 			for sstIdx, sst := range *sstables {
 				// Skip SSTables that don't contain the key range we're looking for
 				if startKey != nil && bytes.Compare(startKey, sst.Min) < 0 {
@@ -190,7 +190,7 @@ func (txn *Txn) NewMergeIterator(startKey []byte) *MergeIterator {
 }
 
 // initHeaps initializes both min and max heaps with the first elements from each iterator
-func (iter *MergeIterator) initHeaps() {
+func (iter *Iterator) initHeaps() {
 	// Clear existing heaps
 	iter.minHeap = make(minHeapItems, 0)
 	iter.maxHeap = make(maxHeapItems, 0)
@@ -237,7 +237,7 @@ func (iter *MergeIterator) initHeaps() {
 				continue
 			}
 
-			key, value, ts, ok := sstIter.Next()
+			key, value, ts, ok = sstIter.next()
 			if ok {
 				item := &iteratorHeapItem{
 					key:       key,
@@ -254,7 +254,7 @@ func (iter *MergeIterator) initHeaps() {
 }
 
 // Next returns the next key-value pair in ascending order
-func (iter *MergeIterator) Next() ([]byte, interface{}, bool) {
+func (iter *Iterator) Next() ([]byte, interface{}, bool) {
 	// If we were going backward, we need to reset and reinitialize
 	if iter.lastDirection == -1 {
 		iter.initHeaps()
@@ -299,7 +299,7 @@ func (iter *MergeIterator) Next() ([]byte, interface{}, bool) {
 }
 
 // Prev returns the previous key-value pair in descending order
-func (iter *MergeIterator) Prev() ([]byte, interface{}, bool) {
+func (iter *Iterator) Prev() ([]byte, interface{}, bool) {
 	// If we were going forward, we need to reset and reinitialize
 	if iter.lastDirection == 1 {
 		iter.initHeaps()
@@ -343,7 +343,7 @@ func (iter *MergeIterator) Prev() ([]byte, interface{}, bool) {
 }
 
 // advanceSourceForward advances the specified source and adds the next item to the min heap
-func (iter *MergeIterator) advanceSourceForward(source int, sourceIdx int) {
+func (iter *Iterator) advanceSourceForward(source int, sourceIdx int) {
 	var key []byte
 	var value interface{}
 	var ts int64
@@ -364,7 +364,7 @@ func (iter *MergeIterator) advanceSourceForward(source int, sourceIdx int) {
 		if levelIdx < len(iter.sstableIters) &&
 			sourceIdx < len(iter.sstableIters[levelIdx]) &&
 			iter.sstableIters[levelIdx][sourceIdx] != nil {
-			key, value, ts, ok = iter.sstableIters[levelIdx][sourceIdx].Next()
+			key, value, ts, ok = iter.sstableIters[levelIdx][sourceIdx].next()
 		}
 	}
 
@@ -382,7 +382,7 @@ func (iter *MergeIterator) advanceSourceForward(source int, sourceIdx int) {
 }
 
 // advanceSourceBackward advances the specified source backward and adds the previous item to the max heap
-func (iter *MergeIterator) advanceSourceBackward(source int, sourceIdx int) {
+func (iter *Iterator) advanceSourceBackward(source int, sourceIdx int) {
 	var key []byte
 	var value interface{}
 	var ts int64
@@ -403,7 +403,7 @@ func (iter *MergeIterator) advanceSourceBackward(source int, sourceIdx int) {
 		if levelIdx < len(iter.sstableIters) &&
 			sourceIdx < len(iter.sstableIters[levelIdx]) &&
 			iter.sstableIters[levelIdx][sourceIdx] != nil {
-			key, value, ts, ok = iter.sstableIters[levelIdx][sourceIdx].Prev()
+			key, value, ts, ok = iter.sstableIters[levelIdx][sourceIdx].prev()
 		}
 	}
 
@@ -421,12 +421,12 @@ func (iter *MergeIterator) advanceSourceBackward(source int, sourceIdx int) {
 }
 
 // Seek positions the iterator at the specified key or the next key if exact match not found
-func (iter *MergeIterator) Seek(key []byte) ([]byte, interface{}, bool) {
+func (iter *Iterator) Seek(key []byte) ([]byte, interface{}, bool) {
 	// Reinitialize with the new start key
 	iter.memtableIter = iter.txn.db.memtable.Load().(*Memtable).skiplist.NewIterator(key, iter.txn.Timestamp)
 
 	// Reinitialize immutable iterators
-	for i, memt := range iter.txn.db.immutable.List() {
+	for i, memt := range iter.txn.db.flusher.immutable.List() {
 		if memt == nil {
 			continue
 		}
@@ -464,10 +464,10 @@ func (iter *MergeIterator) Seek(key []byte) ([]byte, interface{}, bool) {
 }
 
 // newSSTableIterator creates a new iterator for an SSTable
-func newSSTableIterator(sst *SSTable, readTs int64) *SSTableIterator {
+func newSSTableIterator(sst *SSTable, readTs int64) *ssTableIterator {
 	// Create KLog and VLog paths
-	klogPath := sst.db.getSSTablKLogPath(sst)
-	vlogPath := sst.db.getSSTablVLogPath(sst)
+	klogPath := sst.kLogPath()
+	vlogPath := sst.vLogPath()
 
 	// Get or open the KLog block manager
 	var klogBm *blockmanager.BlockManager
@@ -498,7 +498,7 @@ func newSSTableIterator(sst *SSTable, readTs int64) *SSTableIterator {
 		sst.db.lru.Put(vlogPath, vlogBm)
 	}
 
-	return &SSTableIterator{
+	return &ssTableIterator{
 		sstable: sst,
 		readTs:  readTs,
 		db:      sst.db,
@@ -508,8 +508,8 @@ func newSSTableIterator(sst *SSTable, readTs int64) *SSTableIterator {
 	}
 }
 
-// Next returns the next key-value pair from the SSTable
-func (iter *SSTableIterator) Next() ([]byte, interface{}, int64, bool) {
+// next returns the next key-value pair from the SSTable
+func (iter *ssTableIterator) next() ([]byte, interface{}, int64, bool) {
 	// If we've finished, no more items
 	if iter.finished {
 		return nil, nil, 0, false
@@ -572,8 +572,8 @@ func (iter *SSTableIterator) Next() ([]byte, interface{}, int64, bool) {
 	}
 }
 
-// Prev returns the previous key-value pair from the SSTable
-func (iter *SSTableIterator) Prev() ([]byte, interface{}, int64, bool) {
+// prev returns the previous key-value pair from the SSTable
+func (iter *ssTableIterator) prev() ([]byte, interface{}, int64, bool) {
 	// If we're not initialized, initialize backward
 	if !iter.initialized {
 		if !iter.initializeBackward() {
@@ -604,11 +604,11 @@ func (iter *SSTableIterator) Prev() ([]byte, interface{}, int64, bool) {
 	}
 
 	// Now try again with rebuilt history
-	return iter.Prev()
+	return iter.prev()
 }
 
 // initializeForward initializes the iterator for forward traversal
-func (iter *SSTableIterator) initializeForward() bool {
+func (iter *ssTableIterator) initializeForward() bool {
 	// Skip the first block which contains SSTable metadata
 	blockData, _, err := iter.klogBm.Read(1)
 	if err != nil {
@@ -637,7 +637,7 @@ func (iter *SSTableIterator) initializeForward() bool {
 
 // initializeBackward initializes the iterator for backward traversal
 // This is more complex as we need to find the last valid entry
-func (iter *SSTableIterator) initializeBackward() bool {
+func (iter *ssTableIterator) initializeBackward() bool {
 	// We need to read all blocks and build history from the beginning
 	// then we'll traverse from the end
 
@@ -680,7 +680,7 @@ func (iter *SSTableIterator) initializeBackward() bool {
 }
 
 // buildCompleteHistory reads all valid entries from the SSTable and builds complete history
-func (iter *SSTableIterator) buildCompleteHistory() bool {
+func (iter *ssTableIterator) buildCompleteHistory() bool {
 	// Skip the first block which contains SSTable metadata
 	_, _, err := iter.klogBm.Read(1)
 	if err != nil {
@@ -736,7 +736,7 @@ func (iter *SSTableIterator) buildCompleteHistory() bool {
 }
 
 // buildHistoryUntil builds history up to the specified key
-func (iter *SSTableIterator) buildHistoryUntil(targetKey []byte) bool {
+func (iter *ssTableIterator) buildHistoryUntil(targetKey []byte) bool {
 	// Similar to buildCompleteHistory but stops when it reaches targetKey
 
 	// Skip the first block which contains SSTable metadata
@@ -821,7 +821,7 @@ func (iter *SSTableIterator) buildHistoryUntil(targetKey []byte) bool {
 }
 
 // loadNextBlockSet loads the next block set from the SSTable
-func (iter *SSTableIterator) loadNextBlockSet() bool {
+func (iter *ssTableIterator) loadNextBlockSet() bool {
 	if iter.currentSet == nil {
 		// First time loading, get the first data block (skip metadata)
 		blockData, _, err := iter.klogBm.Read(2)

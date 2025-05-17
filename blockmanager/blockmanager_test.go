@@ -21,7 +21,7 @@ import (
 	"bytes"
 	"fmt"
 	"math/rand"
-	"orindb/stack"
+	"orindb/queue"
 	"os"
 	"testing"
 	"time"
@@ -70,14 +70,14 @@ func TestOpenNewFile(t *testing.T) {
 	}
 
 	// Check that we have Allotment number of blocks
-	// Convert the stack to a slice to count elements
+	// Convert the queue to a slice to count elements
 	count := 0
 	for !bm.allocationTable.IsEmpty() {
-		bm.allocationTable.Pop()
+		bm.allocationTable.Dequeue()
 		count++
 	}
 
-	if count+1 != int(Allotment) {
+	if count != int(Allotment) {
 		t.Fatalf("Expected %d blocks in allocation table, got %d", Allotment, count)
 	}
 }
@@ -534,7 +534,7 @@ func TestScanForFreeBlocks(t *testing.T) {
 	freeBlocksBeforeClose := 0
 	originalAllocationTable := bm.allocationTable
 	for !originalAllocationTable.IsEmpty() {
-		originalAllocationTable.Pop()
+		originalAllocationTable.Dequeue()
 		freeBlocksBeforeClose++
 	}
 
@@ -553,7 +553,7 @@ func TestScanForFreeBlocks(t *testing.T) {
 	// Count free blocks after reopening
 	freeBlocksAfterReopen := 0
 	for !bm.allocationTable.IsEmpty() {
-		bm.allocationTable.Pop()
+		bm.allocationTable.Dequeue()
 		freeBlocksAfterReopen++
 	}
 
@@ -564,7 +564,7 @@ func TestScanForFreeBlocks(t *testing.T) {
 	}
 
 	// Reset allocation table for the next test
-	bm.allocationTable = stack.New()
+	bm.allocationTable = queue.New()
 
 	// Append a large number of blocks to verify scanning from end efficiency
 	largeDataCount := 100
@@ -631,7 +631,7 @@ func TestScanForFreeBlocks(t *testing.T) {
 	// Exhaust all initial free blocks by writing something to them
 	initialFreeBlocks := 0
 	for !edgeBm.allocationTable.IsEmpty() {
-		edgeBm.allocationTable.Pop()
+		edgeBm.allocationTable.Dequeue()
 		initialFreeBlocks++
 	}
 

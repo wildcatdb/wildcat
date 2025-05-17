@@ -22,7 +22,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
-	"orindb/stack"
+	"log"
+	"orindb/queue"
 	"os"
 	"sync"
 	"syscall"
@@ -63,7 +64,7 @@ type BlockHeader struct {
 
 // BlockManager manages the allocation and deallocation of blocks in a file
 type BlockManager struct {
-	allocationTable *stack.Stack    // An atomic stack we store free available block ids
+	allocationTable *queue.Queue    // An atomic queue we store free available block ids
 	file            *os.File        // File handle for the block manager
 	fd              uintptr         // File descriptor for direct syscalls
 	syncOption      SyncOption      // Synchronization option for the file
@@ -106,7 +107,7 @@ func Open(filename string, flag int, perm os.FileMode, syncOpt SyncOption, durat
 		return nil, err
 	}
 
-	allocationTable := stack.New()
+	allocationTable := queue.New()
 	bm := &BlockManager{
 		allocationTable: allocationTable,
 		file:            file,
@@ -269,6 +270,7 @@ func (bm *BlockManager) backgroundSync() {
 
 // appendFreeBlocks appends free blocks to the file.
 func (bm *BlockManager) appendFreeBlocks() error {
+	log.Println("Appending free blocks to file")
 	// Get current file size to determine next block ID
 	fileInfo, err := bm.file.Stat()
 	if err != nil {
@@ -288,9 +290,10 @@ func (bm *BlockManager) appendFreeBlocks() error {
 	// Create a buffer for a free block
 	blockBuffer := make([]byte, BlockSize)
 
-	// Append Allotment number of free blocks in reverse order
-	for i := Allotment; i > 0; i-- {
-		newBlockID := blockCount + i - 1
+	// Append Allotment number of free blocks
+	for i := uint64(0); i < Allotment; i++ {
+		newBlockID := blockCount + (i + 1) // New block ID is the current count + 1
+		log.Println("Appending free block ID:", newBlockID)
 
 		// Block ID 0 is reserved, skip it
 		if newBlockID == 0 {
@@ -322,8 +325,8 @@ func (bm *BlockManager) appendFreeBlocks() error {
 		copy(blockBuffer, headerBuf.Bytes())
 
 		// Zero out the rest of the block to prevent junk data
-		for i := len(headerBuf.Bytes()); i < len(blockBuffer); i++ {
-			blockBuffer[i] = 0
+		for j := len(headerBuf.Bytes()); j < len(blockBuffer); j++ {
+			blockBuffer[j] = 0
 		}
 
 		// Calculate position for the new block
@@ -336,7 +339,7 @@ func (bm *BlockManager) appendFreeBlocks() error {
 		}
 
 		// Push the block ID to the allocation table
-		bm.allocationTable.Push(newBlockID)
+		bm.allocationTable.Enqueue(newBlockID)
 	}
 
 	// Sync changes to disk
@@ -357,11 +360,11 @@ func (bm *BlockManager) allocateBlock() (uint64, error) {
 	}
 
 	// Pop a free block ID from the allocation table
-	blockIDValue := bm.allocationTable.Pop()
+	blockIDValue := bm.allocationTable.Dequeue()
 
 	// Check if we got a valid value back
 	if blockIDValue == nil {
-		// If Pop returns nil, it means the stack was actually empty
+		// If Pop returns nil, it means the queue was actually empty
 		// even though IsEmpty() didn't report it (could be a race condition)
 		// So try appending more blocks
 		if err := bm.appendFreeBlocks(); err != nil {
@@ -369,7 +372,7 @@ func (bm *BlockManager) allocateBlock() (uint64, error) {
 		}
 
 		// Try popping again
-		blockIDValue = bm.allocationTable.Pop()
+		blockIDValue = bm.allocationTable.Dequeue()
 		if blockIDValue == nil {
 			return 0, errors.New("failed to allocate block: allocation table is empty")
 		}
@@ -412,7 +415,7 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 	blockCount := uint64(dataSize / int64(BlockSize))
 
 	// Reset allocation table
-	bm.allocationTable = stack.New()
+	bm.allocationTable = queue.New()
 
 	blockHeaderSize := binary.Size(BlockHeader{})
 	headerBuf := make([]byte, blockHeaderSize)
@@ -465,7 +468,7 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 	// All blocks from firstNonFreeBlockFromEnd+1 to blockCount-1 are free
 	// Add them directly to the allocation table (in reverse order to maintain LIFO ordering)
 	for i := blockCount - 1; i > firstNonFreeBlockFromEnd; i-- {
-		bm.allocationTable.Push(i)
+		bm.allocationTable.Enqueue(i)
 	}
 
 	// If all blocks after firstNonFreeBlockFromEnd are free, and firstNonFreeBlockFromEnd is 0,
@@ -532,7 +535,7 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 	// Add in reverse order to maintain LIFO ordering
 	for i := firstNonFreeBlockFromEnd; i >= 1; i-- {
 		if !usedBlocks[i] {
-			bm.allocationTable.Push(i)
+			bm.allocationTable.Enqueue(i)
 		}
 	}
 
