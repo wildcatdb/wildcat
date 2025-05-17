@@ -357,15 +357,14 @@ func (txn *Txn) Iterate(startKey []byte, direction int, fn func(key []byte, valu
 
 // Update performs an atomic update using a transaction
 func (db *DB) Update(fn func(txn *Txn) error) error {
-
 	txn := db.Begin()
-	err := fn(txn)
-	if err != nil {
-		err = txn.Rollback()
-		if err != nil {
-			return err
+	fnErr := fn(txn)
+	if fnErr != nil {
+		rollbackErr := txn.Rollback()
+		if rollbackErr != nil {
+			return fmt.Errorf("transaction failed: %v, rollback failed: %w", fnErr, rollbackErr)
 		}
-		return err
+		return fnErr // Return the original error from the function
 	}
 	return txn.Commit()
 }

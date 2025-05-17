@@ -33,7 +33,10 @@ func TestFlusher_QueueMemtable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+
+	}(dir)
 
 	// Create a test DB
 	opts := &Options{
@@ -46,7 +49,10 @@ func TestFlusher_QueueMemtable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
+	defer func(db *DB) {
+		_ = db.Close()
+
+	}(db)
 
 	// Get the initial memtable
 	initialMemtable := db.memtable.Load().(*Memtable)
@@ -100,7 +106,9 @@ func TestFlusher_FlushMemtable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a test DB
 	opts := &Options{
@@ -151,14 +159,16 @@ func TestFlusher_FlushMemtable(t *testing.T) {
 	}
 
 	// Close and reopen the DB to ensure recovery works
-	db.Close()
+	_ = db.Close()
 
 	// Reopen DB
 	db, err = Open(opts)
 	if err != nil {
 		t.Fatalf("Failed to reopen database: %v", err)
 	}
-	defer db.Close()
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
 
 	// Verify we can still access all the data
 	for i := 0; i < 100; i++ {
@@ -187,7 +197,9 @@ func TestFlusher_BackgroundProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a log channel to capture logs
 	logChannel := make(chan string, 100)
@@ -236,7 +248,7 @@ func TestFlusher_BackgroundProcess(t *testing.T) {
 	}
 
 	// Close the DB
-	db.Close()
+	_ = db.Close()
 
 	// Check for KLog and VLog files in level 1 directory
 	l1Dir := filepath.Join(dir, "l1")
@@ -269,7 +281,9 @@ func TestFlusher_ConcurrentAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a test DB
 	opts := &Options{
@@ -282,7 +296,9 @@ func TestFlusher_ConcurrentAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
 
 	// Number of concurrent writers
 	const numWriters = 10
@@ -364,7 +380,9 @@ func TestFlusher_RecoveryAfterCrash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a test DB
 	opts := &Options{
@@ -413,14 +431,16 @@ func TestFlusher_RecoveryAfterCrash(t *testing.T) {
 	}
 
 	// Close the database (simulating a clean shutdown)
-	db.Close()
+	_ = db.Close()
 
 	// Phase 2: Reopen and verify recovery
 	db, err = Open(opts)
 	if err != nil {
 		t.Fatalf("Failed to reopen database: %v", err)
 	}
-	defer db.Close()
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
 
 	// Verify all data is accessible after recovery
 	for i := 0; i < 1000; i++ {

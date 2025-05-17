@@ -32,7 +32,12 @@ func TestMemtable_BasicOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+		if err != nil {
+
+		}
+	}(dir)
 
 	// Create a log channel that won't be closed in this test
 	logChan := make(chan string, 100)
@@ -96,7 +101,7 @@ func TestMemtable_BasicOperations(t *testing.T) {
 	err = db.Update(func(txn *Txn) error {
 		_, err := txn.Get([]byte("key3"))
 		if err == nil {
-			return fmt.Errorf("Expected key3 to be deleted")
+			return fmt.Errorf("expected key3 to be deleted")
 		}
 		return nil
 	})
@@ -108,7 +113,7 @@ func TestMemtable_BasicOperations(t *testing.T) {
 	memtable := db.memtable.Load().(*Memtable)
 
 	// Close DB properly
-	db.Close()
+	_ = db.Close()
 
 	// Drain the log channel to avoid goroutine leaks
 	for len(logChan) > 0 {
@@ -128,7 +133,9 @@ func TestMemtable_ConcurrentOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -212,7 +219,7 @@ func TestMemtable_ConcurrentOperations(t *testing.T) {
 	}
 
 	// Close properly
-	db.Close()
+	_ = db.Close()
 
 	// Drain the log channel
 	for len(logChan) > 0 {
@@ -226,7 +233,10 @@ func TestMemtable_MVCC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+
+	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -321,7 +331,7 @@ func TestMemtable_MVCC(t *testing.T) {
 	}
 
 	// Clean up
-	db.Close()
+	_ = db.Close()
 
 	// Drain the log channel
 	for len(logChan) > 0 {
@@ -335,7 +345,9 @@ func TestMemtable_LargeValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -391,7 +403,7 @@ func TestMemtable_LargeValues(t *testing.T) {
 	}
 
 	// Close the DB properly
-	db.Close()
+	_ = db.Close()
 
 	// Drain the log channel
 	for len(logChan) > 0 {
@@ -405,7 +417,9 @@ func TestMemtable_Replay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -474,7 +488,7 @@ func TestMemtable_Replay(t *testing.T) {
 	err = db.Update(func(txn *Txn) error {
 		_, err := txn.Get(deleteKey)
 		if err == nil {
-			return fmt.Errorf("Delete verification failed - key still exists")
+			return fmt.Errorf("delete verification failed - key still exists")
 		}
 		return nil
 	})
@@ -514,7 +528,7 @@ func TestMemtable_Replay(t *testing.T) {
 	err = db2.Update(func(txn *Txn) error {
 		_, err := txn.Get(deleteKey)
 		if err == nil {
-			return fmt.Errorf("Delete key should still be deleted after replay")
+			return fmt.Errorf("delete key should still be deleted after replay")
 		}
 		return nil
 	})
@@ -564,7 +578,9 @@ func TestMemtable_UncommittedTransactions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -611,7 +627,7 @@ func TestMemtable_UncommittedTransactions(t *testing.T) {
 	}
 
 	// Close the database
-	db.Close()
+	_ = db.Close()
 
 	// Drain the log channel
 	for len(logChan) > 0 {
@@ -650,7 +666,7 @@ func TestMemtable_UncommittedTransactions(t *testing.T) {
 	err = db2.Update(func(txn *Txn) error {
 		_, err := txn.Get([]byte("uncommitted_key1"))
 		if err == nil {
-			return fmt.Errorf("Uncommitted key should not be accessible")
+			return fmt.Errorf("uncommitted key should not be accessible")
 		}
 		return nil
 	})
@@ -662,7 +678,7 @@ func TestMemtable_UncommittedTransactions(t *testing.T) {
 	err = db2.Update(func(txn *Txn) error {
 		_, err := txn.Get([]byte("rolledback_key1"))
 		if err == nil {
-			return fmt.Errorf("Rolled back key should not be accessible")
+			return fmt.Errorf("rolled back key should not be accessible")
 		}
 		return nil
 	})
@@ -671,7 +687,7 @@ func TestMemtable_UncommittedTransactions(t *testing.T) {
 	}
 
 	// Close properly
-	db2.Close()
+	_ = db2.Close()
 
 	// Drain the log channel
 	for len(logChan) > 0 {
