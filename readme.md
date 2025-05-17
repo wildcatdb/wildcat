@@ -173,13 +173,14 @@ OrinDB provides several configuration options for fine-tuning.
 ```go
 opts := &orindb.Options{
     Directory:           "/path/to/database",
-    WriteBufferSize:     32 * 1024 * 1024, // 32MB memtable size
-    SyncOption:          orindb.SyncFull,  // Full sync for maximum durability
-    SyncInterval:        128 * time.Millisecond, // Only set when using SyncPartial, can be 0 otherwise
-    LevelCount:          7,                // Number of LSM levels
-    LevelMultiplier:     10,               // Size multiplier between levels
-    BlockManagerLRUSize: 256,              // Cache size for block managers
-    BlockSetSize:        8 * 1024 * 1024,  // 8MB block set size, each klog block will have BlockSetSize of entries
+    WriteBufferSize:     32 * 1024 * 1024,        // 32MB memtable size
+    SyncOption:          orindb.SyncFull,         // Full sync for maximum durability
+    SyncInterval:        128 * time.Millisecond,  // Only set when using SyncPartial, can be 0 otherwise
+    LevelCount:          7,                       // Number of LSM levels
+    LevelMultiplier:     10,                      // Size multiplier between levels
+    BlockManagerLRUSize: 256,                     // Cache size for block managers
+    BlockSetSize:        8 * 1024 * 1024,         // 8MB block set size, each klog block will have BlockSetSize of entries
+    LogChannel:          make(chan string, 1000), // Channel for real time logging
 }
 ```
 
@@ -195,6 +196,7 @@ opts := &orindb.Options{
 7. **LevelMultiplier** Size ratio between adjacent levels
 8. **BlockManagerLRUSize** Number of block managers to cache
 9. **BlockSetSize** Size of SSTable klog block sets
+10. **LogChannel** Channel for real-time logging, useful for debugging and monitoring
 
 ## Implementation Details
 ### Data Storage Architecture

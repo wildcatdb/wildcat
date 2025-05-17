@@ -82,6 +82,7 @@ type Options struct {
 	BlockManagerLRUSize int           // Size of the LRU cache for block managers
 	BlockSetSize        int64         // Amount of entries per klog block (in bytes)
 	Permission          os.FileMode   // Permission for created files
+	LogChannel          chan string   // Channel for logging
 }
 
 // DB represents the main OrinDB structure
@@ -97,6 +98,7 @@ type DB struct {
 	closeCh        chan struct{}            // Channel for closing up
 	sstIdGenerator *IDGenerator             // ID generator for SSTables
 	walIdGenerator *IDGenerator             // ID generator for WAL files
+	logChannel     chan string              // Log channel, instead of log file or standard output we log to a channel
 }
 
 // Open initializes a new OrinDB instance with the provided options
@@ -159,6 +161,7 @@ func Open(opts *Options) (*DB, error) {
 	}
 
 	if _, err := os.Stat(db.opts.Directory); os.IsNotExist(err) {
+		db.log(fmt.Sprintf("Directory %s does not exist, creating it...", db.opts.Directory))
 		// Create the directory if it does not exist
 		if err := os.MkdirAll(db.opts.Directory, db.opts.Permission); err != nil {
 			return nil, fmt.Errorf("failed to create directory: %w", err)
@@ -216,6 +219,12 @@ func Open(opts *Options) (*DB, error) {
 
 // Close closes the database and all open resources
 func (db *DB) Close() error {
+	if db == nil {
+		return errors.New("database is nil")
+	}
+
+	db.log("Closing database...")
+
 	// Send signal to close the database
 	select {
 	case <-db.closeCh:
@@ -234,11 +243,14 @@ func (db *DB) Close() error {
 		return true
 	})
 
+	db.log("Database closed successfully.")
+
 	return nil
 }
 
 // reinstate reopens the WAL files and replays them to restore the state of the database
 func (db *DB) reinstate() error {
+	db.log("Reinstating state...")
 	walDir, err := os.ReadDir(db.opts.Directory)
 	if err != nil {
 		return fmt.Errorf("failed to read directory: %w", err)
@@ -352,5 +364,14 @@ func (db *DB) reinstate() error {
 	allTxns = append(allTxns, activeTxns...)
 	db.txns.Store(&allTxns)
 
+	db.log(fmt.Sprintf("Reinstatement of state completed with memory table size: %d and %d wal files", atomic.LoadInt64(&db.memtable.Load().(*Memtable).size), len(walFiles[:len(walFiles)-1])))
+
 	return nil
+}
+
+// log logs a message to the log channel
+func (db *DB) log(msg string) {
+	if db.opts.LogChannel != nil {
+		db.opts.LogChannel <- msg
+	}
 }
