@@ -44,11 +44,12 @@ const (
 )
 
 const (
-	SSTablePrefix    = "sst_"  // Prefix for SSTable files
-	WALFileExtension = ".wal"  // Extension for Write Ahead Log files <timestamp>.wal
-	KLogExtension    = ".klog" // Extension for KLog files
-	VLogExtension    = ".vlog" // Extension for VLog files
-	LevelPrefix      = "l"     // Prefix for level directories i.e. "l0", "l1", etc.
+	SSTablePrefix    = "sst_"     // Prefix for SSTable files
+	LevelPrefix      = "l"        // Prefix for level directories i.e. "l0", "l1", etc.
+	WALFileExtension = ".wal"     // Extension for Write Ahead Log files <timestamp>.wal
+	KLogExtension    = ".klog"    // Extension for KLog files
+	VLogExtension    = ".vlog"    // Extension for VLog files
+	IDGSTFileName    = "idgstate" // Filename for ID generator state
 )
 
 type SyncOption int
@@ -98,7 +99,18 @@ type DB struct {
 	closeCh        chan struct{}            // Channel for closing up
 	sstIdGenerator *IDGenerator             // ID generator for SSTables
 	walIdGenerator *IDGenerator             // ID generator for WAL files
+	txnIdGenerator *IDGenerator             // ID generator for transactions
 	logChannel     chan string              // Log channel, instead of log file or standard output we log to a channel
+	idgs           *IDGeneratorState        // ID generator state
+}
+
+// IDGeneratorState represents the state of the ID generator.
+// When system shuts down the state is saved to disk and restored on next startup.
+type IDGeneratorState struct {
+	lastSstID int64 // Last SSTable ID
+	lastWalID int64 // Last WAL ID
+	lastTxnID int64 // Last transaction ID
+	db        *DB   // Pointer to the database instance
 }
 
 // Open initializes a new OrinDB instance with the provided options
@@ -144,13 +156,18 @@ func Open(opts *Options) (*DB, error) {
 	}
 
 	db := &DB{
-		lru:            lru.New(int64(opts.BlockManagerLRUSize), 0.25, 0.7),
-		wg:             &sync.WaitGroup{},
-		opts:           opts,
-		txns:           atomic.Pointer[[]*Txn]{},
-		closeCh:        make(chan struct{}),
-		sstIdGenerator: NewIDGenerator(),
-		walIdGenerator: NewIDGenerator(),
+		lru:     lru.New(int64(opts.BlockManagerLRUSize), 0.25, 0.7),
+		wg:      &sync.WaitGroup{},
+		opts:    opts,
+		txns:    atomic.Pointer[[]*Txn]{},
+		closeCh: make(chan struct{}),
+	}
+
+	db.idgs = &IDGeneratorState{
+		lastSstID: 0,
+		lastWalID: 0,
+		lastTxnID: 0,
+		db:        db,
 	}
 
 	db.flusher = newFlusher(db)
@@ -165,6 +182,19 @@ func Open(opts *Options) (*DB, error) {
 		// Create the directory if it does not exist
 		if err := os.MkdirAll(db.opts.Directory, db.opts.Permission); err != nil {
 			return nil, fmt.Errorf("failed to create directory: %w", err)
+		}
+
+		db.idgs = &IDGeneratorState{
+			lastSstID: 0,
+			lastWalID: 0,
+			lastTxnID: 0,
+			db:        db,
+		}
+
+	} else {
+		// Directory exists, load the ID generator state
+		if err := db.idgs.loadState(); err != nil {
+			return nil, fmt.Errorf("failed to load ID generator state: %w", err)
 		}
 
 	}
@@ -244,6 +274,11 @@ func (db *DB) Close() error {
 		}
 		return true
 	})
+
+	// Save the ID generator state to disk
+	if err := db.idgs.saveState(); err != nil {
+		return fmt.Errorf("failed to save ID generator state: %w", err)
+	}
 
 	db.log("Database closed successfully.")
 
@@ -385,4 +420,56 @@ func (db *DB) log(msg string) {
 	if db.opts.LogChannel != nil {
 		db.opts.LogChannel <- msg
 	}
+}
+
+// loadState loads the ID generator state from a file
+func (idgs *IDGeneratorState) loadState() error {
+	if idgs == nil {
+		return errors.New("IDGeneratorState is nil")
+	}
+
+	// Open the ID generator state file
+	idgsFilePath := fmt.Sprintf("%s%s", idgs.db.opts.Directory, IDGSTFileName)
+	idgsFile, err := os.Open(idgsFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to open ID generator state file: %w", err)
+	}
+	defer idgsFile.Close()
+
+	// Read the ID generator state from the file
+	if _, err := fmt.Fscanf(idgsFile, "%d %d %d", &idgs.lastSstID, &idgs.lastWalID, &idgs.lastTxnID); err != nil {
+		return fmt.Errorf("failed to read ID generator state: %w", err)
+	}
+
+	idgs.db.txnIdGenerator = ReloadIDGenerator(idgs.lastTxnID)
+	idgs.db.walIdGenerator = ReloadIDGenerator(idgs.lastWalID)
+	idgs.db.sstIdGenerator = ReloadIDGenerator(idgs.lastSstID)
+
+	return nil
+}
+
+// saveState saves the current state of the ID generator to a file
+func (idgs *IDGeneratorState) saveState() error {
+	if idgs == nil {
+		return errors.New("IDGeneratorState is nil")
+	}
+
+	idgs.lastTxnID = idgs.db.txnIdGenerator.Save()
+	idgs.lastWalID = idgs.db.walIdGenerator.Save()
+	idgs.lastSstID = idgs.db.sstIdGenerator.Save()
+
+	// Open the ID generator state file
+	idgsFilePath := fmt.Sprintf("%s%s", idgs.db.opts.Directory, IDGSTFileName)
+	idgsFile, err := os.OpenFile(idgsFilePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, idgs.db.opts.Permission)
+	if err != nil {
+		return fmt.Errorf("failed to open ID generator state file: %w", err)
+	}
+	defer idgsFile.Close()
+
+	// Write the ID generator state to the file
+	if _, err := fmt.Fprintf(idgsFile, "%d %d %d", idgs.lastSstID, idgs.lastWalID, idgs.lastTxnID); err != nil {
+		return fmt.Errorf("failed to write ID generator state: %w", err)
+	}
+
+	return nil
 }

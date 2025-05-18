@@ -64,7 +64,7 @@ func TestTxn_BasicOperations(t *testing.T) {
 	txn := db.Begin()
 
 	// Verify transaction ID is non-empty
-	if txn.Id == "" {
+	if txn.Id == 0 {
 		t.Errorf("Expected non-empty transaction ID")
 	}
 

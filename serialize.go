@@ -106,3 +106,29 @@ func (bs *BlockSet) deserializeBlockSet(data []byte) error {
 	return nil
 
 }
+
+func (idgs *IDGeneratorState) serializeIDGeneratorState() ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := gob.NewEncoder(&buffer)
+
+	// Serialize the IDGeneratorState
+	err := encoder.Encode(idgs)
+	if err != nil {
+		return nil, err
+	}
+
+	return buffer.Bytes(), nil
+}
+
+func (idgs *IDGeneratorState) deserializeIDGeneratorState(data []byte) error {
+	buffer := bytes.NewBuffer(data)
+	decoder := gob.NewDecoder(buffer)
+
+	// Deserialize the IDGeneratorState
+	err := decoder.Decode(idgs)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}

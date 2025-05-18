@@ -20,7 +20,6 @@ package orindb
 import (
 	"bytes"
 	"fmt"
-	"github.com/google/uuid"
 	"orindb/blockmanager"
 	"sync"
 	"sync/atomic"
@@ -29,7 +28,7 @@ import (
 
 // Txn represents a transaction in OrinDB
 type Txn struct {
-	Id        string
+	Id        int64
 	ReadSet   map[string]int64
 	WriteSet  map[string][]byte
 	DeleteSet map[string]bool
@@ -42,7 +41,7 @@ type Txn struct {
 // Begin starts a new transaction
 func (db *DB) Begin() *Txn {
 	txn := &Txn{
-		Id:        uuid.New().String(),
+		Id:        db.txnIdGenerator.nextID(),
 		db:        db,
 		ReadSet:   make(map[string]int64),
 		WriteSet:  make(map[string][]byte),
@@ -65,7 +64,7 @@ func (db *DB) Begin() *Txn {
 }
 
 // GetTxn retrieves a transaction by ID
-func (db *DB) GetTxn(id string) (*Txn, error) {
+func (db *DB) GetTxn(id int64) (*Txn, error) {
 	// Find the transaction by ID
 	txns := db.txns.Load()
 	if txns == nil {

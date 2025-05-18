@@ -18,7 +18,7 @@
 package orindb
 
 import (
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,33 +26,43 @@ import (
 
 // IDGenerator is a thread-safe ID generator
 type IDGenerator struct {
-	mu     *sync.Mutex
 	lastID int64
 }
 
 // NewIDGenerator creates a new ID generator
 func NewIDGenerator() *IDGenerator {
 	return &IDGenerator{
-		mu:     &sync.Mutex{},
 		lastID: time.Now().UnixNano(),
 	}
 }
 
-// NextID generates the next unique ID
-func (g *IDGenerator) nextID() int64 {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	// Get current timestamp
-	ts := time.Now().UnixNano()
-
-	// Ensure monotonicity by using max of current time and last ID + 1
-	if ts <= g.lastID {
-		ts = g.lastID + 1
+// ReloadIDGenerator creates a new ID generator with a specified last ID
+func ReloadIDGenerator(lastId int64) *IDGenerator {
+	return &IDGenerator{
+		lastID: lastId,
 	}
+}
 
-	// Update last ID
-	g.lastID = ts
+// nextID generates the next unique ID
+func (g *IDGenerator) nextID() int64 {
+	for {
+		now := time.Now().UnixNano()
+		last := atomic.LoadInt64(&g.lastID)
 
-	return ts
+		var next int64
+		if now > last {
+			next = now
+		} else {
+			next = last + 1
+		}
+
+		if atomic.CompareAndSwapInt64(&g.lastID, last, next) {
+			return next
+		}
+	}
+}
+
+// Save returns the last ID to be persisted
+func (g *IDGenerator) Save() int64 {
+	return atomic.LoadInt64(&g.lastID)
 }
