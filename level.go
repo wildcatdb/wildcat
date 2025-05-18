@@ -66,8 +66,6 @@ func (l *Level) reopen() error {
 			return fmt.Errorf("failed to parse SSTable ID from filename %s: %w", file.Name(), err)
 		}
 
-		// Fix path construction to ensure correct separators
-		// Ensure path ends with separator
 		levelPath := l.path
 		if !strings.HasSuffix(levelPath, string(os.PathSeparator)) {
 			levelPath += string(os.PathSeparator)
@@ -117,7 +115,6 @@ func (l *Level) reopen() error {
 		sstables = append(sstables, sstable)
 	}
 
-	// Rest of the method remains unchanged...
 	sort.Slice(sstables, func(i, j int) bool {
 		return sstables[i].Id < sstables[j].Id
 	})

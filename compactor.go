@@ -93,11 +93,11 @@ func (compactor *Compactor) backgroundProcess() {
 		case <-compactor.db.closeCh:
 			return
 		case <-ticker.C:
-			// Check and schedule compactions
-			compactor.checkAndScheduleCompactions()
-
-			// Execute pending compactions if under concurrency limit
-			compactor.executeCompactions()
+			//// Check and schedule compactions
+			//compactor.checkAndScheduleCompactions()
+			//
+			//// Execute pending compactions if under concurrency limit
+			//compactor.executeCompactions()
 		}
 	}
 }

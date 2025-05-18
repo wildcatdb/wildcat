@@ -57,9 +57,18 @@ type ValueWithTimestamp struct {
 
 // get retrieves a value from the SSTable using the key and timestamp
 func (sst *SSTable) get(key []byte, timestamp int64) ([]byte, int64) {
-	// Fix the range check - only proceed if key is in range
-	if bytes.Compare(key, sst.Min) < 0 || bytes.Compare(key, sst.Max) > 0 {
-		return nil, 0 // Key not in range
+	// Skip range check if Min or Max are empty
+	// Empty Min/Max indicate either an empty SSTable (which we can skip safely)
+	// or a corrupted range (which we should check just in case)
+	if len(sst.Min) > 0 && len(sst.Max) > 0 {
+		// Only skip if key is definitely outside the range
+		if bytes.Compare(key, sst.Min) < 0 || bytes.Compare(key, sst.Max) > 0 {
+			return nil, 0 // Key not in range
+		}
+	} else if sst.EntryCount == 0 {
+		// If the SSTable is empty (as confirmed by EntryCount),
+		// we can safely skip it regardless of Min/Max
+		return nil, 0
 	}
 
 	// Get the KLog block manager
@@ -118,6 +127,11 @@ func (sst *SSTable) get(key []byte, timestamp int64) ([]byte, int64) {
 
 	// If we found a valid entry, retrieve the value
 	if foundEntry != nil {
+		// Check if this is a deletion marker
+		if foundEntry.ValueBlockID == -1 { // Special marker for deletion
+			return nil, 0 // Key was deleted
+		}
+
 		// Get the VLog block manager
 		vlogPath := sst.vLogPath()
 		var vlogBm *blockmanager.BlockManager
@@ -137,6 +151,11 @@ func (sst *SSTable) get(key []byte, timestamp int64) ([]byte, int64) {
 		value, _, err := vlogBm.Read(foundEntry.ValueBlockID)
 		if err != nil {
 			return nil, 0
+		}
+
+		// Check if the value itself is a tombstone marker
+		if value == nil || len(value) == 0 {
+			return nil, 0 // Key was deleted
 		}
 
 		// Return the value with its timestamp so we can compare values from different SSTables

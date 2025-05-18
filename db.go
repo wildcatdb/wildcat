@@ -324,41 +324,179 @@ func (db *DB) reinstate() error {
 	if len(walFiles) == 0 {
 		db.log("No WAL files found, creating new memtable and WAL...")
 		// No WAL files found, create a new memtable and WAL
+		newWalPath := fmt.Sprintf("%s%d%s", db.opts.Directory, db.walIdGenerator.nextID(), WALFileExtension)
 
 		db.memtable.Store(&Memtable{
 			skiplist: skiplist.New(),
 			wal: &WAL{
-				path: fmt.Sprintf("%s%d%s", db.opts.Directory, db.walIdGenerator.nextID(), WALFileExtension),
+				path: newWalPath,
 			},
 			db: db,
 		})
 
-		walBm, err := blockmanager.Open(db.memtable.Load().(*Memtable).wal.path, os.O_RDWR|os.O_CREATE, db.opts.Permission, blockmanager.SyncOption(db.opts.SyncOption))
+		walBm, err := blockmanager.Open(newWalPath, os.O_RDWR|os.O_CREATE, db.opts.Permission, blockmanager.SyncOption(db.opts.SyncOption))
 		if err != nil {
 			return fmt.Errorf("failed to open WAL block manager: %w", err)
 		}
 
 		// Add the WAL to the LRU cache
-		db.lru.Put(db.memtable.Load().(*Memtable).wal.path, walBm)
+		db.lru.Put(newWalPath, walBm)
 
 		// Initialize empty transactions slice
 		txns := make([]*Txn, 0)
 		db.txns.Store(&txns)
 
-		db.log(fmt.Sprintf("Created new memtable and WAL at %s", db.memtable.Load().(*Memtable).wal.path))
+		db.log(fmt.Sprintf("Created new memtable and WAL at %s", newWalPath))
 
 		return nil // No WAL files, just return as we created a new memtable and WAL
 	}
 
-	// Initialize the transactions map
-	allTxns := make([]*Txn, 0)
+	// Global transaction map to track transactions across all WAL files
+	// We'll organize this as a map of transaction ID to a slice of transaction entries
+	// This helps preserve the order of operations within a transaction
+	txnTimeline := make(map[int64][]*Txn)
+	var totalEntries int
 
-	// Process all but the latest WAL file as immutable memtables
+	// Process all WAL files in order (chronological)
+	for i, walFile := range walFiles {
+		walPath := fmt.Sprintf("%s%s", db.opts.Directory, walFile)
+		db.log(fmt.Sprintf("Processing WAL %d of %d: %s", i+1, len(walFiles), walPath))
+
+		// Open the WAL file
+		walBm, err := blockmanager.Open(walPath,
+			os.O_RDONLY,
+			db.opts.Permission,
+			blockmanager.SyncOption(db.opts.SyncOption))
+
+		if err != nil {
+			db.log(fmt.Sprintf("Warning: Failed to open WAL %s: %v - skipping", walPath, err))
+			continue // Skip this WAL instead of failing completely
+		}
+
+		// Add WAL to LRU cache
+		db.lru.Put(walPath, walBm)
+
+		// Process all transaction entries in this WAL
+		iter := walBm.Iterator()
+		var walEntries int
+
+		for {
+			data, _, err := iter.Next()
+			if err != nil {
+				break // End of WAL
+			}
+
+			walEntries++
+			totalEntries++
+
+			var txn Txn
+			if err := txn.deserializeTransaction(data); err != nil {
+				db.log(fmt.Sprintf("Warning: Failed to deserialize transaction in %s: %v - skipping entry",
+					walPath, err))
+				continue // Skip this entry
+			}
+
+			// Set database reference
+			txn.db = db
+
+			// Create a deep copy of the transaction
+			txnCopy := &Txn{
+				Id:        txn.Id,
+				Timestamp: txn.Timestamp,
+				WriteSet:  make(map[string][]byte),
+				DeleteSet: make(map[string]bool),
+				ReadSet:   make(map[string]int64),
+				Committed: txn.Committed,
+				db:        db,
+			}
+
+			// Copy the sets
+			for k, v := range txn.WriteSet {
+				txnCopy.WriteSet[k] = v
+			}
+			for k, v := range txn.DeleteSet {
+				txnCopy.DeleteSet[k] = v
+			}
+			for k, v := range txn.ReadSet {
+				txnCopy.ReadSet[k] = v
+			}
+
+			// Add to timeline in order
+			txnTimeline[txn.Id] = append(txnTimeline[txn.Id], txnCopy)
+		}
+
+		db.log(fmt.Sprintf("Processed %d entries from WAL %s", walEntries, walPath))
+	}
+
+	// Now consolidate the transaction timeline into the final transaction state
+	// Each operation should be applied in order, and the last operation for a key wins
+	globalTxnMap := make(map[int64]*Txn)
+
+	for txnID, txnEntries := range txnTimeline {
+		// Create an empty final transaction state
+		finalTxn := &Txn{
+			Id:        txnID,
+			WriteSet:  make(map[string][]byte),
+			DeleteSet: make(map[string]bool),
+			ReadSet:   make(map[string]int64),
+			Committed: false,
+			db:        db,
+		}
+
+		// Track the status of each key to determine the final state
+		keyStates := make(map[string]string) // Map of key to its current state ("write", "delete", or "read")
+
+		// Apply transactions in chronological order
+		for _, entry := range txnEntries {
+			// Update final transaction timestamp to the latest
+			if entry.Timestamp > finalTxn.Timestamp {
+				finalTxn.Timestamp = entry.Timestamp
+			}
+
+			// A commit flag on any entry means the transaction is committed
+			if entry.Committed {
+				finalTxn.Committed = true
+			}
+
+			// Process writes - newer operations override older ones
+			for key, value := range entry.WriteSet {
+				finalTxn.WriteSet[key] = value
+				keyStates[key] = "write" // Mark as written
+				// If it was previously deleted, remove it from delete set
+				delete(finalTxn.DeleteSet, key)
+			}
+
+			// Process deletes - delete always wins over write
+			for key := range entry.DeleteSet {
+				delete(finalTxn.WriteSet, key) // Remove from write set
+				finalTxn.DeleteSet[key] = true
+				keyStates[key] = "delete" // Mark as deleted
+			}
+
+			// Process reads - always keep the latest read timestamp
+			for key, timestamp := range entry.ReadSet {
+				// Only update if this read is newer
+				if ts, exists := finalTxn.ReadSet[key]; !exists || timestamp > ts {
+					finalTxn.ReadSet[key] = timestamp
+				}
+				// Reads don't change the write/delete status
+			}
+		}
+
+		// Clean up any empty sets
+		if len(finalTxn.WriteSet) == 0 && len(finalTxn.DeleteSet) == 0 && len(finalTxn.ReadSet) == 0 && !finalTxn.Committed {
+			// Skip this transaction as it has no actual impact
+			continue
+		}
+
+		// Store the consolidated transaction
+		globalTxnMap[txnID] = finalTxn
+	}
+
+	// Now create immutable memtables for all but the last WAL
 	for i, walFile := range walFiles[:len(walFiles)-1] {
 		walPath := fmt.Sprintf("%s%s", db.opts.Directory, walFile)
-		db.log(fmt.Sprintf("Processing immutable WAL %d of %d: %s", i+1, len(walFiles)-1, walPath))
 
-		// Create a memtable for this WAL
 		immutableMemt := &Memtable{
 			skiplist: skiplist.New(),
 			wal: &WAL{
@@ -367,72 +505,184 @@ func (db *DB) reinstate() error {
 			db: db,
 		}
 
-		// Open the WAL file with improved error handling
-		walBm, err := blockmanager.Open(walPath, os.O_RDONLY, db.opts.Permission, blockmanager.SyncOption(db.opts.SyncOption))
-		if err != nil {
-			db.log(fmt.Sprintf("Warning: Failed to open immutable WAL %s: %v - skipping", walPath, err))
-			continue // Skip this WAL instead of failing completely
-		}
+		// For immutable memtables, we'll apply all transactions that were committed
+		populateMemtableFromTxns(immutableMemt, globalTxnMap, true)
 
-		// Add WAL to LRU cache
-		db.lru.Put(walPath, walBm)
-
-		// Replay transactions from this WAL to the memtable
-		// We pass an empty slice to track any uncommitted transactions
-		activeTxns := make([]*Txn, 0)
-		err = immutableMemt.replay(&activeTxns)
-		if err != nil {
-			db.log(fmt.Sprintf("Warning: Failed to replay immutable WAL %s: %v - skipping", walPath, err))
-			continue // Skip this WAL instead of failing completely
-		}
-
-		// Log any uncommitted transactions found in immutable WALs (this shouldn't happen)
-		if len(activeTxns) > 0 {
-			db.log(fmt.Sprintf("Warning: Found %d uncommitted transactions in immutable WAL %s", len(activeTxns), walPath))
-			// Add any uncommitted transactions to our tracking
-			allTxns = append(allTxns, activeTxns...)
-		}
-
+		// Enqueue the memtable for flushing
 		db.flusher.enqueueMemtable(immutableMemt)
-		db.log(fmt.Sprintf("Successfully processed immutable WAL %s", walPath))
+		db.log(fmt.Sprintf("Enqueued immutable memtable %d of %d from %s for flushing",
+			i+1, len(walFiles)-1, walPath))
 	}
 
-	// Open the latest WAL file as the active WAL
-	activeWAL := walFiles[len(walFiles)-1]
-	activeWALPath := fmt.Sprintf("%s%s", db.opts.Directory, activeWAL)
-
-	db.memtable.Store(&Memtable{
+	// Create the active memtable from the latest WAL
+	activeWALPath := fmt.Sprintf("%s%s", db.opts.Directory, walFiles[len(walFiles)-1])
+	activeMemt := &Memtable{
 		skiplist: skiplist.New(),
 		wal: &WAL{
 			path: activeWALPath,
 		},
 		db: db,
-	})
+	}
 
-	// Open the active WAL
-	walBm, err := blockmanager.Open(activeWALPath, os.O_RDWR, db.opts.Permission, blockmanager.SyncOption(db.opts.SyncOption))
+	// Open the active WAL for read/write
+	activeWalBm, err := blockmanager.Open(activeWALPath,
+		os.O_RDWR, // Open for read/write
+		db.opts.Permission,
+		blockmanager.SyncOption(db.opts.SyncOption))
+
 	if err != nil {
-		return fmt.Errorf("failed to open active WAL block manager: %w", err)
+		return fmt.Errorf("failed to reopen active WAL for writing: %w", err)
 	}
 
-	// Add the WAL to the LRU cache
-	db.lru.Put(activeWALPath, walBm)
+	// Update or add to LRU cache
+	db.lru.Put(activeWALPath, activeWalBm)
 
-	// For the active WAL, we need to track transactions that are not yet committed
+	// Populate the active memtable with all committed transactions
+	populateMemtableFromTxns(activeMemt, globalTxnMap, false)
+
+	// Store the active memtable
+	db.memtable.Store(activeMemt)
+
+	// Collect active (uncommitted) transactions
 	activeTxns := make([]*Txn, 0)
+	for _, txn := range globalTxnMap {
+		if !txn.Committed &&
+			(len(txn.WriteSet) > 0 || len(txn.DeleteSet) > 0 || len(txn.ReadSet) > 0) {
+			// Add a deep copy to avoid mutation issues
+			txnCopy := &Txn{
+				Id:        txn.Id,
+				Timestamp: txn.Timestamp,
+				WriteSet:  make(map[string][]byte),
+				DeleteSet: make(map[string]bool),
+				ReadSet:   make(map[string]int64),
+				Committed: txn.Committed,
+				db:        db,
+				mutex:     sync.Mutex{},
+			}
 
-	// Replay transactions from active WAL to the memtable and collect active transactions
-	if err := db.memtable.Load().(*Memtable).replay(&activeTxns); err != nil {
-		return fmt.Errorf("failed to replay active WAL: %w", err)
+			for k, v := range txn.WriteSet {
+				txnCopy.WriteSet[k] = v
+			}
+			for k := range txn.DeleteSet {
+				txnCopy.DeleteSet[k] = true
+			}
+			for k, v := range txn.ReadSet {
+				txnCopy.ReadSet[k] = v
+			}
+
+			activeTxns = append(activeTxns, txnCopy)
+		}
 	}
 
-	// Update the transaction state in the database
-	allTxns = append(allTxns, activeTxns...)
-	db.txns.Store(&allTxns)
+	// Store active transactions
+	db.txns.Store(&activeTxns)
 
-	db.log(fmt.Sprintf("Reinstatement of state completed with memory table size: %d and %d wal files", atomic.LoadInt64(&db.memtable.Load().(*Memtable).size), len(walFiles[:len(walFiles)-1])))
+	// Log summary statistics
+	db.log(fmt.Sprintf("Reinstatement completed: processed %d total entries across %d WAL files",
+		totalEntries, len(walFiles)))
+	db.log(fmt.Sprintf("Recovered %d transactions total, %d committed, %d active",
+		len(globalTxnMap), len(globalTxnMap)-len(activeTxns), len(activeTxns)))
+	db.log(fmt.Sprintf("Active memtable size: %d bytes with %d entries",
+		atomic.LoadInt64(&activeMemt.size), activeMemt.skiplist.Count(time.Now().UnixNano()+10000000000)))
 
 	return nil
+}
+
+// Helper function to populate a memtable from a transaction map
+func populateMemtableFromTxns(memt *Memtable, txnMap map[int64]*Txn, includeUncommitted bool) {
+	var committedCount, uncommittedCount int
+	var totalBytes int64
+
+	// First, collect all keys that should be in the memtable and their final state
+	keyFinalStates := make(map[string]struct {
+		isDeleted bool
+		value     []byte
+		timestamp int64
+		txnID     int64
+	})
+
+	// Process transactions in order of their timestamp
+	type txnWithID struct {
+		id  int64
+		txn *Txn
+	}
+
+	txnSlice := make([]txnWithID, 0, len(txnMap))
+	for id, txn := range txnMap {
+		txnSlice = append(txnSlice, txnWithID{id, txn})
+	}
+
+	// Sort by timestamp
+	sort.Slice(txnSlice, func(i, j int) bool {
+		return txnSlice[i].txn.Timestamp < txnSlice[j].txn.Timestamp
+	})
+
+	for _, t := range txnSlice {
+		txn := t.txn
+
+		// Skip uncommitted transactions unless explicitly requested
+		if !txn.Committed && !includeUncommitted {
+			uncommittedCount++
+			continue
+		}
+
+		committedCount++
+
+		// Process all keys in this transaction
+		// Writes first
+		for key, value := range txn.WriteSet {
+			// Only update if this key wasn't deleted by this transaction
+			if !txn.DeleteSet[key] {
+				keyFinalStates[key] = struct {
+					isDeleted bool
+					value     []byte
+					timestamp int64
+					txnID     int64
+				}{
+					isDeleted: false,
+					value:     value,
+					timestamp: txn.Timestamp,
+					txnID:     txn.Id,
+				}
+			}
+		}
+
+		// Then deletes, which override writes
+		for key := range txn.DeleteSet {
+			keyFinalStates[key] = struct {
+				isDeleted bool
+				value     []byte
+				timestamp int64
+				txnID     int64
+			}{
+				isDeleted: true,
+				value:     nil,
+				timestamp: txn.Timestamp,
+				txnID:     txn.Id,
+			}
+		}
+	}
+
+	// Now apply the final states to the memtable
+	for key, state := range keyFinalStates {
+		byteKey := []byte(key)
+
+		if state.isDeleted {
+			// Apply deletion
+			memt.skiplist.Delete(byteKey, state.timestamp)
+			// We don't subtract from totalBytes for deleted keys to keep calculations consistent
+		} else {
+			// Apply write
+			memt.skiplist.Put(byteKey, state.value, state.timestamp)
+			totalBytes += int64(len(key) + len(state.value))
+		}
+	}
+
+	// Update the memtable size
+	atomic.StoreInt64(&memt.size, totalBytes)
+
+	memt.db.log(fmt.Sprintf("Populated memtable with %d keys from %d committed transactions, skipped %d uncommitted. Size: %d bytes",
+		len(keyFinalStates), committedCount, uncommittedCount, totalBytes))
 }
 
 // log logs a message to the log channel

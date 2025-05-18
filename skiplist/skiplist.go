@@ -575,3 +575,28 @@ func (sl *SkipList) Count(readTimestamp int64) int {
 
 	return count
 }
+
+// DeleteCount returns the number of delete operations visible at the given timestamp
+func (sl *SkipList) DeleteCount(readTimestamp int64) int {
+	// Start at the header node
+	curr := sl.header
+	count := 0
+
+	// Traverse all nodes at level 0
+	currPtr := atomic.LoadPointer(&curr.forward[0])
+	curr = (*Node)(currPtr)
+
+	for curr != nil {
+		// Check if this node has a visible version at the given timestamp
+		version := curr.findVisibleVersion(readTimestamp)
+		if version != nil && version.Type == Delete {
+			count++
+		}
+
+		// Move to the next node
+		currPtr = atomic.LoadPointer(&curr.forward[0])
+		curr = (*Node)(currPtr)
+	}
+
+	return count
+}

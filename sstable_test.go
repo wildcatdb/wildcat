@@ -18,6 +18,7 @@
 package orindb
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -473,5 +474,243 @@ func TestSSTable_MVCCWithMultipleVersions(t *testing.T) {
 		t.Logf("Expected at least 5 .klog files, found %d", klogCount)
 	} else {
 		t.Logf("Found %d .klog files in level 1 directory", klogCount)
+	}
+}
+
+func TestSSTable_SimpleDeleteWithDelay(t *testing.T) {
+	// Create a temporary directory for the test
+	dir, err := os.MkdirTemp("", "orindb_sstable_delete_delay_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	// Create a log channel
+	logChan := make(chan string, 100)
+	defer func() {
+		// Drain the log channel
+		for len(logChan) > 0 {
+			<-logChan
+		}
+	}()
+
+	// Create a test DB
+	opts := &Options{
+		Directory:  dir,
+		SyncOption: SyncFull,
+		LogChannel: logChan,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Insert a key
+	key := []byte("delay_test_key")
+	value := []byte("delay_test_value")
+
+	err = db.Update(func(txn *Txn) error {
+		return txn.Put(key, value)
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert key: %v", err)
+	}
+
+	// Verify the key exists
+	var retrievedValue []byte
+	err = db.Update(func(txn *Txn) error {
+		var err error
+		retrievedValue, err = txn.Get(key)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("Failed to get key after insert: %v", err)
+	}
+	if !bytes.Equal(retrievedValue, value) {
+		t.Fatalf("Value mismatch: expected %s, got %s", value, retrievedValue)
+	}
+	t.Logf("Key found after insertion: %s", retrievedValue)
+
+	// Delete the key
+	t.Logf("Deleting key: %s", key)
+	err = db.Update(func(txn *Txn) error {
+		t.Logf("Delete transaction ID: %d, Timestamp: %d", txn.Id, txn.Timestamp)
+		return txn.Delete(key)
+	})
+	if err != nil {
+		t.Fatalf("Failed to delete key: %v", err)
+	}
+
+	// Add a small delay to ensure the deletion is fully applied
+	time.Sleep(100 * time.Millisecond)
+
+	// Try to get the deleted key
+	err = db.Update(func(txn *Txn) error {
+		t.Logf("Verification transaction ID: %d, Timestamp: %d", txn.Id, txn.Timestamp)
+		_, err := txn.Get(key)
+		if err == nil {
+			return fmt.Errorf("key should be deleted but is still accessible")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Deletion verification failed: %v", err)
+	}
+	t.Logf("Key correctly not found after deletion")
+
+	// Force a flush to ensure deletion is persisted
+	t.Logf("Forcing flush after deletion")
+	largeValue := make([]byte, 1024*1024) // 1MB should exceed any buffer size
+	err = db.Update(func(txn *Txn) error {
+		return txn.Put([]byte("large_key"), largeValue)
+	})
+	if err != nil {
+		t.Fatalf("Failed to trigger flush: %v", err)
+	}
+
+	// Wait for flush to complete
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify key is still deleted after flush
+	err = db.Update(func(txn *Txn) error {
+		_, err := txn.Get(key)
+		if err == nil {
+			return fmt.Errorf("key should be deleted but is still accessible after flush")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Post-flush verification failed: %v", err)
+	}
+	t.Logf("Key correctly not found after flush")
+
+	// Close and reopen database
+	err = db.Close()
+	if err != nil {
+		t.Fatalf("Failed to close database: %v", err)
+	}
+
+	// Drain log channel
+	for len(logChan) > 0 {
+		<-logChan
+	}
+
+	opts.LogChannel = nil
+	db2, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to reopen database: %v", err)
+	}
+	defer db2.Close()
+
+	// Verify key is still deleted after restart
+	err = db2.Update(func(txn *Txn) error {
+		_, err := txn.Get(key)
+		if err == nil {
+			return fmt.Errorf("key should be deleted but is still accessible after restart")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Post-restart verification failed: %v", err)
+	}
+	t.Logf("Key correctly not found after restart")
+}
+
+func TestTransaction_DeleteTimestamp(t *testing.T) {
+	// Create a temporary directory for the test
+	dir, err := os.MkdirTemp("", "orindb_transaction_delete_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	// Create a log channel
+	logChan := make(chan string, 100)
+	defer func() {
+		// Drain the log channel
+		for len(logChan) > 0 {
+			<-logChan
+		}
+	}()
+
+	// Create a test DB
+	opts := &Options{
+		Directory:  dir,
+		SyncOption: SyncNone,
+		LogChannel: logChan,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Insert a key
+	key := []byte("timestamp_test_key")
+	value := []byte("timestamp_test_value")
+
+	txn1 := db.Begin()
+	t.Logf("Insert transaction ID: %d, Timestamp: %d", txn1.Id, txn1.Timestamp)
+
+	err = txn1.Put(key, value)
+	if err != nil {
+		t.Fatalf("Failed to insert key: %v", err)
+	}
+
+	err = txn1.Commit()
+	if err != nil {
+		t.Fatalf("Failed to commit insert: %v", err)
+	}
+
+	// Verify the key exists
+	txn2 := db.Begin()
+	t.Logf("Verification transaction ID: %d, Timestamp: %d", txn2.Id, txn2.Timestamp)
+
+	retrievedValue, err := txn2.Get(key)
+	if err != nil {
+		t.Fatalf("Failed to get key after insert: %v", err)
+	}
+	if !bytes.Equal(retrievedValue, value) {
+		t.Fatalf("Value mismatch: expected %s, got %s", value, retrievedValue)
+	}
+	t.Logf("Key found after insertion: %s", retrievedValue)
+
+	// Delete the key with a new transaction
+	txn3 := db.Begin()
+	t.Logf("Delete transaction ID: %d, Timestamp: %d", txn3.Id, txn3.Timestamp)
+
+	err = txn3.Delete(key)
+	if err != nil {
+		t.Fatalf("Failed to delete key: %v", err)
+	}
+
+	err = txn3.Commit()
+	if err != nil {
+		t.Fatalf("Failed to commit delete: %v", err)
+	}
+
+	// Verify the key is deleted with a new transaction
+	txn4 := db.Begin()
+	t.Logf("Post-delete verification transaction ID: %d, Timestamp: %d", txn4.Id, txn4.Timestamp)
+
+	_, err = txn4.Get(key)
+	if err == nil {
+		t.Fatalf("Key still accessible after deletion")
+	}
+	t.Logf("Key correctly not found after deletion: %v", err)
+
+	// Verify we can still access the key with a timestamp before deletion
+	txn5 := db.Begin()
+	txn5.Timestamp = txn1.Timestamp // Use the original insert timestamp
+	t.Logf("Historical verification transaction ID: %d, Using Timestamp: %d", txn5.Id, txn5.Timestamp)
+
+	retrievedValue, err = txn5.Get(key)
+	if err != nil {
+		t.Logf("Historical view should see the key but got error: %v", err)
+	} else {
+		t.Logf("Historical view sees value: %s", retrievedValue)
 	}
 }

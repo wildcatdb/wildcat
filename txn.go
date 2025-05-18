@@ -139,7 +139,6 @@ func (txn *Txn) Commit() error {
 
 	txn.Committed = true
 
-	// We append to the WAL here
 	err := txn.appendWal()
 	if err != nil {
 		return err
@@ -187,8 +186,9 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 		return val, nil
 	}
 
-	// Record read for conflict detection
-	txn.ReadSet[string(key)] = txn.Timestamp
+	if txn.DeleteSet[string(key)] {
+		return nil, fmt.Errorf("key not found")
+	}
 
 	// Track the best value found so far and its timestamp
 	var bestValue []byte = nil

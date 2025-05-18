@@ -41,7 +41,6 @@ type Memtable struct {
 }
 
 // replay replays the WAL to recover the memtable
-// In memtable.go: Improve replay method
 func (memtable *Memtable) replay(activeTxns *[]*Txn) error {
 	var walBm *blockmanager.BlockManager
 	var err error
@@ -64,9 +63,7 @@ func (memtable *Memtable) replay(activeTxns *[]*Txn) error {
 		walBm = walQueueEntry.(*blockmanager.BlockManager)
 	}
 
-	// Rest of the method remains largely unchanged...
 	iter := walBm.Iterator()
-	var memtSize int64
 
 	// Track the latest state of each transaction by ID
 	txnMap := make(map[int64]*Txn)
@@ -81,56 +78,74 @@ func (memtable *Memtable) replay(activeTxns *[]*Txn) error {
 
 		txnCount++
 
-		// Deserialize the transaction
 		var txn Txn
 		err = txn.deserializeTransaction(data)
 		if err != nil {
 			memtable.db.log(fmt.Sprintf("Warning: failed to deserialize transaction: %v - skipping", err))
-			continue // Skip this transaction instead of failing completely
+			continue
 		}
 
-		// Set the database reference for the transaction
+		// Set the database reference
 		txn.db = memtable.db
 
-		// Update our transaction map with the latest state of this transaction
-		txnMap[txn.Id] = &txn
+		// Check if we already have a transaction with this ID
+		existingTxn, exists := txnMap[txn.Id]
 
-		// Only apply committed transactions to the memtable
+		if !exists {
+			// New transaction, just add it to the map
+			txnCopy := txn // Make a copy
+			txnMap[txn.Id] = &txnCopy
+		} else {
+			// Merge this transaction entry with the existing one
+			for key, value := range txn.WriteSet {
+				existingTxn.WriteSet[key] = value
+			}
+			for key := range txn.DeleteSet {
+				existingTxn.DeleteSet[key] = true
+			}
+			for key, timestamp := range txn.ReadSet {
+				existingTxn.ReadSet[key] = timestamp
+			}
+
+			// Update commit status - a transaction is committed if any entry says it is
+			if txn.Committed {
+				existingTxn.Committed = true
+				existingTxn.Timestamp = txn.Timestamp // Use the timestamp from the commit entry
+			}
+		}
+	}
+
+	// After processing all entries, apply the committed transactions
+	for _, txn := range txnMap {
 		if txn.Committed {
 			committedCount++
 
 			// Apply writes to the memtable
 			for key, value := range txn.WriteSet {
 				memtable.skiplist.Put([]byte(key), value, txn.Timestamp)
-				memtSize += int64(len(key) + len(value))
+				atomic.AddInt64(&memtable.size, int64(len(key)+len(value)))
 			}
 
-			// Apply deletes to the memtable
+			// Apply deletes
 			for key := range txn.DeleteSet {
 				memtable.skiplist.Delete([]byte(key), txn.Timestamp)
-				memtSize -= int64(len(key))
+				atomic.AddInt64(&memtable.size, -int64(len(key)))
 			}
 		}
 	}
 
-	memtable.db.log(fmt.Sprintf("Replay summary for %s: %d total transactions, %d committed",
-		memtable.wal.path, txnCount, committedCount))
-
-	// Update the memtable size
-	atomic.StoreInt64(&memtable.size, memtSize)
-
+	// Collect active transactions if requested
 	if activeTxns != nil {
 		for _, txn := range txnMap {
-			// Only include uncommitted transactions that haven't been rolled back
 			if !txn.Committed && (len(txn.WriteSet) > 0 || len(txn.DeleteSet) > 0 || len(txn.ReadSet) > 0) {
-				*activeTxns = append(*activeTxns, txn)
+				txnCopy := *txn // Make a copy to prevent modification issues
+				*activeTxns = append(*activeTxns, &txnCopy)
 			}
 		}
-
-		if len(*activeTxns) > 0 {
-			memtable.db.log(fmt.Sprintf("Found %d active transactions in %s", len(*activeTxns), memtable.wal.path))
-		}
 	}
+
+	memtable.db.log(fmt.Sprintf("Replay summary for %s: %d total entries, %d unique transactions, %d committed",
+		memtable.wal.path, txnCount, len(txnMap), committedCount))
 
 	return nil
 }

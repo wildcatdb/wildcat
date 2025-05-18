@@ -56,7 +56,7 @@ func (flusher *Flusher) queueMemtable() error {
 		}}
 
 	// Open the new WAL
-	walBm, err := blockmanager.Open(newMemtable.wal.path, os.O_RDWR|os.O_CREATE, 0666, blockmanager.SyncOption(flusher.db.opts.SyncOption))
+	walBm, err := blockmanager.Open(newMemtable.wal.path, os.O_RDWR|os.O_CREATE, flusher.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption))
 	if err != nil {
 		return fmt.Errorf("failed to open WAL block manager: %w", err)
 	}
@@ -66,9 +66,6 @@ func (flusher *Flusher) queueMemtable() error {
 
 	// Push the current memtable to the immutable stack
 	flusher.immutable.Enqueue(flusher.db.memtable.Load().(*Memtable))
-
-	// Reset the current memtable size
-	atomic.StoreInt64(&flusher.db.memtable.Load().(*Memtable).size, 0)
 
 	// Update the current memtable to the new one
 	flusher.db.memtable.Store(newMemtable)
@@ -105,6 +102,14 @@ func (flusher *Flusher) backgroundProcess() {
 
 // flushMemtable flushes a memtable to disk as an SSTable at level 1
 func (flusher *Flusher) flushMemtable(memt *Memtable) error {
+	maxTimestamp := time.Now().UnixNano() + 10000000000 // Far in the future
+	entryCount := memt.skiplist.Count(maxTimestamp)
+	deletionCount := memt.skiplist.DeleteCount(maxTimestamp)
+
+	if entryCount == 0 && deletionCount == 0 {
+		flusher.db.log("Skipping flush for empty memtable")
+		return nil // Nothing to flush
+	}
 	// Create a new SSTable
 	sstable := &SSTable{
 		Id:    flusher.db.sstIdGenerator.nextID(),
@@ -162,13 +167,12 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 		Size:    0,
 	}
 
-	// CRITICAL CHANGE: Use the maximum possible timestamp to make sure we get ALL versions
+	// Use the maximum possible timestamp to make sure we get ALL versions
 	// of keys during iteration, preserving their original transaction timestamps
 	iter := memt.skiplist.NewIterator(nil, maxPossibleTs)
 
 	flusher.db.log(fmt.Sprintf("Starting to flush memtable to SSTable %d", sstable.Id))
 
-	entryCount := 0
 	for {
 		key, value, ts, ok := iter.Next()
 		if !ok {
@@ -177,42 +181,32 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 
 		entryCount++
 
-		// Write the key-value pair to the VLog
-		id, err := vlogBm.Append(value.([]byte)[:])
-		if err != nil {
-			return fmt.Errorf("failed to write VLog: %w", err)
-		}
-
-		// CRITICAL: Preserve the original transaction timestamp for proper MVCC
-		klogEntry := &KLogEntry{
-			Key:          key,
-			Timestamp:    ts, // Use the original timestamp, not time.Now()
-			ValueBlockID: id,
-		}
-
-		// For debugging, log some of the entries being flushed
-		if entryCount <= 5 || entryCount%100 == 0 {
-			flusher.db.log(fmt.Sprintf("Flushing key: %s, timestamp: %d, value len: %d",
-				string(key), ts, len(value.([]byte))))
-		}
-
-		blockset.Entries = append(blockset.Entries, klogEntry)
-		blockset.Size += int64(len(key) + len(value.([]byte)))
-
-		if blockset.Size >= flusher.db.opts.BlockSetSize {
-			// Write the blockset to KLog
-			blocksetData, err := blockset.serializeBlockSet()
-			if err != nil {
-				return fmt.Errorf("failed to serialize BlockSet: %w", err)
+		// Check if this is a deletion marker
+		if value == nil {
+			// Write a deletion marker to the SSTable
+			klogEntry := &KLogEntry{
+				Key:          key,
+				Timestamp:    ts,
+				ValueBlockID: -1, // Special marker for deletion
 			}
 
-			_, err = klogBm.Append(blocksetData)
+			blockset.Entries = append(blockset.Entries, klogEntry)
+			blockset.Size += int64(len(key))
+		} else {
+			// Normal entry - handle as before
+			id, err := vlogBm.Append(value.([]byte)[:])
 			if err != nil {
-				return fmt.Errorf("failed to write BlockSet to KLog: %w", err)
+				return fmt.Errorf("failed to write VLog: %w", err)
 			}
 
-			blockset.Entries = make([]*KLogEntry, 0)
-			blockset.Size = 0
+			klogEntry := &KLogEntry{
+				Key:          key,
+				Timestamp:    ts,
+				ValueBlockID: id,
+			}
+
+			blockset.Entries = append(blockset.Entries, klogEntry)
+			blockset.Size += int64(len(key) + len(value.([]byte)))
 		}
 	}
 
