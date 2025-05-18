@@ -112,19 +112,24 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 		Level: 1, // We always flush to level 1, L0 is active memtable
 	}
 
-	minKey, _, exists := memt.skiplist.GetMin(time.Now().UnixMicro())
+	// Use max timestamp to ensure we get all keys when finding min/max
+	maxPossibleTs := time.Now().UnixNano() + 10000000000 // Far in the future
+
+	minKey, _, exists := memt.skiplist.GetMin(maxPossibleTs)
 	if exists {
 		sstable.Min = minKey
 	}
 
-	maxKey, _, exists := memt.skiplist.GetMax(time.Now().UnixNano())
+	maxKey, _, exists := memt.skiplist.GetMax(maxPossibleTs)
 	if exists {
 		sstable.Max = maxKey
 	}
 
 	// Calculate the approx size of the memtable
 	sstable.Size = atomic.LoadInt64(&memt.size)
-	sstable.EntryCount = memt.skiplist.Count(time.Now().UnixNano())
+
+	// Use max timestamp to get a count of all entries regardless of version
+	sstable.EntryCount = memt.skiplist.Count(maxPossibleTs)
 
 	// We create new sstable files (.klog and .vlog) here
 	klogPath := fmt.Sprintf("%s%s1%s%s%d%s", flusher.db.opts.Directory, LevelPrefix, string(os.PathSeparator), SSTablePrefix, sstable.Id, KLogExtension)
@@ -157,13 +162,20 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 		Size:    0,
 	}
 
-	// Now we create a memtable iter
-	iter := memt.skiplist.NewIterator(nil, time.Now().UnixNano())
+	// CRITICAL CHANGE: Use the maximum possible timestamp to make sure we get ALL versions
+	// of keys during iteration, preserving their original transaction timestamps
+	iter := memt.skiplist.NewIterator(nil, maxPossibleTs)
+
+	flusher.db.log(fmt.Sprintf("Starting to flush memtable to SSTable %d", sstable.Id))
+
+	entryCount := 0
 	for {
 		key, value, ts, ok := iter.Next()
 		if !ok {
 			break // No more entries
 		}
+
+		entryCount++
 
 		// Write the key-value pair to the VLog
 		id, err := vlogBm.Append(value.([]byte)[:])
@@ -171,16 +183,21 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 			return fmt.Errorf("failed to write VLog: %w", err)
 		}
 
+		// CRITICAL: Preserve the original transaction timestamp for proper MVCC
 		klogEntry := &KLogEntry{
 			Key:          key,
-			Timestamp:    ts,
+			Timestamp:    ts, // Use the original timestamp, not time.Now()
 			ValueBlockID: id,
+		}
+
+		// For debugging, log some of the entries being flushed
+		if entryCount <= 5 || entryCount%100 == 0 {
+			flusher.db.log(fmt.Sprintf("Flushing key: %s, timestamp: %d, value len: %d",
+				string(key), ts, len(value.([]byte))))
 		}
 
 		blockset.Entries = append(blockset.Entries, klogEntry)
 		blockset.Size += int64(len(key) + len(value.([]byte)))
-
-		sstable.EntryCount++
 
 		if blockset.Size >= flusher.db.opts.BlockSetSize {
 			// Write the blockset to KLog
@@ -210,8 +227,9 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 		if err != nil {
 			return fmt.Errorf("failed to write BlockSet to KLog: %w", err)
 		}
-
 	}
+
+	flusher.db.log(fmt.Sprintf("Flushed %d entries to SSTable %d", entryCount, sstable.Id))
 
 	// Add both KLog and VLog to the LRU cache
 	flusher.db.lru.Put(klogPath, klogBm)
@@ -240,6 +258,9 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 
 	// Update the current size of the level
 	atomic.AddInt64(&level1.currentSize, sstable.Size)
+
+	flusher.db.log(fmt.Sprintf("SSTable %d added to level 1, min: %s, max: %s, entries: %d",
+		sstable.Id, string(sstable.Min), string(sstable.Max), entryCount))
 
 	return nil
 }

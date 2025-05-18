@@ -194,11 +194,18 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 	// Record read for conflict detection
 	txn.ReadSet[string(key)] = txn.Timestamp
 
-	// Fetch from skiplist
+	// Track the best value found so far and its timestamp
+	var bestValue []byte = nil
+	var bestTimestamp int64 = 0
+
+	// Fetch from active memtable
 	val := txn.db.memtable.Load().(*Memtable).skiplist.Get(key, txn.Timestamp)
 	if val != nil {
-
-		return val.([]byte), nil
+		bestValue = val.([]byte)
+		// Since we're guaranteed this is the latest value visible to our timestamp,
+		// we could return early here, but to be thorough, we'll check all sources
+		// and track the one with the highest valid timestamp
+		bestTimestamp = txn.Timestamp // This is approximate
 	}
 
 	// Check immutable memtables
@@ -206,16 +213,15 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 		memt := item.(*Memtable)
 		val = memt.skiplist.Get(key, txn.Timestamp)
 		if val != nil {
-			return false // Found in immutable memtable
+			// We should also consider timestamps here, but skiplist.Get doesn't
+			// return the timestamp. For now, let's just assume memtable values are newer.
+			bestValue = val.([]byte)
+			bestTimestamp = txn.Timestamp // This is approximate
 		}
 		return true // Continue searching
 	})
 
-	if val != nil {
-		return val.([]byte), nil
-	}
-
-	// Check levels
+	// Check levels for SSTables
 	levels := txn.db.levels.Load()
 	for _, level := range *levels {
 		sstables := level.sstables.Load()
@@ -224,11 +230,25 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 		}
 
 		for _, sstable := range *sstables {
-			val = sstable.get(key, txn.Timestamp)
-			if val != nil {
-				return val.([]byte), nil
+			// Check if the key might be in this SSTable's range
+			if bytes.Compare(key, sstable.Min) < 0 || bytes.Compare(key, sstable.Max) > 0 {
+				continue // Key outside SSTable range
+			}
+
+			// Try to get the value from this SSTable
+			val, ts := sstable.get(key, txn.Timestamp)
+
+			// If we found a value and it's newer than what we have so far
+			// but still not newer than our read timestamp
+			if val != nil && ts <= txn.Timestamp && ts > bestTimestamp {
+				bestValue = val
+				bestTimestamp = ts
 			}
 		}
+	}
+
+	if bestValue != nil {
+		return bestValue, nil
 	}
 
 	return nil, fmt.Errorf("key not found")

@@ -49,11 +49,16 @@ type BlockSet struct {
 	Size    int64        // Size of the block set
 }
 
+type ValueWithTimestamp struct {
+	Value     []byte
+	Timestamp int64
+}
+
 // get retrieves a value from the SSTable using the key and timestamp
-func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
+func (sst *SSTable) get(key []byte, timestamp int64) ([]byte, int64) {
 	// Fix the range check - only proceed if key is in range
 	if bytes.Compare(key, sst.Min) < 0 || bytes.Compare(key, sst.Max) > 0 {
-		return nil // Key not in range
+		return nil, 0 // Key not in range
 	}
 
 	// Get the KLog block manager
@@ -67,7 +72,7 @@ func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
 		klogBm, err = blockmanager.Open(klogPath, os.O_RDONLY, sst.db.opts.Permission,
 			blockmanager.SyncOption(sst.db.opts.SyncOption))
 		if err != nil {
-			return nil
+			return nil, 0
 		}
 		sst.db.lru.Put(klogPath, klogBm)
 	}
@@ -81,7 +86,7 @@ func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
 	// Skip the first block which contains SSTable metadata
 	_, _, err = iter.Next()
 	if err != nil {
-		return nil
+		return nil, 0
 	}
 
 	for {
@@ -120,7 +125,7 @@ func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
 			vlogBm, err = blockmanager.Open(vlogPath, os.O_RDONLY, sst.db.opts.Permission,
 				blockmanager.SyncOption(sst.db.opts.SyncOption))
 			if err != nil {
-				return nil
+				return nil, 0
 			}
 			sst.db.lru.Put(vlogPath, vlogBm)
 		}
@@ -128,13 +133,14 @@ func (sst *SSTable) get(key []byte, timestamp int64) interface{} {
 		// Read the value from VLog
 		value, _, err := vlogBm.Read(foundEntry.ValueBlockID)
 		if err != nil {
-			return nil
+			return nil, 0
 		}
 
-		return value
+		// Return the value with its timestamp so we can compare values from different SSTables
+		return value, foundEntry.Timestamp
 	}
 
-	return nil // Key not found or no valid version for the timestamp
+	return nil, 0 // Key not found or no valid version for the timestamp
 }
 
 // kLogPath returns the path to the KLog file for this SSTable
