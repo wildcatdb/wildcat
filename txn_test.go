@@ -678,7 +678,7 @@ func TestTxn_Iterate(t *testing.T) {
 	}
 
 	// Test backward iteration (direction < 0)
-	// Need to verify if the implementation actually supports this
+
 	backwardKeys := make([]string, 0)
 	err = txn.Iterate([]byte("iter_key4"), -1, func(key []byte, value []byte) bool {
 		backwardKeys = append(backwardKeys, string(key))
@@ -689,10 +689,21 @@ func TestTxn_Iterate(t *testing.T) {
 	}
 
 	// If backward iteration is properly implemented, expect reversed order
-	// This depends on the actual implementation - modify assertion if needed
+
 	if len(backwardKeys) > 0 {
 		t.Logf("Backward iteration keys: %v", backwardKeys)
-		// Verification logic can be added here, but it depends on the implementation details
+		expectedBackward := []string{"iter_key4", "iter_key3", "iter_key2", "iter_key1"}
+		if len(backwardKeys) != len(expectedBackward) {
+			t.Errorf("Expected %d keys in backward iteration, got %d", len(expectedBackward), len(backwardKeys))
+		} else {
+			for i := range expectedBackward {
+				if backwardKeys[i] != expectedBackward[i] {
+					t.Errorf("Backward iteration order wrong: expected %s at position %d, got %s",
+						expectedBackward[i], i, backwardKeys[i])
+				}
+			}
+		}
+
 	}
 }
 
