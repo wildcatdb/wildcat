@@ -34,6 +34,7 @@ type Level struct {
 	sstables    atomic.Pointer[[]*SSTable] // Atomic pointer to the list of SSTables
 	capacity    int                        // The capacity of the level
 	currentSize int64                      // atomic size of the level
+	db          *DB                        // Reference to the database (not exported)
 }
 
 // reopen opens an existing level directories sstables
@@ -47,6 +48,7 @@ func (l *Level) reopen() error {
 
 	// Find KLog files to identify SSTables
 	var sstables []*SSTable
+
 	for _, file := range files {
 		if file.IsDir() || !strings.HasSuffix(file.Name(), KLogExtension) {
 			continue
@@ -64,12 +66,6 @@ func (l *Level) reopen() error {
 			return fmt.Errorf("failed to parse SSTable ID from filename %s: %w", file.Name(), err)
 		}
 
-		// Get file info to extract last modified time
-		fileInfo, err := file.Info()
-		if err != nil {
-			return fmt.Errorf("failed to get file info for %s: %w", file.Name(), err)
-		}
-
 		// Get corresponding VLog file path
 		vlogPath := fmt.Sprintf("%s%s%d%s", l.path, SSTablePrefix, id, VLogExtension)
 
@@ -79,23 +75,22 @@ func (l *Level) reopen() error {
 		}
 
 		// Create SSTable structure
-		sstable := &SSTable{
-			Id:      id,
-			Level:   l.id,
-			modTime: fileInfo.ModTime(),
-		}
+		sstable := &SSTable{}
 
 		// Load the SSTable metadata from the first block of KLog
 		klogPath := fmt.Sprintf("%s%s%d%s", l.path, SSTablePrefix, id, KLogExtension)
 
 		// Open the KLog file
-		klogBm, err := blockmanager.Open(klogPath, os.O_RDONLY, 0666, blockmanager.SyncOption(0))
+		klogBm, err := blockmanager.Open(klogPath, os.O_RDONLY, l.db.opts.Permission, blockmanager.SyncOption(0))
 		if err != nil {
 			return fmt.Errorf("failed to open KLog block manager: %w", err)
 		}
 
+		// Add the KLog to cache
+		l.db.lru.Put(klogPath, klogBm)
+
 		// Read the first block which contains SSTable metadata
-		data, _, err := klogBm.Read(0)
+		data, _, err := klogBm.Read(1)
 		if err != nil {
 			return fmt.Errorf("failed to read KLog metadata block: %w", err)
 		}
@@ -104,6 +99,8 @@ func (l *Level) reopen() error {
 		if err := sstable.deserializeSSTable(data); err != nil {
 			return fmt.Errorf("failed to deserialize SSTable metadata: %w", err)
 		}
+
+		sstable.db = l.db
 
 		sstables = append(sstables, sstable)
 	}

@@ -184,6 +184,11 @@ func Open(opts *Options) (*DB, error) {
 			return nil, fmt.Errorf("failed to create directory: %w", err)
 		}
 
+	}
+
+	// Check if the ID generator state file exists
+	idgsFilePath := fmt.Sprintf("%s%s", db.opts.Directory, IDGSTFileName)
+	if _, err := os.Stat(idgsFilePath); os.IsNotExist(err) {
 		db.idgs = &IDGeneratorState{
 			lastSstID: 0,
 			lastWalID: 0,
@@ -191,6 +196,9 @@ func Open(opts *Options) (*DB, error) {
 			db:        db,
 		}
 
+		db.txnIdGenerator = NewIDGenerator()
+		db.walIdGenerator = NewIDGenerator()
+		db.sstIdGenerator = NewIDGenerator()
 	} else {
 		// Directory exists, load the ID generator state
 		if err := db.idgs.loadState(); err != nil {
@@ -205,6 +213,7 @@ func Open(opts *Options) (*DB, error) {
 		level := &Level{
 			id:       i + 1,
 			capacity: int(float64(db.opts.WriteBufferSize) * math.Pow(float64(db.opts.LevelMultiplier), float64(i))),
+			db:       db,
 		}
 
 		level.sstables = atomic.Pointer[[]*SSTable]{}
@@ -319,7 +328,7 @@ func (db *DB) reinstate() error {
 		db.memtable.Store(&Memtable{
 			skiplist: skiplist.New(),
 			wal: &WAL{
-				path: fmt.Sprintf("%s%d%s", db.opts.Directory, time.Now().UnixNano(), WALFileExtension),
+				path: fmt.Sprintf("%s%d%s", db.opts.Directory, db.walIdGenerator.nextID(), WALFileExtension),
 			},
 			db: db,
 		})

@@ -19,7 +19,6 @@ package orindb
 
 import (
 	"sync/atomic"
-	"time"
 )
 
 // The IDGenerator is a thread-safe utility for generating unique, monotonic IDs.
@@ -32,7 +31,7 @@ type IDGenerator struct {
 // NewIDGenerator creates a new ID generator
 func NewIDGenerator() *IDGenerator {
 	return &IDGenerator{
-		lastID: time.Now().UnixNano(),
+		lastID: 0,
 	}
 }
 
@@ -46,15 +45,8 @@ func ReloadIDGenerator(lastId int64) *IDGenerator {
 // nextID generates the next unique ID
 func (g *IDGenerator) nextID() int64 {
 	for {
-		now := time.Now().UnixNano()
 		last := atomic.LoadInt64(&g.lastID)
-
-		var next int64
-		if now > last {
-			next = now
-		} else {
-			next = last + 1
-		}
+		next := last + 1
 
 		if atomic.CompareAndSwapInt64(&g.lastID, last, next) {
 			return next

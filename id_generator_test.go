@@ -27,7 +27,7 @@ func TestNewIDGenerator(t *testing.T) {
 	if g == nil {
 		t.Fatal("NewIDGenerator returned nil")
 	}
-	if g.lastID == 0 {
+	if g.lastID != 0 {
 		t.Fatal("lastID was not initialized")
 	}
 }

@@ -62,7 +62,7 @@ func (memtable *Memtable) replay(activeTxns *[]*Txn) error {
 	var memtSize int64
 
 	// Track the latest state of each transaction by ID
-	txnMap := make(map[string]*Txn)
+	txnMap := make(map[int64]*Txn)
 
 	for {
 		data, _, err := iter.Next()

@@ -56,7 +56,7 @@ func (flusher *Flusher) queueMemtable() error {
 		}}
 
 	// Open the new WAL
-	walBm, err := blockmanager.Open(newMemtable.wal.path, os.O_RDWR|os.O_CREATE, 0666, blockmanager.SyncOption(flusher.db.opts.SyncOption))
+	walBm, err := blockmanager.Open(newMemtable.wal.path, os.O_RDWR|os.O_CREATE, flusher.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption))
 	if err != nil {
 		return fmt.Errorf("failed to open WAL block manager: %w", err)
 	}

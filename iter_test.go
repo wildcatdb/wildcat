@@ -273,7 +273,7 @@ func TestIteratorWithVersions(t *testing.T) {
 
 	// Create a reader transaction with timestamp between txn1 and txn2
 	readerTxn := &Txn{
-		Id:        "reader",
+		Id:        22,
 		ReadSet:   make(map[string]int64),
 		WriteSet:  make(map[string][]byte),
 		DeleteSet: make(map[string]bool),

@@ -80,7 +80,7 @@ func TestSSTableSerialization(t *testing.T) {
 func TestTxnSerialization(t *testing.T) {
 	// Create a test transaction
 	original := &Txn{
-		Id:        "txn123",
+		Id:        123,
 		db:        nil, // We can't compare functions, so leaving this nil
 		ReadSet:   map[string]int64{"key1": 100, "key2": 200},
 		WriteSet:  map[string][]byte{"key3": []byte("value3"), "key4": []byte("value4")},
@@ -105,7 +105,7 @@ func TestTxnSerialization(t *testing.T) {
 
 	// Compare the original and deserialized transaction
 	if original.Id != result.Id {
-		t.Errorf("id mismatch: expected %s, got %s", original.Id, result.Id)
+		t.Errorf("id mismatch: expected %d, got %d", original.Id, result.Id)
 	}
 	if !reflect.DeepEqual(original.ReadSet, result.ReadSet) {
 		t.Errorf("ReadSet mismatch: expected %v, got %v", original.ReadSet, result.ReadSet)
