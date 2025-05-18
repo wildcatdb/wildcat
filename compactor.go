@@ -342,9 +342,10 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 
 	// Create a new SSTable for the target level
 	newSSTable := &SSTable{
-		Id:    compactor.db.sstIdGenerator.nextID(),
-		db:    compactor.db,
-		Level: targetLevel,
+		Id:      compactor.db.sstIdGenerator.nextID(),
+		db:      compactor.db,
+		Level:   targetLevel,
+		modTime: time.Now(),
 	}
 
 	// Find min and max keys across all input tables

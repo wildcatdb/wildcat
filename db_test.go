@@ -67,15 +67,3 @@ func TestOpen(t *testing.T) {
 
 	wg.Wait()
 }
-
-// We create a test instance and write many keys with a low flush threshold.  This will create many WALs. We will shutdown abruptly and
-// observe WAL files in directory, we will reopen and check if all keys are still present in active and immutable memtables and reinstatement of state
-func TestOpen_ExistingWALs(t *testing.T) {
-
-}
-
-// We create a test instance and write many keys with a low flush threshold.  We will wait for all sstables to flush to disk.  We will shutdown and reopen.
-// We will check if all keys are still present in all sources (active and immutable memtables, sstables).
-func TestOpen_ExistingLevels(t *testing.T) {
-
-}
