@@ -195,27 +195,32 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 	var bestTimestamp int64 = 0
 
 	// Fetch from active memtable
-	val := txn.db.memtable.Load().(*Memtable).skiplist.Get(key, txn.Timestamp)
-	if val != nil {
+	val, ts, ok := txn.db.memtable.Load().(*Memtable).skiplist.Get(key, txn.Timestamp)
+	if ok && ts > bestTimestamp {
 		bestValue = val.([]byte)
-		// Since we're guaranteed this is the latest value visible to our timestamp,
-		// we could return early here, but to be thorough, we'll check all sources
-		// and track the one with the highest valid timestamp
-		bestTimestamp = txn.Timestamp // This is approximate
+		bestTimestamp = ts
 	}
 
 	// Check immutable memtables
 	txn.db.flusher.immutable.ForEach(func(item interface{}) bool {
 		memt := item.(*Memtable)
-		val = memt.skiplist.Get(key, txn.Timestamp)
-		if val != nil {
-			// We should also consider timestamps here, but skiplist.Get doesn't
-			// return the timestamp. For now, let's just assume memtable values are newer.
+		val, ts, ok = memt.skiplist.Get(key, txn.Timestamp)
+		if ok && ts > bestTimestamp {
 			bestValue = val.([]byte)
-			bestTimestamp = txn.Timestamp // This is approximate
+			bestTimestamp = ts
 		}
 		return true // Continue searching
 	})
+
+	if val != nil && ts <= txn.Timestamp {
+		if ts > bestTimestamp {
+			bestValue = val.([]byte)
+			bestTimestamp = ts
+			if ts == txn.Timestamp {
+				return bestValue, nil // Early return
+			}
+		}
+	}
 
 	// Check levels for SSTables
 	levels := txn.db.levels.Load()

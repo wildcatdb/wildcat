@@ -177,7 +177,7 @@ func (n *Node) addVersion(data interface{}, timestamp int64, versionType ValueVe
 }
 
 // Get retrieves a value from the skip list given a key and a read timestamp
-func (sl *SkipList) Get(searchKey []byte, readTimestamp int64) interface{} {
+func (sl *SkipList) Get(searchKey []byte, readTimestamp int64) (interface{}, int64, bool) {
 	var prev *Node
 	var curr *Node
 	var currPtr unsafe.Pointer
@@ -219,14 +219,14 @@ func (sl *SkipList) Get(searchKey []byte, readTimestamp int64) interface{} {
 			// Find the visible version at the given read timestamp
 			version := curr.findVisibleVersion(readTimestamp)
 			if version != nil && version.Type != Delete {
-				return version.Data
+				return version.Data, version.Timestamp, true
 			}
-			return nil
+			return nil, 0, false
 		}
 
 		// If we've gone too far, the key doesn't exist
 		if bytes.Compare(curr.key, searchKey) > 0 {
-			return nil
+			return nil, 0, false
 		}
 
 		// Move to the next node
@@ -234,7 +234,7 @@ func (sl *SkipList) Get(searchKey []byte, readTimestamp int64) interface{} {
 		curr = (*Node)(currPtr)
 	}
 
-	return nil
+	return nil, 0, false
 }
 
 // Put inserts or updates a value in the skip list with the given key
