@@ -100,6 +100,336 @@ func TestFlusher_QueueMemtable(t *testing.T) {
 	}
 }
 
+func TestFlusher_MVCCWithMultipleVersions(t *testing.T) {
+	// Create a temporary directory for the test
+	dir, err := os.MkdirTemp("", "orindb_flusher_mvcc_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	// Create a log channel with debug logging
+	logChan := make(chan string, 1000)
+	go func() {
+		for msg := range logChan {
+			t.Log("DB LOG:", msg)
+		}
+	}()
+
+	// Create a test DB with a small write buffer to force flushing
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncFull,
+		LogChannel:      logChan,
+		WriteBufferSize: 1024, // Small buffer to force flushing
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Create a single key with multiple versions
+	key := []byte("mvcc_key")
+
+	// Record transaction timestamps for verification
+	var timestamps []int64
+	var txns []*Txn
+
+	// Create 5 versions of the same key
+	for i := 1; i <= 5; i++ {
+		// Start a transaction and record its timestamp
+		txn := db.Begin()
+		timestamps = append(timestamps, txn.Timestamp)
+		txns = append(txns, txn)
+
+		// Write a new version
+		value := []byte(fmt.Sprintf("value%d", i))
+		err = txn.Put(key, value)
+		if err != nil {
+			t.Fatalf("Failed to write version %d: %v", i, err)
+		}
+
+		// Commit the transaction
+		err = txn.Commit()
+		if err != nil {
+			t.Fatalf("Failed to commit version %d: %v", i, err)
+		}
+
+		t.Logf("Created version %d with timestamp %d", i, txn.Timestamp)
+
+		// Force a memtable flush after each write
+		err = db.flusher.queueMemtable()
+		if err != nil {
+			t.Fatalf("Failed to queue memtable: %v", err)
+		}
+
+		// Wait for flush to complete
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Now verify that we can read each version using the corresponding timestamp
+	for i := 0; i < 5; i++ {
+		// Create a transaction with the recorded timestamp
+		readTxn := db.Begin()
+		// Set the timestamp to match the original write timestamp
+		readTxn.Timestamp = timestamps[i]
+
+		// Read the value
+		value, err := readTxn.Get(key)
+		if err != nil {
+			t.Fatalf("Failed to read version %d: %v", i+1, err)
+		}
+
+		expectedValue := fmt.Sprintf("value%d", i+1)
+		if string(value) != expectedValue {
+			t.Errorf("Expected version %d to be '%s', got '%s'", i+1, expectedValue, value)
+		} else {
+			t.Logf("Successfully read version %d with value '%s'", i+1, value)
+		}
+	}
+
+	// Verify that a new transaction sees only the latest version
+	latestTxn := db.Begin()
+	latestValue, err := latestTxn.Get(key)
+	if err != nil {
+		t.Fatalf("Failed to read latest version: %v", err)
+	}
+
+	if string(latestValue) != "value5" {
+		t.Errorf("Expected latest version to be 'value5', got '%s'", latestValue)
+	} else {
+		t.Logf("Successfully read latest version with value 'value5'")
+	}
+
+	// Check that SSTables were created
+	l1Dir := filepath.Join(dir, "l1")
+	files, err := os.ReadDir(l1Dir)
+	if err != nil {
+		t.Fatalf("Failed to read level 1 directory: %v", err)
+	}
+
+	klogCount := 0
+	for _, file := range files {
+		if filepath.Ext(file.Name()) == ".klog" {
+			klogCount++
+		}
+	}
+
+	if klogCount < 5 {
+		t.Errorf("Expected at least 5 .klog files, found %d", klogCount)
+	} else {
+		t.Logf("Found %d .klog files in level 1 directory", klogCount)
+	}
+}
+
+// Add this to flusher_test.go
+func TestFlusher_ConcurrentMVCC(t *testing.T) {
+	// Create a temporary directory for the test
+	dir, err := os.MkdirTemp("", "orindb_flusher_concurrent_mvcc_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	// Create a log channel
+	logChan := make(chan string, 1000)
+	go func() {
+		for msg := range logChan {
+			t.Log("DB LOG:", msg)
+		}
+	}()
+
+	// Create a test DB with a small write buffer
+	opts := &Options{
+		Directory:       dir,
+		WriteBufferSize: 4096, // Small buffer to trigger flushing
+		SyncOption:      SyncFull,
+		LogChannel:      logChan,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Number of concurrent writers
+	const numWriters = 5
+	// Number of keys per writer
+	const keysPerWriter = 10
+	// Number of versions per key
+	const versionsPerKey = 5
+
+	// Setup a wait group for all writers
+	var wg sync.WaitGroup
+	wg.Add(numWriters)
+
+	// Map to track timestamps for MVCC checks
+	timestampsByKey := make(map[string][]int64)
+	var timestampsMutex sync.Mutex
+
+	// Start concurrent writers
+	for w := 0; w < numWriters; w++ {
+		go func(writerID int) {
+			defer wg.Done()
+
+			for k := 0; k < keysPerWriter; k++ {
+				keyStr := fmt.Sprintf("writer%d_key%d", writerID, k)
+				key := []byte(keyStr)
+
+				// Create multiple versions of each key
+				var keyTimestamps []int64
+
+				for v := 1; v <= versionsPerKey; v++ {
+					// Start a transaction
+					txn := db.Begin()
+					keyTimestamps = append(keyTimestamps, txn.Timestamp)
+
+					value := []byte(fmt.Sprintf("writer%d_key%d_version%d", writerID, k, v))
+
+					// Write the value
+					err := txn.Put(key, value)
+					if err != nil {
+						t.Errorf("Writer %d failed to write key %s version %d: %v",
+							writerID, keyStr, v, err)
+						continue
+					}
+
+					// Commit the transaction
+					err = txn.Commit()
+					if err != nil {
+						t.Errorf("Writer %d failed to commit key %s version %d: %v",
+							writerID, keyStr, v, err)
+						continue
+					}
+
+					// Small sleep between versions
+					time.Sleep(time.Millisecond * 5)
+				}
+
+				// Store the timestamps for later verification
+				timestampsMutex.Lock()
+				timestampsByKey[keyStr] = keyTimestamps
+				timestampsMutex.Unlock()
+
+				// Force a flush occasionally to exercise the flusher
+				if k%3 == 0 {
+					err := db.flusher.queueMemtable()
+					if err != nil {
+						t.Errorf("Writer %d failed to queue memtable: %v", writerID, err)
+					}
+					time.Sleep(time.Millisecond * 10) // Give flusher time to work
+				}
+			}
+		}(w)
+	}
+
+	// Wait for all writers to finish
+	wg.Wait()
+
+	// Force a final flush
+	err = db.flusher.queueMemtable()
+	if err != nil {
+		t.Fatalf("Failed to queue final memtable: %v", err)
+	}
+
+	// Wait for flushing to complete
+	time.Sleep(200 * time.Millisecond)
+
+	// Now verify MVCC semantics for each key
+	successCount := 0
+	expectedTotal := numWriters * keysPerWriter * versionsPerKey
+
+	for w := 0; w < numWriters; w++ {
+		for k := 0; k < keysPerWriter; k++ {
+			keyStr := fmt.Sprintf("writer%d_key%d", w, k)
+			key := []byte(keyStr)
+
+			// Get the timestamps for this key
+			timestampsMutex.Lock()
+			timestamps := timestampsByKey[keyStr]
+			timestampsMutex.Unlock()
+
+			// Skip if no timestamps were recorded (writes failed)
+			if len(timestamps) == 0 {
+				continue
+			}
+
+			// Test reading each version using its timestamp
+			for v := 0; v < len(timestamps); v++ {
+				readTxn := db.Begin()
+				readTxn.Timestamp = timestamps[v]
+
+				value, err := readTxn.Get(key)
+				if err != nil {
+					t.Errorf("Failed to read key %s at version %d: %v", keyStr, v+1, err)
+					continue
+				}
+
+				expectedValue := fmt.Sprintf("writer%d_key%d_version%d", w, k, v+1)
+				if string(value) != expectedValue {
+					t.Errorf("MVCC error: key %s at timestamp %d expected '%s', got '%s'",
+						keyStr, timestamps[v], expectedValue, value)
+				} else {
+					successCount++
+				}
+			}
+
+			// Also verify that a new transaction sees the latest version
+			latestTxn := db.Begin()
+			latestValue, err := latestTxn.Get(key)
+			if err != nil {
+				t.Errorf("Failed to read latest version of key %s: %v", keyStr, err)
+				continue
+			}
+
+			expectedLatest := fmt.Sprintf("writer%d_key%d_version%d", w, k, versionsPerKey)
+			if string(latestValue) != expectedLatest {
+				t.Errorf("Latest version error: key %s expected '%s', got '%s'",
+					keyStr, expectedLatest, latestValue)
+			}
+		}
+	}
+
+	successRate := float64(successCount) / float64(expectedTotal) * 100
+	t.Logf("MVCC verification: %d/%d versions read correctly (%.2f%%)",
+		successCount, expectedTotal, successRate)
+
+	if successRate < 95 {
+		t.Errorf("Expected at least 95%% success rate for MVCC verification, got %.2f%%",
+			successRate)
+	}
+
+	// Check that SSTables were created
+	l1Dir := filepath.Join(dir, "l1")
+	files, err := os.ReadDir(l1Dir)
+	if err != nil {
+		t.Fatalf("Failed to read level 1 directory: %v", err)
+	}
+
+	var klogCount int
+	for _, file := range files {
+		if filepath.Ext(file.Name()) == ".klog" {
+			klogCount++
+		}
+	}
+
+	t.Logf("Found %d .klog files in level 1 directory", klogCount)
+	if klogCount < 3 {
+		t.Errorf("Expected at least 3 .klog files, found %d", klogCount)
+	}
+}
+
 func TestFlusher_FlushMemtable(t *testing.T) {
 	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "orindb_flusher_test")

@@ -19,23 +19,22 @@ package orindb
 
 import (
 	"bytes"
+	"fmt"
 	"orindb/blockmanager"
 	"os"
 	"strconv"
-	"time"
 )
 
 // SSTable represents a sorted string table
 type SSTable struct {
-	Id         int64     // SStable ID
-	Min        []byte    // The minimum key in the SSTable
-	Max        []byte    // The maximum key in the SSTable
-	isMerging  int32     // Atomic flag indicating if the SSTable is being merged
-	Size       int64     // The size of the SSTable in bytes
-	EntryCount int       // The number of entries in the SSTable
-	Level      int       // The level of the SSTable
-	modTime    time.Time // The last modified time of the SSTable
-	db         *DB       // Reference to the database (not exported)
+	Id         int64  // SStable ID
+	Min        []byte // The minimum key in the SSTable
+	Max        []byte // The maximum key in the SSTable
+	isMerging  int32  // Atomic flag indicating if the SSTable is being merged
+	Size       int64  // The size of the SSTable in bytes
+	EntryCount int    // The number of entries in the SSTable
+	Level      int    // The level of the SSTable
+	db         *DB    // Reference to the database (not exported)
 }
 
 // KLogEntry represents a key-value entry in the KLog
@@ -71,9 +70,11 @@ func (sst *SSTable) get(key []byte, timestamp int64) ([]byte, int64) {
 	if v, ok := sst.db.lru.Get(klogPath); ok {
 		klogBm = v.(*blockmanager.BlockManager)
 	} else {
+		sst.db.log(fmt.Sprintf("KLog not in LRU cache, opening: %s", klogPath))
 		klogBm, err = blockmanager.Open(klogPath, os.O_RDONLY, sst.db.opts.Permission,
 			blockmanager.SyncOption(sst.db.opts.SyncOption))
 		if err != nil {
+			sst.db.log(fmt.Sprintf("Warning: Failed to open KLog %s: %v", klogPath, err))
 			return nil, 0
 		}
 		sst.db.lru.Put(klogPath, klogBm)

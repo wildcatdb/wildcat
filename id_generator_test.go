@@ -23,7 +23,7 @@ import (
 )
 
 func TestNewIDGenerator(t *testing.T) {
-	g := NewIDGenerator()
+	g := newIDGenerator()
 	if g == nil {
 		t.Fatal("NewIDGenerator returned nil")
 	}
@@ -33,7 +33,7 @@ func TestNewIDGenerator(t *testing.T) {
 }
 
 func TestNextID_Unique(t *testing.T) {
-	g := NewIDGenerator()
+	g := newIDGenerator()
 	id1 := g.nextID()
 	id2 := g.nextID()
 
@@ -43,7 +43,7 @@ func TestNextID_Unique(t *testing.T) {
 }
 
 func TestNextID_Monotonic(t *testing.T) {
-	g := NewIDGenerator()
+	g := newIDGenerator()
 	id1 := g.nextID()
 	id2 := g.nextID()
 
@@ -53,7 +53,7 @@ func TestNextID_Monotonic(t *testing.T) {
 }
 
 func TestNextID_ThreadSafety(t *testing.T) {
-	g := NewIDGenerator()
+	g := newIDGenerator()
 	const numGoroutines = 100
 	const idsPerGoroutine = 100
 

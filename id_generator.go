@@ -28,15 +28,15 @@ type IDGenerator struct {
 	lastID int64
 }
 
-// NewIDGenerator creates a new ID generator
-func NewIDGenerator() *IDGenerator {
+// newIDGenerator creates a new ID generator
+func newIDGenerator() *IDGenerator {
 	return &IDGenerator{
 		lastID: 0,
 	}
 }
 
-// ReloadIDGenerator creates a new ID generator with a specified last ID
-func ReloadIDGenerator(lastId int64) *IDGenerator {
+// reloadIDGenerator creates a new ID generator with a specified last ID
+func reloadIDGenerator(lastId int64) *IDGenerator {
 	return &IDGenerator{
 		lastID: lastId,
 	}
@@ -55,6 +55,6 @@ func (g *IDGenerator) nextID() int64 {
 }
 
 // Save returns the last ID to be persisted
-func (g *IDGenerator) Save() int64 {
+func (g *IDGenerator) save() int64 {
 	return atomic.LoadInt64(&g.lastID)
 }

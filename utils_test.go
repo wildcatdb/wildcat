@@ -19,7 +19,7 @@ package orindb
 
 import "testing"
 
-func TestExtractTimestampFromFilename(t *testing.T) {
+func TestExtractIDFromFilename(t *testing.T) {
 	tests := []struct {
 		filename string
 		expected int64
@@ -35,9 +35,9 @@ func TestExtractTimestampFromFilename(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.filename, func(t *testing.T) {
-			result := extractTimestampFromFilename(tt.filename)
+			result := extractIDFromFilename(tt.filename)
 			if result != tt.expected {
-				t.Errorf("extractTimestampFromFilename(%q) = %d; want %d", tt.filename, result, tt.expected)
+				t.Errorf("extractIDFromFilename(%q) = %d; want %d", tt.filename, result, tt.expected)
 			}
 		})
 	}

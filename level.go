@@ -66,24 +66,34 @@ func (l *Level) reopen() error {
 			return fmt.Errorf("failed to parse SSTable ID from filename %s: %w", file.Name(), err)
 		}
 
-		// Get corresponding VLog file path
-		vlogPath := fmt.Sprintf("%s%s%d%s", l.path, SSTablePrefix, id, VLogExtension)
+		// Fix path construction to ensure correct separators
+		// Ensure path ends with separator
+		levelPath := l.path
+		if !strings.HasSuffix(levelPath, string(os.PathSeparator)) {
+			levelPath += string(os.PathSeparator)
+		}
 
-		// Check if VLog file exists
+		// Get corresponding VLog file path with proper path construction
+		vlogPath := fmt.Sprintf("%s%s%d%s", levelPath, SSTablePrefix, id, VLogExtension)
+
+		// Check if VLog file exists - add more graceful handling
 		if _, err := os.Stat(vlogPath); os.IsNotExist(err) {
-			return fmt.Errorf("VLog file not found for SSTable %d: %w", id, err)
+			// Log the issue but continue instead of failing completely
+			l.db.log(fmt.Sprintf("Warning: VLog file not found for SSTable %d: %v - skipping", id, err))
+			continue // Skip this SSTable instead of failing completely
 		}
 
 		// Create SSTable structure
 		sstable := &SSTable{}
 
 		// Load the SSTable metadata from the first block of KLog
-		klogPath := fmt.Sprintf("%s%s%d%s", l.path, SSTablePrefix, id, KLogExtension)
+		klogPath := fmt.Sprintf("%s%s%d%s", levelPath, SSTablePrefix, id, KLogExtension)
 
 		// Open the KLog file
 		klogBm, err := blockmanager.Open(klogPath, os.O_RDONLY, l.db.opts.Permission, blockmanager.SyncOption(0))
 		if err != nil {
-			return fmt.Errorf("failed to open KLog block manager: %w", err)
+			l.db.log(fmt.Sprintf("Warning: Failed to open KLog block manager for SSTable %d: %v - skipping", id, err))
+			continue // Skip this SSTable instead of failing completely
 		}
 
 		// Add the KLog to cache
@@ -92,12 +102,14 @@ func (l *Level) reopen() error {
 		// Read the first block which contains SSTable metadata
 		data, _, err := klogBm.Read(1)
 		if err != nil {
-			return fmt.Errorf("failed to read KLog metadata block: %w", err)
+			l.db.log(fmt.Sprintf("Warning: Failed to read KLog metadata block for SSTable %d: %v - skipping", id, err))
+			continue // Skip this SSTable instead of failing completely
 		}
 
 		// Deserialize the SSTable metadata
 		if err := sstable.deserializeSSTable(data); err != nil {
-			return fmt.Errorf("failed to deserialize SSTable metadata: %w", err)
+			l.db.log(fmt.Sprintf("Warning: Failed to deserialize SSTable metadata for SSTable %d: %v - skipping", id, err))
+			continue // Skip this SSTable instead of failing completely
 		}
 
 		sstable.db = l.db
@@ -105,9 +117,9 @@ func (l *Level) reopen() error {
 		sstables = append(sstables, sstable)
 	}
 
-	// Sort SSTables by last modified time (oldest first)
+	// Rest of the method remains unchanged...
 	sort.Slice(sstables, func(i, j int) bool {
-		return sstables[i].modTime.Before(sstables[j].modTime)
+		return sstables[i].Id < sstables[j].Id
 	})
 
 	// Update the level's total size

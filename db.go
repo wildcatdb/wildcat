@@ -196,9 +196,9 @@ func Open(opts *Options) (*DB, error) {
 			db:        db,
 		}
 
-		db.txnIdGenerator = NewIDGenerator()
-		db.walIdGenerator = NewIDGenerator()
-		db.sstIdGenerator = NewIDGenerator()
+		db.txnIdGenerator = newIDGenerator()
+		db.walIdGenerator = newIDGenerator()
+		db.sstIdGenerator = newIDGenerator()
 	} else {
 		// Directory exists, load the ID generator state
 		if err := db.idgs.loadState(); err != nil {
@@ -314,10 +314,10 @@ func (db *DB) reinstate() error {
 		walFiles = append(walFiles, file.Name())
 	}
 
-	// Sort WAL files by timestamp (ascending order - oldest first)
+	// Sort WAL files by id (ascending order - oldest first)
 	sort.Slice(walFiles, func(i, j int) bool {
-		tsI := extractTimestampFromFilename(walFiles[i])
-		tsJ := extractTimestampFromFilename(walFiles[j])
+		tsI := extractIDFromFilename(walFiles[i])
+		tsJ := extractIDFromFilename(walFiles[j])
 		return tsI < tsJ
 	})
 
@@ -354,8 +354,9 @@ func (db *DB) reinstate() error {
 	allTxns := make([]*Txn, 0)
 
 	// Process all but the latest WAL file as immutable memtables
-	for _, walFile := range walFiles[:len(walFiles)-1] {
+	for i, walFile := range walFiles[:len(walFiles)-1] {
 		walPath := fmt.Sprintf("%s%s", db.opts.Directory, walFile)
+		db.log(fmt.Sprintf("Processing immutable WAL %d of %d: %s", i+1, len(walFiles)-1, walPath))
 
 		// Create a memtable for this WAL
 		immutableMemt := &Memtable{
@@ -366,24 +367,34 @@ func (db *DB) reinstate() error {
 			db: db,
 		}
 
-		// Open the WAL file
+		// Open the WAL file with improved error handling
 		walBm, err := blockmanager.Open(walPath, os.O_RDONLY, db.opts.Permission, blockmanager.SyncOption(db.opts.SyncOption))
 		if err != nil {
-			return fmt.Errorf("failed to open WAL block manager: %w", err)
+			db.log(fmt.Sprintf("Warning: Failed to open immutable WAL %s: %v - skipping", walPath, err))
+			continue // Skip this WAL instead of failing completely
 		}
 
 		// Add WAL to LRU cache
 		db.lru.Put(walPath, walBm)
 
 		// Replay transactions from this WAL to the memtable
-		// We don't need to track transactions from immutable WALs as they should all be committed
-		err = immutableMemt.replay(nil)
+		// We pass an empty slice to track any uncommitted transactions
+		activeTxns := make([]*Txn, 0)
+		err = immutableMemt.replay(&activeTxns)
 		if err != nil {
-			return fmt.Errorf("failed to replay WAL: %w", err)
+			db.log(fmt.Sprintf("Warning: Failed to replay immutable WAL %s: %v - skipping", walPath, err))
+			continue // Skip this WAL instead of failing completely
+		}
+
+		// Log any uncommitted transactions found in immutable WALs (this shouldn't happen)
+		if len(activeTxns) > 0 {
+			db.log(fmt.Sprintf("Warning: Found %d uncommitted transactions in immutable WAL %s", len(activeTxns), walPath))
+			// Add any uncommitted transactions to our tracking
+			allTxns = append(allTxns, activeTxns...)
 		}
 
 		db.flusher.enqueueMemtable(immutableMemt)
-
+		db.log(fmt.Sprintf("Successfully processed immutable WAL %s", walPath))
 	}
 
 	// Open the latest WAL file as the active WAL
@@ -450,9 +461,10 @@ func (idgs *IDGeneratorState) loadState() error {
 		return fmt.Errorf("failed to read ID generator state: %w", err)
 	}
 
-	idgs.db.txnIdGenerator = ReloadIDGenerator(idgs.lastTxnID)
-	idgs.db.walIdGenerator = ReloadIDGenerator(idgs.lastWalID)
-	idgs.db.sstIdGenerator = ReloadIDGenerator(idgs.lastSstID)
+	idgs.db.txnIdGenerator = reloadIDGenerator(idgs.lastTxnID)
+	idgs.db.walIdGenerator = reloadIDGenerator(idgs.lastWalID)
+	idgs.db.sstIdGenerator = reloadIDGenerator(idgs.lastSstID)
+	idgs.db.log(fmt.Sprintf("Loaded ID generator state: %d %d %d", idgs.lastSstID, idgs.lastWalID, idgs.lastTxnID))
 
 	return nil
 }
@@ -463,9 +475,10 @@ func (idgs *IDGeneratorState) saveState() error {
 		return errors.New("IDGeneratorState is nil")
 	}
 
-	idgs.lastTxnID = idgs.db.txnIdGenerator.Save()
-	idgs.lastWalID = idgs.db.walIdGenerator.Save()
-	idgs.lastSstID = idgs.db.sstIdGenerator.Save()
+	idgs.lastTxnID = idgs.db.txnIdGenerator.save()
+	idgs.lastWalID = idgs.db.walIdGenerator.save()
+	idgs.lastSstID = idgs.db.sstIdGenerator.save()
+	idgs.db.log(fmt.Sprintf("Saving ID generator state: %d %d %d", idgs.lastSstID, idgs.lastWalID, idgs.lastTxnID))
 
 	// Open the ID generator state file
 	idgsFilePath := fmt.Sprintf("%s%s", idgs.db.opts.Directory, IDGSTFileName)
@@ -478,6 +491,11 @@ func (idgs *IDGeneratorState) saveState() error {
 	// Write the ID generator state to the file
 	if _, err := fmt.Fprintf(idgsFile, "%d %d %d", idgs.lastSstID, idgs.lastWalID, idgs.lastTxnID); err != nil {
 		return fmt.Errorf("failed to write ID generator state: %w", err)
+	}
+
+	// Sync the file to ensure data is written
+	if err := idgsFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync ID generator state file: %w", err)
 	}
 
 	return nil

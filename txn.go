@@ -89,9 +89,8 @@ func (txn *Txn) Put(key []byte, value []byte) error {
 	txn.WriteSet[string(key)] = value
 	delete(txn.DeleteSet, string(key)) // Remove from delete set if exists
 
-	// We append to the WAL here
 	err := txn.appendWal()
-	if err == nil {
+	if err != nil {
 		return err
 	}
 
@@ -107,9 +106,8 @@ func (txn *Txn) Delete(key []byte) error {
 	txn.DeleteSet[string(key)] = true
 	delete(txn.WriteSet, string(key)) // Remove from write set if exists
 
-	// We append to the WAL here
 	err := txn.appendWal()
-	if err == nil {
+	if err != nil {
 		return err
 	}
 
@@ -171,9 +169,8 @@ func (txn *Txn) Rollback() error {
 
 	txn.Committed = false
 
-	// We append to the WAL here
 	err := txn.appendWal()
-	if err == nil {
+	if err != nil {
 		return err
 	}
 

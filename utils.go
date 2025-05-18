@@ -5,9 +5,8 @@ import (
 	"strings"
 )
 
-// extractTimestampFromFilename is a helper function to extract timestamp from a WAL filename (<timestamp>.wal).
-func extractTimestampFromFilename(filename string) int64 {
-	// Filename format is <timestamp>.wal
+// extractIDFromFilename extracts the ID from a given filename. <id>.ext
+func extractIDFromFilename(filename string) int64 {
 	parts := strings.Split(filename, ".")
 	if len(parts) != 2 {
 		return 0
