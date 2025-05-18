@@ -18,6 +18,7 @@
 package orindb
 
 import (
+	"math"
 	"sync/atomic"
 )
 
@@ -42,11 +43,18 @@ func reloadIDGenerator(lastId int64) *IDGenerator {
 	}
 }
 
-// nextID generates the next unique ID
+// nextID generates the next unique ID, resetting to 1 if int64 max is reached
 func (g *IDGenerator) nextID() int64 {
 	for {
 		last := atomic.LoadInt64(&g.lastID)
-		next := last + 1
+		var next int64
+
+		// Check if we're at max int64
+		if last == math.MaxInt64 {
+			next = 1 // Reset to 1
+		} else {
+			next = last + 1
+		}
 
 		if atomic.CompareAndSwapInt64(&g.lastID, last, next) {
 			return next

@@ -478,7 +478,7 @@ func (idgs *IDGeneratorState) saveState() error {
 	idgs.lastTxnID = idgs.db.txnIdGenerator.save()
 	idgs.lastWalID = idgs.db.walIdGenerator.save()
 	idgs.lastSstID = idgs.db.sstIdGenerator.save()
-	idgs.db.log(fmt.Sprintf("Saving ID generator state: %d %d %d", idgs.lastSstID, idgs.lastWalID, idgs.lastTxnID))
+	idgs.db.log(fmt.Sprintf("Saving ID generator state:\nLAST SST ID: %d\nLAST WAL ID: %d\nLAST TXN ID: %d", idgs.lastSstID, idgs.lastWalID, idgs.lastTxnID))
 
 	// Open the ID generator state file
 	idgsFilePath := fmt.Sprintf("%s%s", idgs.db.opts.Directory, IDGSTFileName)
