@@ -111,43 +111,6 @@ if err != nil {
 }
 ```
 
-### Bidirectional Iteration
-For more complex iteration needs, you can use the low-level iterator API.
-```go
-err := db.Update(func(txn *orindb.Txn) error {
-    // Get an iterator starting at a specific key
-    iter := txn.NewIterator([]byte("key500"), nil)
-
-    // if you want prefix iterator
-    // iter := txn.NewIterator(nil, []byte("key"))
-
-    // Forward iteration
-    for {
-        key, value, ok := iter.Next()
-        if !ok {
-            break // No more entries
-        }
-        fmt.Printf("Forward - Key: %s, Value: %s\n", key, value.([]byte))
-    }
-
-    // Reset iterator and go backward
-    iter = txn.NewIterator([]byte("key500"))
-
-    for {
-        key, value, ok := iter.Prev()
-        if !ok {
-            break // No more entries
-        }
-        fmt.Printf("Backward - Key: %s, Value: %s\n", key, value.([]byte))
-    }
-
-    return nil
-})
-if err != nil {
-    log.Fatalf("Failed to iterate: %v", err)
-}
-```
-
 ## Log Channel
 OrinDB provides a log channel for real-time logging. You can set up a goroutine to listen for log messages.
 ```go
