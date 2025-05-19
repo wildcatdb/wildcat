@@ -231,4 +231,4 @@ Each transaction is assigned a unique, monotonic timestamp at creation time. Thi
 ### Conflict Handling
 OrinDB uses an optimistic concurrency model.
 - Write-write conflicts are resolved by timestamp ordering - later transactions take precedence.
-- No explicit read/write conflict detection
+- No explicit read/write conflict detection.
