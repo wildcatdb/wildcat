@@ -1,8 +1,6 @@
-// Package orindb
+// Package wildcat
 //
-// (C) Copyright OrinDB
-//
-// Original Author: Alex Gaetano Padula
+// (C) Copyright Alex Gaetano Padula
 //
 // Licensed under the Mozilla Public License, v. 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,18 +13,18 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package orindb
+package wildcat
 
 import (
 	"bytes"
 	"fmt"
-	"orindb/blockmanager"
-	"orindb/bloomfilter"
 	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
+	"wildcat/blockmanager"
+	"wildcat/bloomfilter"
 )
 
 // compactorJob represents a scheduled compaction

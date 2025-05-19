@@ -1,8 +1,6 @@
 // Package lru
 //
-// (C) Copyright OrinDB
-//
-// Original Author: Alex Gaetano Padula
+// (C) Copyright Alex Gaetano Padula
 //
 // Licensed under the Mozilla Public License, v. 2.0 (the "License");
 // you may not use this file except in compliance with the License.

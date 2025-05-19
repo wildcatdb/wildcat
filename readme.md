@@ -1,8 +1,8 @@
 <div>
-    <h1 align="left"><img width="128" src="artwork/orindb-logo.png"></h1>
+    <h1 align="left"><img width="128" src="artwork/wildcat-logo.png"></h1>
 </div>
 
-OrinDB is a high-performance embedded key-value database written in Go. It incorporates modern database design principles including LSM tree architecture, MVCC (Multi-Version Concurrency Control), and automatic background operations to deliver excellent read/write performance with strong consistency guarantees.
+Wildcat is a high-performance embedded key-value database or you can also call it a storage engine written in Go. It incorporates modern database design principles including LSM tree architecture, MVCC (Multi-Version Concurrency Control), and automatic background operations to deliver excellent read/write performance with strong consistency guarantees.
 
 ## Features
 - LSMT(log-structure-merged-tree) architecture optimized for high write throughput
@@ -30,13 +30,13 @@ OrinDB is a high-performance embedded key-value database written in Go. It incor
 ### Opening a Database
 ```go
 // Create default options
-opts := &orindb.Options{
+opts := &wildcat.Options{
 Directory: "/path/to/database",
     // Use defaults for other settings
 }
 
 // Open or create the database
-db, err := orindb.Open(opts)
+db, err := wildcat.Open(opts)
 if err != nil {
     log.Fatalf("Failed to open database: %v", err)
 }
@@ -44,10 +44,10 @@ defer db.Close()
 ```
 
 ### Simple Key-Value Operations
-The easiest way to interact with OrinDB is through the Update method, which handles transactions automatically.
+The easiest way to interact with Wildcat is through the Update method, which handles transactions automatically.
 ```go
 // Write a value
-err := db.Update(func(txn *orindb.Txn) error {
+err := db.Update(func(txn *wildcat.Txn) error {
     return txn.Put([]byte("hello"), []byte("world"))
 })
 if err != nil {
@@ -56,7 +56,7 @@ if err != nil {
 
 // Read a value
 var result []byte
-err = db.Update(func(txn *orindb.Txn) error {
+err = db.Update(func(txn *wildcat.Txn) error {
     var err error
     result, err = txn.Get([]byte("hello"))
     return err
@@ -99,7 +99,7 @@ if err != nil {
 ### Batch Operations
 You can perform multiple operations in a single transaction.
 ```go
-err := db.Update(func(txn *orindb.Txn) error {
+err := db.Update(func(txn *wildcat.Txn) error {
     // Write multiple key-value pairs
     for i := 0; i < 1000; i++ {
         key := []byte(fmt.Sprintf("key%d", i))
@@ -116,20 +116,20 @@ if err != nil {
 ```
 
 ## Log Channel
-OrinDB provides a log channel for real-time logging. You can set up a goroutine to listen for log messages.
+Wildcat provides a log channel for real-time logging. You can set up a goroutine to listen for log messages.
 ```go
 // Create a log channel
 logChannel := make(chan string, 100) // Buffer size of 100 messages
 
 // Set up options with the log channel
-opts := &orindb.Options{
+opts := &wildcat.Options{
     Directory:       "/path/to/db",
     LogChannel:      logChannel,
     // Other options...
 }
 
 // Open the database
-db, err := orindb.Open(opts)
+db, err := wildcat.Open(opts)
 if err != nil {
     // Handle error
 }
@@ -143,7 +143,7 @@ go func() {
     defer wg.Done()
     for msg := range logChannel {
         // Process log messages
-        fmt.Println("OrinDB Log:", msg)
+        fmt.Println("wildcat:", msg)
 
         // You could also write to a file, send to a logging service, etc.
         // log.Println(msg)
@@ -159,7 +159,7 @@ defer db.Close()
 ```
 
 ## Iterating Keys
-OrinDB supports bidirectional, MVCC-consistent iteration within a transaction using `txn.NewIterator(startKey, prefix)`.
+Wildcat supports bidirectional, MVCC-consistent iteration within a transaction using `txn.NewIterator(startKey, prefix)`.
 ```go
 // Begin a transaction
 txn := db.Begin()
@@ -191,7 +191,7 @@ for {
 OR
 
 ```go
-err := db.Update(func(txn *orindb.Txn) error {
+err := db.Update(func(txn *wildcat.Txn) error {
     iter := txn.NewIterator(nil, nil) // Full forward scan
 
     fmt.Println("Keys in snapshot:")
@@ -211,12 +211,12 @@ if err != nil {
 ```
 
 ## Advanced Configuration
-OrinDB provides several configuration options for fine-tuning.
+Wildcat provides several configuration options for fine-tuning.
 ```go
-opts := &orindb.Options{
+opts := &wildcat.Options{
     Directory:           "/path/to/database",
     WriteBufferSize:     32 * 1024 * 1024,        // 32MB memtable size
-    SyncOption:          orindb.SyncFull,         // Full sync for maximum durability
+    SyncOption:          wildcat.SyncFull,         // Full sync for maximum durability
     SyncInterval:        128 * time.Millisecond,  // Only set when using SyncPartial, can be 0 otherwise
     LevelCount:          7,                       // Number of LSM levels
     LevelMultiplier:     10,                      // Size multiplier between levels
@@ -244,7 +244,7 @@ opts := &orindb.Options{
 
 ## Implementation Details
 ### Data Storage Architecture
-OrinDB uses a multi-level Log-Structured Merge (LSM) tree architecture.
+Wildcat uses a multi-level Log-Structured Merge (LSM) tree architecture.
 
 - **Memtable** In-memory skiplist for recent writes (L0)
 - **Immutable Memtables** Memtables awaiting flush to disk
@@ -252,7 +252,7 @@ OrinDB uses a multi-level Log-Structured Merge (LSM) tree architecture.
 - **Write-Ahead Log (WAL)** Ensures durability of in-memory data
 
 ### Compaction Strategy
-OrinDB employs a hybrid compaction strategy:
+Wildcat employs a hybrid compaction strategy:
 - **Size-Tiered Compaction (L1–L2)** Merges similarly sized SSTables to reduce write amplification and flush pressure. This strategy groups SSTables of comparable size and merges them into the next level. Ideal for absorbing high write throughput efficiently.
 - **Leveled Compaction (L3 and above)** Maintains disjoint key ranges within each level to optimize lookup performance. Overlapping SSTables from the lower level are merged into the appropriate ranges in the higher level, minimizing read amplification and ensuring predictable query cost.
 
@@ -266,7 +266,7 @@ OrinDB employs a hybrid compaction strategy:
 
 
 ### MVCC and Transactions
-OrinDB uses a snapshot-isolated MVCC (Multi-Version Concurrency Control) model to provide full ACID-compliant transactions with zero reader/writer blocking and high concurrency.
+Wildcat uses a snapshot-isolated MVCC (Multi-Version Concurrency Control) model to provide full ACID-compliant transactions with zero reader/writer blocking and high concurrency.
 
 Each transaction is assigned a unique, monotonic timestamp at creation time. This timestamp determines the visibility window of data for the entire duration of the transaction.
 
@@ -285,6 +285,6 @@ Each transaction is assigned a unique, monotonic timestamp at creation time. Thi
 - WALs are replayed on crash to restore in-flight or recently committed transactions.
 
 ### Conflict Handling
-OrinDB uses an optimistic concurrency model.
+Wildcat uses an optimistic concurrency model.
 - Write-write conflicts are resolved by timestamp ordering - later transactions take precedence.
 - No explicit read/write conflict detection.

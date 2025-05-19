@@ -1,8 +1,6 @@
-// Package orindb
+// Package wildcat
 //
-// (C) Copyright OrinDB
-//
-// Original Author: Alex Gaetano Padula
+// (C) Copyright Alex Gaetano Padula
 //
 // Licensed under the Mozilla Public License, v. 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +13,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package orindb
+package wildcat
 
 import (
 	"bytes"
@@ -32,7 +30,7 @@ func TestFlusher_QueueMemtable(t *testing.T) {
 	logChannel := make(chan string, 100) // Buffer size of 100 messages
 
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_flusher_test")
+	dir, err := os.MkdirTemp("", "db_flusher_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -129,7 +127,7 @@ func TestFlusher_QueueMemtable(t *testing.T) {
 
 func TestFlusher_MVCCWithMultipleVersions(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_flusher_mvcc_test")
+	dir, err := os.MkdirTemp("", "db_flusher_mvcc_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -257,7 +255,7 @@ func TestFlusher_MVCCWithMultipleVersions(t *testing.T) {
 
 func TestFlusher_ErrorHandling(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_flusher_error_test")
+	dir, err := os.MkdirTemp("", "db_flusher_error_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -377,7 +375,7 @@ func TestFlusher_ErrorHandling(t *testing.T) {
 
 func TestFlusher_MultipleFlushesWithUpdates(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_flusher_updates_test")
+	dir, err := os.MkdirTemp("", "db_flusher_updates_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -479,7 +477,7 @@ func TestFlusher_MultipleFlushesWithUpdates(t *testing.T) {
 
 func TestFlusher_ConcurrentReadsWithFlush(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_flusher_concurrent_test")
+	dir, err := os.MkdirTemp("", "db_flusher_concurrent_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -639,7 +637,7 @@ func TestFlusher_ConcurrentReadsWithFlush(t *testing.T) {
 
 func TestFlusher_VariousKeySizes(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_flusher_key_sizes_test")
+	dir, err := os.MkdirTemp("", "db_flusher_key_sizes_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -761,7 +759,7 @@ func TestFlusher_VariousKeySizes(t *testing.T) {
 
 func TestFlusher_RecoveryAfterCrash(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_flusher_crash_recovery_test")
+	dir, err := os.MkdirTemp("", "db_flusher_crash_recovery_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -906,7 +904,7 @@ func TestFlusher_RecoveryAfterCrash(t *testing.T) {
 
 func TestFlusher_EmptyFlush(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_flusher_empty_test")
+	dir, err := os.MkdirTemp("", "db_flusher_empty_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}

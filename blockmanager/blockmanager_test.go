@@ -1,8 +1,6 @@
 // Package blockmanager
 //
-// (C) Copyright OrinDB
-//
-// Original Author: Alex Gaetano Padula
+// (C) Copyright Alex Gaetano Padula
 //
 // Licensed under the Mozilla Public License, v. 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,11 +22,11 @@ import (
 	"hash/crc32"
 	"io/ioutil"
 	"math/rand"
-	"orindb/queue"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+	"wildcat/queue"
 )
 
 func TestWriteHeader(t *testing.T) {

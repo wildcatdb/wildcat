@@ -1,8 +1,6 @@
-// Package orindb
+// Package wildcat
 //
-// (C) Copyright OrinDB
-//
-// Original Author: Alex Gaetano Padula
+// (C) Copyright Alex Gaetano Padula
 //
 // Licensed under the Mozilla Public License, v. 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,19 +13,19 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package orindb
+package wildcat
 
 import (
 	"fmt"
-	"orindb/blockmanager"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"wildcat/blockmanager"
 )
 
-// Level is a disk level within OrinDB, which contains a list of immutable SSTables
+// Level is a disk level within Wildcat, which contains a list of immutable SSTables
 type Level struct {
 	id          int                        // The level ID
 	path        string                     // The path to the level directory

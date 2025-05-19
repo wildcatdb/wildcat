@@ -1,8 +1,6 @@
-// Package orindb
+// Package wildcat
 //
-// (C) Copyright OrinDB
-//
-// Original Author: Alex Gaetano Padula
+// (C) Copyright Alex Gaetano Padula
 //
 // Licensed under the Mozilla Public License, v. 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +13,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package orindb
+package wildcat
 
 import (
 	"fmt"
@@ -28,7 +26,7 @@ import (
 
 func TestCompactor_Basic(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_compactor_test")
+	dir, err := os.MkdirTemp("", "db_compactor_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -154,7 +152,7 @@ func TestCompactor_Basic(t *testing.T) {
 
 func TestCompactor_LeveledCompaction(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_leveled_compaction_test")
+	dir, err := os.MkdirTemp("", "db_leveled_compaction_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -289,7 +287,7 @@ func TestCompactor_LeveledCompaction(t *testing.T) {
 
 func TestCompactor_SizeTieredCompaction(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_size_tiered_test")
+	dir, err := os.MkdirTemp("", "db_size_tiered_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -446,7 +444,7 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 
 func TestCompactor_CompactionQueue(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_compaction_queue_test")
+	dir, err := os.MkdirTemp("", "db_compaction_queue_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -596,7 +594,7 @@ func TestCompactor_CompactionQueue(t *testing.T) {
 
 func TestCompactor_ConcurrentCompactions(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_concurrent_compaction_test")
+	dir, err := os.MkdirTemp("", "db_concurrent_compaction_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}

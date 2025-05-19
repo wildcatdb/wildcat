@@ -1,8 +1,6 @@
-// Package orindb
+// Package wildcat
 //
-// (C) Copyright OrinDB
-//
-// Original Author: Alex Gaetano Padula
+// (C) Copyright Alex Gaetano Padula
 //
 // Licensed under the Mozilla Public License, v. 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,21 +13,21 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package orindb
+package wildcat
 
 import (
 	"errors"
 	"fmt"
 	"math"
-	"orindb/blockmanager"
-	"orindb/lru"
-	"orindb/skiplist"
 	"os"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"wildcat/blockmanager"
+	"wildcat/lru"
+	"wildcat/skiplist"
 )
 
 // Constants for compaction policy
@@ -79,9 +77,9 @@ const (
 	DefaultPermission          = 0750
 )
 
-// Options represents the configuration options for OrinDB
+// Options represents the configuration options for Wildcat
 type Options struct {
-	Directory           string        // Directory for OrinDB
+	Directory           string        // Directory for Wildcat
 	WriteBufferSize     int64         // Size of the write buffer
 	SyncOption          SyncOption    // Sync option for write operations
 	SyncInterval        time.Duration // Interval for syncing the write buffer
@@ -94,7 +92,7 @@ type Options struct {
 	BloomFilter         bool          // Enable Bloom filter for SSTables
 }
 
-// DB represents the main OrinDB structure
+// DB represents the main Wildcat structure
 type DB struct {
 	opts             *Options                 // Configuration options
 	txns             atomic.Pointer[[]*Txn]   // Atomic pointer to the transactions
@@ -122,7 +120,7 @@ type IDGeneratorState struct {
 	db        *DB   // Pointer to the database instance
 }
 
-// Open initializes a new OrinDB instance with the provided options
+// Open initializes a new Wildcat instance with the provided options
 func Open(opts *Options) (*DB, error) {
 	if opts == nil {
 		return nil, errors.New("options cannot be nil")

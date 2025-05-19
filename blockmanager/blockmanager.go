@@ -1,8 +1,6 @@
 // Package blockmanager
 //
-// (C) Copyright OrinDB
-//
-// Original Author: Alex Gaetano Padula
+// (C) Copyright Alex Gaetano Padula
 //
 // Licensed under the Mozilla Public License, v. 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,12 +20,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
-	"orindb/queue"
 	"os"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+	"wildcat/queue"
 )
 
 const MagicNumber = uint32(0x4F52494E)        // "ORIN" for OrinDB

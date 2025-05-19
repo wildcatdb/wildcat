@@ -1,8 +1,6 @@
-// Package orindb
+// Package wildcat
 //
-// (C) Copyright OrinDB
-//
-// Original Author: Alex Gaetano Padula
+// (C) Copyright Alex Gaetano Padula
 //
 // Licensed under the Mozilla Public License, v. 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +13,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package orindb
+package wildcat
 
 import (
 	"fmt"
@@ -27,7 +25,7 @@ import (
 
 func TestLevel_BasicOperations(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_level_test")
+	dir, err := os.MkdirTemp("", "db_level_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -151,7 +149,7 @@ func TestLevel_BasicOperations(t *testing.T) {
 
 func TestLevel_Reopen(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_level_reopen_test")
+	dir, err := os.MkdirTemp("", "db_level_reopen_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -287,7 +285,7 @@ func TestLevel_Reopen(t *testing.T) {
 
 func TestLevel_SizeMethods(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_level_size_test")
+	dir, err := os.MkdirTemp("", "db_level_size_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -375,7 +373,7 @@ func TestLevel_SizeMethods(t *testing.T) {
 
 func TestLevel_ErrorHandling(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_level_error_test")
+	dir, err := os.MkdirTemp("", "db_level_error_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}

@@ -1,8 +1,6 @@
-// Package orindb
+// Package wildcat
 //
-// (C) Copyright OrinDB
-//
-// Original Author: Alex Gaetano Padula
+// (C) Copyright Alex Gaetano Padula
 //
 // Licensed under the Mozilla Public License, v. 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +13,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package orindb
+package wildcat
 
 import (
 	"bytes"
@@ -29,7 +27,7 @@ import (
 
 func TestTxn_BasicOperations(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_txn_test")
+	dir, err := os.MkdirTemp("", "db_txn_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -138,7 +136,7 @@ func TestTxn_BasicOperations(t *testing.T) {
 
 func TestTxn_Rollback(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_txn_rollback_test")
+	dir, err := os.MkdirTemp("", "db_txn_rollback_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -217,7 +215,7 @@ func TestTxn_Rollback(t *testing.T) {
 
 func TestTxn_Isolation(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_txn_isolation_test")
+	dir, err := os.MkdirTemp("", "db_txn_isolation_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -304,7 +302,7 @@ func TestTxn_Isolation(t *testing.T) {
 
 func TestTxn_Update(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_txn_update_test")
+	dir, err := os.MkdirTemp("", "db_txn_update_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -386,7 +384,7 @@ func TestTxn_Update(t *testing.T) {
 
 func TestTxn_ConcurrentOperations(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_txn_concurrent_test")
+	dir, err := os.MkdirTemp("", "db_txn_concurrent_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -491,7 +489,7 @@ func TestTxn_ConcurrentOperations(t *testing.T) {
 
 func TestTxn_WALRecovery(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_txn_wal_test")
+	dir, err := os.MkdirTemp("", "db_txn_wal_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -610,7 +608,7 @@ func TestTxn_WALRecovery(t *testing.T) {
 
 func TestTxn_DeleteTimestamp(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_transaction_delete_test")
+	dir, err := os.MkdirTemp("", "db_transaction_delete_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
@@ -711,7 +709,7 @@ func TestTxn_DeleteTimestamp(t *testing.T) {
 }
 
 func TestTxn_IteratorMergesAllSources(t *testing.T) {
-	dir, err := os.MkdirTemp("", "orindb_iterator_merge_test")
+	dir, err := os.MkdirTemp("", "db_iterator_merge_test")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
