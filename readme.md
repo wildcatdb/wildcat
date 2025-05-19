@@ -111,36 +111,15 @@ if err != nil {
 }
 ```
 
-### Scanning Data
-OrinDB provides rich iteration capabilities.
-```go
-// Iterate through all entries
-err := db.Update(func(txn *orindb.Txn) error {
-    return txn.ForEach(func(key, value []byte) bool {
-        fmt.Printf("Key: %s, Value: %s\n", key, value)
-        return true // Continue iteration
-    })
-})
-
-// Range scan
-err := db.Update(func(txn *orindb.Txn) error {
-    startKey := []byte("key100")
-    endKey := []byte("key200")
-
-    return txn.Scan(startKey, endKey, func(key, value []byte) bool {
-        fmt.Printf("Key: %s, Value: %s\n", key, value)
-        return true // Continue scanning
-    })
-})
-```
-
 ### Bidirectional Iteration
 For more complex iteration needs, you can use the low-level iterator API.
 ```go
 err := db.Update(func(txn *orindb.Txn) error {
     // Get an iterator starting at a specific key
     iter := txn.NewIterator([]byte("key500"), nil)
-    // iter := txn.NewIterator(nil, []byte("key")) // prefix iterator
+
+    // if you want prefix iterator
+    // iter := txn.NewIterator(nil, []byte("key"))
 
     // Forward iteration
     for {
