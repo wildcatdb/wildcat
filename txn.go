@@ -58,6 +58,11 @@ func (db *DB) Begin() *Txn {
 
 		txns = append(txns, txn)
 		db.txns.Store(&txns)
+	} else {
+		txns := *txnList
+		txns = append(txns, txn)
+		db.txns.Store(&txns)
+
 	}
 
 	return txn
