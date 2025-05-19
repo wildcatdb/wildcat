@@ -47,6 +47,7 @@ type Compactor struct {
 	scoreLock       sync.Mutex
 }
 
+// sstCompactionIterator iterates over an SSTable for compaction
 type sstCompactionIterator struct {
 	sstable    *SSTable
 	klogIter   *blockmanager.Iterator
@@ -473,7 +474,6 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 }
 
 // mergeSSTables merges multiple SSTables into a new SSTable
-// mergeSSTables merges multiple SSTables into a new SSTable with optimized tombstone handling
 func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *blockmanager.BlockManager, newSSTable *SSTable) error {
 	// Write metadata as first block
 	sstableData, err := newSSTable.serializeSSTable()
@@ -541,10 +541,6 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 			return false
 		}
 
-		// Check if key exists in other SSTables that aren't part of this compaction
-		// This would require scanning all other SSTables, which can be expensive
-		// For now, we use a simplified approach - keep tombstones that are recent
-
 		// Check overlap with SSTables in other levels
 		for levelNum, level := range *compactor.db.levels.Load() {
 			// Skip the current level and target level
@@ -602,7 +598,6 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 
 		isTomb := isTombstone(valueBlockID, value)
 
-		// TOMBSTONE HANDLING STRATEGY
 		if isTomb {
 			// Tombstone found - decide if we should keep it
 			if !shouldKeepTombstone(key, ts) {
@@ -610,7 +605,7 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 				continue // Skip this tombstone entirely
 			}
 
-			// Check for consecutive tombstones (potential range optimization)
+			// Check for consecutive tombstones
 			if lastKeyTombstone && bytes.Equal(lastKey, key) {
 				// Skip duplicate tombstones for the same key
 				continue
