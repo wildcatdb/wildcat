@@ -156,6 +156,58 @@ wg.Wait() // Wait for the goroutine to finish
 defer db.Close()
 ```
 
+## Iterating Keys
+OrinDB supports bidirectional, MVCC-consistent iteration within a transaction using `txn.NewIterator(startKey, prefix)`.
+```go
+// Begin a transaction
+txn := db.Begin()
+
+// Create an iterator from a given start key (or nil to begin from the start)
+iter := txn.NewIterator(nil, nil)
+
+// Forward iteration
+fmt.Println("Forward scan:")
+for {
+    key, val, ts, ok := iter.Next()
+    if !ok {
+        break
+    }
+    fmt.Printf("Key=%s Value=%s Timestamp=%d\n", key, val, ts)
+}
+
+// Reverse iteration
+fmt.Println("Reverse scan:")
+for {
+    key, val, ts, ok := iter.Prev()
+    if !ok {
+        break
+    }
+    fmt.Printf("Key=%s Value=%s Timestamp=%d\n", key, val, ts)
+}
+```
+
+OR
+
+```go
+err := db.Update(func(txn *orindb.Txn) error {
+    iter := txn.NewIterator(nil, nil) // Full forward scan
+
+    fmt.Println("Keys in snapshot:")
+    for {
+        key, value, ts, ok := iter.Next()
+        if !ok {
+            break
+        }
+        fmt.Printf("Key=%s Value=%s Timestamp=%d\n", key, value, ts)
+    }
+
+    return nil
+})
+if err != nil {
+    log.Fatalf("Iteration failed: %v", err)
+}
+```
+
 ## Advanced Configuration
 OrinDB provides several configuration options for fine-tuning.
 ```go
