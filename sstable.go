@@ -18,11 +18,11 @@ package wildcat
 import (
 	"bytes"
 	"fmt"
+	"github.com/guycipher/wildcat/blockmanager"
+	"github.com/guycipher/wildcat/bloomfilter"
 	"os"
 	"strconv"
 	"sync"
-	"wildcat/blockmanager"
-	"wildcat/bloomfilter"
 )
 
 // SSTable represents a sorted string table

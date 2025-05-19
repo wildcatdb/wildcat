@@ -18,10 +18,10 @@ package wildcat
 import (
 	"bytes"
 	"fmt"
+	"github.com/guycipher/wildcat/blockmanager"
 	"sync"
 	"sync/atomic"
 	"time"
-	"wildcat/blockmanager"
 )
 
 // Txn represents a transaction in Wildcat

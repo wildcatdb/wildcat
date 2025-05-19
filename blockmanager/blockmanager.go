@@ -19,13 +19,13 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"github.com/guycipher/wildcat/queue"
 	"hash/crc32"
 	"os"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
-	"wildcat/queue"
 )
 
 const MagicNumber = uint32(0x4F52494E)        // "ORIN" for OrinDB

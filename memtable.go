@@ -17,12 +17,12 @@ package wildcat
 
 import (
 	"fmt"
+	"github.com/guycipher/wildcat/blockmanager"
+	"github.com/guycipher/wildcat/bloomfilter"
+	"github.com/guycipher/wildcat/skiplist"
 	"os"
 	"sync/atomic"
 	"time"
-	"wildcat/blockmanager"
-	"wildcat/bloomfilter"
-	"wildcat/skiplist"
 )
 
 // A memtable contains a skiplist and a write-ahead log (WAL) for durability, they are paired.

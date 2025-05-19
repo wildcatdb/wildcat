@@ -17,12 +17,12 @@ package wildcat
 
 import (
 	"fmt"
+	"github.com/guycipher/wildcat/blockmanager"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"wildcat/blockmanager"
 )
 
 // Level is a disk level within Wildcat, which contains a list of immutable SSTables

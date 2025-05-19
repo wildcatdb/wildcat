@@ -18,13 +18,13 @@ package wildcat
 import (
 	"bytes"
 	"fmt"
+	"github.com/guycipher/wildcat/blockmanager"
+	"github.com/guycipher/wildcat/bloomfilter"
 	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
-	"wildcat/blockmanager"
-	"wildcat/bloomfilter"
 )
 
 // compactorJob represents a scheduled compaction

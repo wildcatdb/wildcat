@@ -17,13 +17,13 @@ package wildcat
 
 import (
 	"fmt"
+	"github.com/guycipher/wildcat/blockmanager"
+	"github.com/guycipher/wildcat/queue"
+	"github.com/guycipher/wildcat/skiplist"
 	"os"
 	"sync"
 	"sync/atomic"
 	"time"
-	"wildcat/blockmanager"
-	"wildcat/queue"
-	"wildcat/skiplist"
 )
 
 // Flusher is responsible for queuing and flushing memtables to disk

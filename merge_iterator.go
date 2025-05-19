@@ -18,8 +18,8 @@ package wildcat
 import (
 	"bytes"
 	"fmt"
+	"github.com/guycipher/wildcat/skiplist"
 	"sync"
-	"wildcat/skiplist"
 )
 
 // IteratorWithPeek is an interface for iterators that support peeking

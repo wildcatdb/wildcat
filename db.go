@@ -18,6 +18,9 @@ package wildcat
 import (
 	"errors"
 	"fmt"
+	"github.com/guycipher/wildcat/blockmanager"
+	"github.com/guycipher/wildcat/lru"
+	"github.com/guycipher/wildcat/skiplist"
 	"math"
 	"os"
 	"sort"
@@ -25,9 +28,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"wildcat/blockmanager"
-	"wildcat/lru"
-	"wildcat/skiplist"
 )
 
 // Constants for compaction policy
