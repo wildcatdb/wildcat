@@ -240,6 +240,7 @@ opts := &orindb.Options{
 8. **BlockManagerLRUSize** Number of block managers to cache
 9. **BlockSetSize** Size of SSTable klog block sets
 10. **LogChannel** Channel for real-time logging, useful for debugging and monitoring
+11. **BloomFilter** Enable or disable bloom filters for SSTables to speed up key lookups
 
 ## Implementation Details
 ### Data Storage Architecture
