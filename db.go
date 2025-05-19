@@ -62,13 +62,13 @@ const (
 
 // Defaults
 const (
-	DefaultWriteBufferSize     = 16 * 1024 * 1024 // 4MB
+	DefaultWriteBufferSize     = 128 * 1024 * 1024
 	DefaultSyncOption          = SyncNone
-	DefaultSyncInterval        = 1 * time.Second
+	DefaultSyncInterval        = 16 * time.Nanosecond
 	DefaultLevelCount          = 7
 	DefaultLevelMultiplier     = 4
-	DefaultBlockManagerLRUSize = 128             // Size of the LRU cache for block managers
-	DefaultBlockSetSize        = 8 * 1024 * 1024 // Size of the block set
+	DefaultBlockManagerLRUSize = 128              // Size of the LRU cache for block managers
+	DefaultBlockSetSize        = 64 * 1024 * 1024 // Size of the block set
 	DefaultPermission          = 0750
 )
 
@@ -765,12 +765,12 @@ func (idgs *IDGeneratorState) saveState() error {
 	defer idgsFile.Close()
 
 	// Write the ID generator state to the file
-	if _, err := fmt.Fprintf(idgsFile, "%d %d %d", idgs.lastSstID, idgs.lastWalID, idgs.lastTxnID); err != nil {
+	if _, err = fmt.Fprintf(idgsFile, "%d %d %d", idgs.lastSstID, idgs.lastWalID, idgs.lastTxnID); err != nil {
 		return fmt.Errorf("failed to write ID generator state: %w", err)
 	}
 
 	// Sync the file to ensure data is written
-	if err := idgsFile.Sync(); err != nil {
+	if err = idgsFile.Sync(); err != nil {
 		return fmt.Errorf("failed to sync ID generator state file: %w", err)
 	}
 
