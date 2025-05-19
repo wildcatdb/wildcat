@@ -14,7 +14,7 @@ Wildcat is a high-performance embedded key-value database or you can also call i
 - Durable and concurrent block storage
 - Atomic LRU for active block manager handles
 - Memtable lifecycle management and snapshot durability
-- Configurable Sync options, None, Partial (background interval), Full
+- Configurable Sync options, `None`, `Partial (w/ background interval)`, `Full`
 - MVCC with snapshot isolation (with read timestamp)
 - WALs ensure durability and crash recovery of state, including active transactions
 - Automatic multi-threaded background compaction that maintains optimal performance over time
@@ -216,7 +216,7 @@ Wildcat provides several configuration options for fine-tuning.
 opts := &wildcat.Options{
     Directory:           "/path/to/database",
     WriteBufferSize:     32 * 1024 * 1024,        // 32MB memtable size
-    SyncOption:          wildcat.SyncFull,         // Full sync for maximum durability
+    SyncOption:          wildcat.SyncFull,        // Full sync for maximum durability
     SyncInterval:        128 * time.Millisecond,  // Only set when using SyncPartial, can be 0 otherwise
     LevelCount:          7,                       // Number of LSM levels
     LevelMultiplier:     10,                      // Size multiplier between levels
