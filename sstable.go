@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"fmt"
 	"orindb/blockmanager"
+	"orindb/bloomfilter"
 	"os"
 	"strconv"
 	"sync"
@@ -28,14 +29,15 @@ import (
 
 // SSTable represents a sorted string table
 type SSTable struct {
-	Id         int64  // SStable ID
-	Min        []byte // The minimum key in the SSTable
-	Max        []byte // The maximum key in the SSTable
-	isMerging  int32  // Atomic flag indicating if the SSTable is being merged
-	Size       int64  // The size of the SSTable in bytes
-	EntryCount int    // The number of entries in the SSTable
-	Level      int    // The level of the SSTable
-	db         *DB    // Reference to the database (not exported)
+	Id          int64                    // SStable ID
+	Min         []byte                   // The minimum key in the SSTable
+	Max         []byte                   // The maximum key in the SSTable
+	Size        int64                    // The size of the SSTable in bytes
+	EntryCount  int                      // The number of entries in the SSTable
+	Level       int                      // The level of the SSTable
+	BloomFilter *bloomfilter.BloomFilter // Optional bloom filter for fast lookups
+	isMerging   int32                    // Atomic flag indicating if the SSTable is being merged
+	db          *DB                      // Reference to the database (not exported)
 }
 
 // SSTableIterator is an iterator for the SSTable
@@ -91,6 +93,14 @@ func (sst *SSTable) get(key []byte, timestamp int64) ([]byte, int64) {
 			return nil, 0
 		}
 		sst.db.lru.Put(klogPath, klogBm)
+	}
+
+	if sst.db.opts.BloomFilter {
+		// Check if the key is in the bloom filter
+		if !sst.BloomFilter.Contains(key) {
+			return nil, 0 // Key not in SSTable
+		}
+
 	}
 
 	// Variables to track the latest valid version

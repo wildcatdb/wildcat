@@ -22,9 +22,8 @@ OrinDB is a high-performance embedded key-value database written in Go. It incor
 - Bidirectional iteration for efficient data scanning
 - Can sustain write throughput at 100K+ txns/sec
 - Handles hundreds of thousands of concurrent read ops/sec with default settings
+- Bloom filter per sstable for fast key lookups
 
-## Todo
-- Possible bloom filter for member queries
 
 ## Basic Usage
 
@@ -224,6 +223,7 @@ opts := &orindb.Options{
     BlockManagerLRUSize: 256,                     // Cache size for block managers
     BlockSetSize:        8 * 1024 * 1024,         // 8MB block set size, each klog block will have BlockSetSize of entries
     LogChannel:          make(chan string, 1000), // Channel for real time logging
+    BloomFilter:         false,                   // Enable/disable sstable bloom filters
 }
 ```
 

@@ -50,12 +50,13 @@ const (
 )
 
 const (
-	SSTablePrefix    = "sst_"     // Prefix for SSTable files
-	LevelPrefix      = "l"        // Prefix for level directories i.e. "l0", "l1", etc.
-	WALFileExtension = ".wal"     // Extension for Write Ahead Log files <timestamp>.wal
-	KLogExtension    = ".klog"    // Extension for KLog files
-	VLogExtension    = ".vlog"    // Extension for VLog files
-	IDGSTFileName    = "idgstate" // Filename for ID generator state
+	SSTablePrefix                = "sst_"     // Prefix for SSTable files
+	LevelPrefix                  = "l"        // Prefix for level directories i.e. "l0", "l1", etc.
+	WALFileExtension             = ".wal"     // Extension for Write Ahead Log files <timestamp>.wal
+	KLogExtension                = ".klog"    // Extension for KLog files
+	VLogExtension                = ".vlog"    // Extension for VLog files
+	IDGSTFileName                = "idgstate" // Filename for ID generator state
+	BloomFilterFalsePositiveRate = 0.01       // False positive rate for Bloom filter
 )
 
 type SyncOption int
@@ -90,6 +91,7 @@ type Options struct {
 	BlockSetSize        int64         // Amount of entries per klog block (in bytes)
 	Permission          os.FileMode   // Permission for created files
 	LogChannel          chan string   // Channel for logging
+	BloomFilter         bool          // Enable Bloom filter for SSTables
 }
 
 // DB represents the main OrinDB structure

@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"fmt"
 	"orindb/blockmanager"
+	"orindb/bloomfilter"
 	"os"
 	"sort"
 	"sync"
@@ -492,7 +493,6 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 	// Get the oldest active read timestamp if available
 	// If not tracking this, we use a conservative approach and keep tombstones
 	var oldestReadTimestamp int64
-
 	oldestReadTimestamp = atomic.LoadInt64(&compactor.db.oldestActiveRead)
 
 	// Create a merged iterator over all input SSTables
@@ -510,6 +510,22 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 
 	entryCount := 0
 	var totalSize int64 = 0
+
+	// Create a bloom filter if the option is enabled
+	var bloomFilter *bloomfilter.BloomFilter
+	if compactor.db.opts.BloomFilter {
+		// Estimate the number of unique keys based on input tables
+		estimatedUniqueKeys := 0
+		for _, table := range sstables {
+			estimatedUniqueKeys += table.EntryCount
+		}
+		// Use a more conservative estimate to avoid underprovision
+		bloomFilter, err = bloomfilter.New(uint(estimatedUniqueKeys), BloomFilterFalsePositiveRate)
+		if err != nil {
+			return fmt.Errorf("failed to create bloom filter: %w", err)
+
+		}
+	}
 
 	// Keep track of the last seen key for potential tombstone optimization
 	var lastKey []byte
@@ -612,6 +628,12 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 			}
 
 			savedTombstones++
+		} else {
+			// Add the key to the bloom filter if this is not a tombstone
+			if bloomFilter != nil {
+				// The bloom filter itself will handle duplicates efficiently
+				bloomFilter.Add(key)
+			}
 		}
 
 		// Remember last key and tombstone status for potential optimizations
@@ -672,6 +694,7 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 	// Update the SSTable metadata
 	newSSTable.Size = totalSize
 	newSSTable.EntryCount = entryCount
+	newSSTable.BloomFilter = bloomFilter
 
 	return nil
 }

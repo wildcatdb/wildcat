@@ -150,6 +150,15 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 		return fmt.Errorf("failed to open VLog block manager: %w", err)
 	}
 
+	if flusher.db.opts.BloomFilter {
+		// Create a bloom filter for the SSTable
+		sstable.BloomFilter, err = memt.createBloomFilter()
+		if err != nil {
+			return fmt.Errorf("failed to create bloom filter: %w", err)
+
+		}
+	}
+
 	// Encode metadata
 	sstableData, err := sstable.serializeSSTable()
 	if err != nil {

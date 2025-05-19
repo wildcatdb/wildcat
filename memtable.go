@@ -20,9 +20,11 @@ package orindb
 import (
 	"fmt"
 	"orindb/blockmanager"
+	"orindb/bloomfilter"
 	"orindb/skiplist"
 	"os"
 	"sync/atomic"
+	"time"
 )
 
 // A memtable contains a skiplist and a write-ahead log (WAL) for durability, they are paired.
@@ -148,4 +150,27 @@ func (memtable *Memtable) replay(activeTxns *[]*Txn) error {
 		memtable.wal.path, txnCount, len(txnMap), committedCount))
 
 	return nil
+}
+
+// Creates a bloom filter from skiplist
+func (memtable *Memtable) createBloomFilter() (*bloomfilter.BloomFilter, error) {
+	maxPossibleTs := time.Now().UnixNano() + 10000000000 // Far in the future
+	iter := memtable.skiplist.NewIterator(nil, maxPossibleTs)
+
+	bf, err := bloomfilter.New(uint(memtable.skiplist.Count(maxPossibleTs)), BloomFilterFalsePositiveRate)
+	if err != nil {
+		return nil, err
+	}
+
+	for {
+		key, _, _, ok := iter.Next()
+		if !ok {
+			break
+		}
+
+		bf.Add(key)
+	}
+
+	return bf, nil
+
 }

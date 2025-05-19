@@ -186,11 +186,6 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 	txn.mutex.Lock()
 	defer txn.mutex.Unlock()
 
-	currentOldest := txn.db.oldestActiveRead.Load()
-	if currentOldest == 0 || txn.Timestamp < currentOldest {
-		txn.db.oldestActiveRead.Store(txn.Timestamp)
-	}
-
 	// Check write set first
 	if val, exists := txn.WriteSet[string(key)]; exists {
 		return val, nil
