@@ -210,7 +210,7 @@ if err != nil {
 }
 ```
 
-### Read-Only Transactions with View
+## Read-Only Transactions with View
 Wildcat provides a `View` method specifically designed for read-only operations. This is more efficient than using `Update` when you only need to read data.
 
 ```go
@@ -229,7 +229,8 @@ if err != nil {
 }
 ```
 
-// Iterate through keys in read-only mode
+### Iterate through keys in read-only mode
+```go
 err := db.View(func(txn *wildcat.Txn) error {
     iter := txn.NewIterator(nil, nil)
 
@@ -246,6 +247,7 @@ err := db.View(func(txn *wildcat.Txn) error {
 if err != nil {
     log.Fatalf("Iteration failed: %v", err)
 }
+```
 
 ## Advanced Configuration
 Wildcat provides several configuration options for fine-tuning.
