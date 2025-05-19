@@ -809,6 +809,7 @@ func (bm *BlockManager) Read(blockID int64) ([]byte, int64, error) {
 	return resultBuffer.Bytes(), returnBlockID, nil
 }
 
+// File returns the associated file handle for the BlockManager
 func (bm *BlockManager) File() *os.File {
 	return bm.file
 }
@@ -878,6 +879,7 @@ func (it *Iterator) Prev() ([]byte, int64, error) {
 	return data, blockID, nil
 }
 
+// BlockManager returns the block manager pointer from iterator
 func (it *Iterator) BlockManager() *BlockManager {
 	return it.blockManager
 }
