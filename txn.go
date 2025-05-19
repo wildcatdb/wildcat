@@ -272,6 +272,20 @@ func (db *DB) Update(fn func(txn *Txn) error) error {
 	return txn.Commit()
 }
 
+// View performs a read-only transaction
+func (db *DB) View(fn func(txn *Txn) error) error {
+	txn := db.Begin()
+	defer txn.remove() // Ensure transaction is cleaned up
+
+	fnErr := fn(txn)
+	if fnErr != nil {
+		return fnErr
+	}
+
+	// We don't commit - this is a read-only transaction
+	return nil
+}
+
 // NewIterator you can provide a startKey or a prefix to iterate over
 func (txn *Txn) NewIterator(startKey []byte, prefix []byte) *MergeIterator {
 	return NewMergeIterator(txn, startKey, prefix)
