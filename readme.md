@@ -210,9 +210,25 @@ OrinDB employs a hybrid compaction strategy:
 
 
 ### MVCC and Transactions
-All operations in OrinDB use Multi-Version Concurrency Control.
+OrinDB uses a snapshot-isolated MVCC (Multi-Version Concurrency Control) model to provide full ACID-compliant transactions with zero reader/writer blocking and high concurrency.
 
-- Each write has an associated timestamp
-- Reads use a consistent snapshot timestamp
-- Transactions provide ACID guarantees
-- Conflicts are detected using read and write sets
+Each transaction is assigned a unique, monotonic timestamp at creation time. This timestamp determines the visibility window of data for the entire duration of the transaction.
+
+### MVCC Model
+- Each key stores a chain of timestamped versions (latest → oldest).
+- Reads only see the latest version ≤ transaction timestamp.
+- Writes are buffered in a per-transaction WriteSet and flushed atomically on commit.
+- Deletions are tracked via timestamped tombstones in a DeleteSet.
+
+### Snapshot Isolation
+- All reads during a transaction reflect a consistent snapshot of the database as of the transaction's start time.
+- Writers can proceed concurrently without locking; they do not overwrite but create a new version.
+
+### WAL Durability
+- Transactions are logged to a write-ahead log (WAL) before commit, capturing the full WriteSet, DeleteSet, and ReadSet.
+- WALs are replayed on crash to restore in-flight or recently committed transactions.
+
+### Conflict Handling
+OrinDB uses an optimistic concurrency model.
+- Write-write conflicts are resolved by timestamp ordering — later transactions take precedence.
+- No explicit read/write conflict detection
