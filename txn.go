@@ -269,6 +269,11 @@ func (db *DB) Update(fn func(txn *Txn) error) error {
 	return txn.Commit()
 }
 
+// NewIterator you can provide a startKey or a prefix to iterate over
+func (txn *Txn) NewIterator(startKey []byte, prefix []byte) *MergeIterator {
+	return NewMergeIterator(txn, startKey, prefix)
+}
+
 // remove removes the transaction from the database
 func (txn *Txn) remove() {
 
@@ -313,8 +318,4 @@ func (txn *Txn) appendWal() error {
 	}
 
 	return nil
-}
-
-func (txn *Txn) NewIterator(startKey []byte, prefix []byte) *MergeIterator {
-	return NewMergeIterator(txn, startKey, prefix)
 }

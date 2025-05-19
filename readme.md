@@ -139,7 +139,8 @@ For more complex iteration needs, you can use the low-level iterator API.
 ```go
 err := db.Update(func(txn *orindb.Txn) error {
     // Get an iterator starting at a specific key
-    iter := txn.NewIterator([]byte("key500"))
+    iter := txn.NewIterator([]byte("key500"), nil)
+    // iter := txn.NewIterator(nil, []byte("key")) // prefix iterator
 
     // Forward iteration
     for {
