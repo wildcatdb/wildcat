@@ -24,12 +24,14 @@ import (
 	"sync"
 )
 
+// IteratorWithPeek is an interface for iterators that support peeking
 type IteratorWithPeek interface {
 	Next() ([]byte, []byte, int64, bool)
 	Prev() ([]byte, []byte, int64, bool)
 	Peek() ([]byte, []byte, int64, bool)
 }
 
+// IteratorItem represents an item in the merge iterator heap
 type IteratorItem struct {
 	Key       []byte
 	Value     []byte
@@ -49,7 +51,7 @@ type MergeIterator struct {
 
 // NewMergeIterator creates a new merge iterator that combines multiple iterators
 func NewMergeIterator(txn *Txn, startKey []byte, prefix []byte) *MergeIterator {
-	iters := []IteratorWithPeek{}
+	var iters []IteratorWithPeek
 
 	// Add active memtable iterator
 	mem := txn.db.memtable.Load().(*Memtable)
@@ -219,40 +221,45 @@ func (mi *MergeIterator) Prev() ([]byte, []byte, int64, bool) {
 	mi.mutex.Lock()
 	defer mi.mutex.Unlock()
 
-	// This implementation is simplified - in a real system you would want to
-	// avoid rebuilding the heap for every operation
-	var all []IteratorWithPeek
-
-	// Save current iterators
-	for _, item := range mi.heap {
-		all = append(all, item.Iter)
+	if len(mi.heap) == 0 {
+		return nil, nil, 0, false
 	}
 
-	// Reset heap
-	mi.heap = mi.heap[:0]
+	// Get the largest key from the heap
+	top := mi.heap[0]
+	key := top.Key
+	value := top.Value
+	timestamp := top.Timestamp
 
-	// Move each iterator backward
-	for _, it := range all {
-		k, v, ts, ok := it.Prev()
-		if ok && ts <= mi.txn.Timestamp && (mi.prefix == nil || bytes.HasPrefix(k, mi.prefix)) {
-			mi.heap = append(mi.heap, &IteratorItem{
-				Key:       k,
-				Value:     v,
-				Timestamp: ts,
-				Iter:      it,
-			})
+	// Move this iterator to its previous value
+	k, v, ts, ok := top.Iter.Prev()
+
+	// If the iterator has more values, update the heap
+	if ok && ts <= mi.txn.Timestamp && (mi.prefix == nil || bytes.HasPrefix(k, mi.prefix)) {
+		// Update the item with new values
+		top.Key = k
+		top.Value = v
+		top.Timestamp = ts
+
+		// Maintain heap property
+		heapFixDown(mi.heap, 0, mi.comparator)
+	} else {
+		// Remove this iterator from the heap
+		if len(mi.heap) > 1 {
+			// Replace with the last element and fix heap
+			mi.heap[0] = mi.heap[len(mi.heap)-1]
+			mi.heap = mi.heap[:len(mi.heap)-1]
+			heapFixDown(mi.heap, 0, mi.comparator)
+		} else {
+			// Just remove the last element
+			mi.heap = mi.heap[:0]
 		}
 	}
 
-	// Rebuild the heap
-	heapify(mi.heap, mi.comparator)
+	// Skip any duplicate keys (we only want the most recent version)
+	mi.skipDuplicateKeys(key)
 
-	// Return the top item if available
-	if len(mi.heap) > 0 {
-		return mi.heap[0].Key, mi.heap[0].Value, mi.heap[0].Timestamp, true
-	}
-
-	return nil, nil, 0, false
+	return key, value, timestamp, true
 }
 
 // heapify builds a min-heap from an unordered array

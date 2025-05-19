@@ -28,14 +28,14 @@ import (
 
 // Txn represents a transaction in OrinDB
 type Txn struct {
-	Id        int64
-	ReadSet   map[string]int64
-	WriteSet  map[string][]byte
-	DeleteSet map[string]bool
-	Timestamp int64
-	Committed bool
-	db        *DB        // Not exported
-	mutex     sync.Mutex // Not exported
+	Id        int64             // The transactions id, can be recovered
+	ReadSet   map[string]int64  // Key -> Timestamp
+	WriteSet  map[string][]byte // Key -> Value
+	DeleteSet map[string]bool   // Key -> Deleted
+	Timestamp int64             // The timestamp of the transaction
+	Committed bool              // Whether the transaction is committed
+	db        *DB               // Not exported
+	mutex     sync.Mutex        // Not exported
 }
 
 // Begin starts a new transaction
@@ -303,7 +303,7 @@ func (txn *Txn) remove() {
 	}
 }
 
-// appendWal appends the transaction to a Write-Ahead Log (WAL)
+// appendWal appends the transaction state to a Write-Ahead Log (WAL)
 func (txn *Txn) appendWal() error {
 	// serialize the transaction
 	data, err := txn.serializeTransaction()
