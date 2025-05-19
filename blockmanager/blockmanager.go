@@ -28,7 +28,7 @@ import (
 	"time"
 )
 
-const MagicNumber = uint32(0x4F52494E)        // "ORIN" for OrinDB
+const MagicNumber = uint32(0x57494C44)        // "WILD"
 const Version = uint32(1)                     // Version of the file format
 const BlockSize = uint32(512)                 // Smaller the better, faster in our tests
 const Allotment = uint64(16)                  // How many blocks we can allot at once from the file
@@ -77,16 +77,6 @@ type Iterator struct {
 	blockID      uint32        // Current block ID in the iteration
 	lastBlockID  uint32        // Last block ID in the file
 	history      []uint32      // History of block IDs visited during iteration
-}
-
-// pwrite performs an atomic write at a specific offset without needing to Seek first
-func pwrite(fd uintptr, data []byte, offset int64) (int, error) {
-	return syscall.Pwrite(int(fd), data, offset)
-}
-
-// pread performs an atomic read from a specific offset without needing to Seek first
-func pread(fd uintptr, data []byte, offset int64) (int, error) {
-	return syscall.Pread(int(fd), data, offset)
 }
 
 // Open opens a file and initializes the BlockManager.

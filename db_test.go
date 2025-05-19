@@ -27,7 +27,10 @@ import (
 
 // Tests opening a brand new instance.  Will setup an initial WAL and memory table and disk levels.
 func TestOpen(t *testing.T) {
-	defer os.RemoveAll("testdb")
+	defer func() {
+		_ = os.RemoveAll("testdb")
+
+	}()
 
 	// Create a log channel
 	logChannel := make(chan string, 100) // Buffer size of 100 messages
@@ -63,13 +66,15 @@ func TestOpen(t *testing.T) {
 		}
 	}
 
-	db.Close()
+	_ = db.Close()
 
 	wg.Wait()
 }
 
 func BenchmarkDBBloomFilterPartialSync(b *testing.B) {
-	defer os.RemoveAll("benchdb")
+	defer func() {
+		_ = os.RemoveAll("benchdb")
+	}()
 
 	logChannel := make(chan string, 100)
 	opts := &Options{
@@ -94,7 +99,7 @@ func BenchmarkDBBloomFilterPartialSync(b *testing.B) {
 		b.Fatalf("Failed to open database: %v", err)
 	}
 	defer func() {
-		db.Close()
+		_ = db.Close()
 		wg.Wait()
 	}()
 
@@ -186,7 +191,9 @@ func BenchmarkDBBloomFilterPartialSync(b *testing.B) {
 }
 
 func BenchmarkDBPartialSync(b *testing.B) {
-	defer os.RemoveAll("benchdb")
+	defer func() {
+		_ = os.RemoveAll("benchdb")
+	}()
 
 	logChannel := make(chan string, 100)
 	opts := &Options{
@@ -210,7 +217,7 @@ func BenchmarkDBPartialSync(b *testing.B) {
 		b.Fatalf("Failed to open database: %v", err)
 	}
 	defer func() {
-		db.Close()
+		_ = db.Close()
 		wg.Wait()
 	}()
 
@@ -302,7 +309,9 @@ func BenchmarkDBPartialSync(b *testing.B) {
 }
 
 func BenchmarkDBBloomFilter(b *testing.B) {
-	defer os.RemoveAll("benchdb")
+	defer func() {
+		_ = os.RemoveAll("benchdb")
+	}()
 
 	logChannel := make(chan string, 100)
 	opts := &Options{
@@ -325,7 +334,7 @@ func BenchmarkDBBloomFilter(b *testing.B) {
 		b.Fatalf("Failed to open database: %v", err)
 	}
 	defer func() {
-		db.Close()
+		_ = db.Close()
 		wg.Wait()
 	}()
 
@@ -417,7 +426,9 @@ func BenchmarkDBBloomFilter(b *testing.B) {
 }
 
 func BenchmarkManySST(b *testing.B) {
-	defer os.RemoveAll("benchdb")
+	defer func() {
+		_ = os.RemoveAll("benchdb")
+	}()
 
 	logChannel := make(chan string, 100)
 	opts := &Options{
@@ -442,7 +453,7 @@ func BenchmarkManySST(b *testing.B) {
 		b.Fatalf("Failed to open database: %v", err)
 	}
 	defer func() {
-		db.Close()
+		_ = db.Close()
 		wg.Wait()
 	}()
 
@@ -534,7 +545,10 @@ func BenchmarkManySST(b *testing.B) {
 }
 
 func BenchmarkDB(b *testing.B) {
-	defer os.RemoveAll("benchdb")
+	defer func() {
+		_ = os.RemoveAll("benchdb")
+
+	}()
 
 	logChannel := make(chan string, 100)
 	opts := &Options{
@@ -556,7 +570,7 @@ func BenchmarkDB(b *testing.B) {
 		b.Fatalf("Failed to open database: %v", err)
 	}
 	defer func() {
-		db.Close()
+		_ = db.Close()
 		wg.Wait()
 	}()
 
@@ -648,7 +662,9 @@ func BenchmarkDB(b *testing.B) {
 }
 
 func BenchmarkDBBloomFilterFullSync(b *testing.B) {
-	defer os.RemoveAll("benchdb")
+	defer func() {
+		_ = os.RemoveAll("benchdb")
+	}()
 
 	logChannel := make(chan string, 100)
 	opts := &Options{
@@ -672,7 +688,7 @@ func BenchmarkDBBloomFilterFullSync(b *testing.B) {
 		b.Fatalf("Failed to open database: %v", err)
 	}
 	defer func() {
-		db.Close()
+		_ = db.Close()
 		wg.Wait()
 	}()
 
@@ -764,7 +780,9 @@ func BenchmarkDBBloomFilterFullSync(b *testing.B) {
 }
 
 func BenchmarkDBSyncFull(b *testing.B) {
-	defer os.RemoveAll("benchdb")
+	defer func() {
+		_ = os.RemoveAll("benchdb")
+	}()
 
 	logChannel := make(chan string, 100)
 	opts := &Options{
@@ -787,7 +805,7 @@ func BenchmarkDBSyncFull(b *testing.B) {
 		b.Fatalf("Failed to open database: %v", err)
 	}
 	defer func() {
-		db.Close()
+		_ = db.Close()
 		wg.Wait()
 	}()
 

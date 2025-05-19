@@ -16,31 +16,24 @@
 package wildcat
 
 import (
-	"bytes"
-	"encoding/gob"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
-// serializeSSTable uses gob to serialize the sstable metadata
+// serializeSSTable uses BSON to serialize the sstable metadata
 func (sst *SSTable) serializeSSTable() ([]byte, error) {
-	var buffer bytes.Buffer
-	encoder := gob.NewEncoder(&buffer)
-
-	// Serialize the sst
-	err := encoder.Encode(sst)
+	// Serialize the sst to BSON
+	data, err := bson.Marshal(sst)
 	if err != nil {
 		return nil, err
 	}
 
-	return buffer.Bytes(), nil
+	return data, nil
 }
 
-// deserializeSSTable uses gob to deserialize the sstable metadata
+// deserializeSSTable uses BSON to deserialize the sstable metadata
 func (sst *SSTable) deserializeSSTable(data []byte) error {
-	buffer := bytes.NewBuffer(data)
-	decoder := gob.NewDecoder(buffer)
-
-	// Deserialize the sst
-	err := decoder.Decode(sst)
+	// Deserialize the sst from BSON
+	err := bson.Unmarshal(data, sst)
 	if err != nil {
 		return err
 	}
@@ -48,27 +41,21 @@ func (sst *SSTable) deserializeSSTable(data []byte) error {
 	return nil
 }
 
-// serializeTransaction uses gob to serialize the transaction
+// serializeTransaction uses BSON to serialize the transaction
 func (txn *Txn) serializeTransaction() ([]byte, error) {
-	var buffer bytes.Buffer
-	encoder := gob.NewEncoder(&buffer)
-
-	// Serialize the transaction
-	err := encoder.Encode(txn)
+	// Serialize the transaction to BSON
+	data, err := bson.Marshal(txn)
 	if err != nil {
 		return nil, err
 	}
 
-	return buffer.Bytes(), nil
+	return data, nil
 }
 
-// deserializeTransaction uses gob to deserialize the transaction
+// deserializeTransaction uses BSON to deserialize the transaction
 func (txn *Txn) deserializeTransaction(data []byte) error {
-	buffer := bytes.NewBuffer(data)
-	decoder := gob.NewDecoder(buffer)
-
-	// Deserialize the transaction
-	err := decoder.Decode(txn)
+	// Deserialize the transaction from BSON
+	err := bson.Unmarshal(data, txn)
 	if err != nil {
 		return err
 	}
@@ -76,54 +63,43 @@ func (txn *Txn) deserializeTransaction(data []byte) error {
 	return nil
 }
 
-// serializeBlockSet uses gob to serialize the block set
+// serializeBlockSet uses BSON to serialize the block set
 func (bs *BlockSet) serializeBlockSet() ([]byte, error) {
-	var buffer bytes.Buffer
-	encoder := gob.NewEncoder(&buffer)
-
-	// Serialize the block set
-	err := encoder.Encode(bs)
+	// Serialize the block set to BSON
+	data, err := bson.Marshal(bs)
 	if err != nil {
 		return nil, err
 	}
 
-	return buffer.Bytes(), nil
+	return data, nil
 }
 
-// deserializeBlockSet uses gob to deserialize the block set
+// deserializeBlockSet uses BSON to deserialize the block set
 func (bs *BlockSet) deserializeBlockSet(data []byte) error {
-	buffer := bytes.NewBuffer(data)
-	decoder := gob.NewDecoder(buffer)
-
-	// Deserialize the block set
-	err := decoder.Decode(bs)
+	// Deserialize the block set from BSON
+	err := bson.Unmarshal(data, bs)
 	if err != nil {
 		return err
 	}
 
 	return nil
-
 }
 
+// serializeIDGeneratorState uses BSON to serialize the ID generator state
 func (idgs *IDGeneratorState) serializeIDGeneratorState() ([]byte, error) {
-	var buffer bytes.Buffer
-	encoder := gob.NewEncoder(&buffer)
-
-	// Serialize the IDGeneratorState
-	err := encoder.Encode(idgs)
+	// Serialize the IDGeneratorState to BSON
+	data, err := bson.Marshal(idgs)
 	if err != nil {
 		return nil, err
 	}
 
-	return buffer.Bytes(), nil
+	return data, nil
 }
 
+// deserializeIDGeneratorState uses BSON to deserialize the ID generator state
 func (idgs *IDGeneratorState) deserializeIDGeneratorState(data []byte) error {
-	buffer := bytes.NewBuffer(data)
-	decoder := gob.NewDecoder(buffer)
-
-	// Deserialize the IDGeneratorState
-	err := decoder.Decode(idgs)
+	// Deserialize the IDGeneratorState from BSON
+	err := bson.Unmarshal(data, idgs)
 	if err != nil {
 		return err
 	}
