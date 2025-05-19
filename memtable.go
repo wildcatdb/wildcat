@@ -137,6 +137,7 @@ func (memtable *Memtable) replay(activeTxns *[]*Txn) error {
 	// Collect active transactions if requested
 	if activeTxns != nil {
 		for _, txn := range txnMap {
+
 			if !txn.Committed && (len(txn.WriteSet) > 0 || len(txn.DeleteSet) > 0 || len(txn.ReadSet) > 0) {
 				txnCopy := *txn // Make a copy to prevent modification issues
 				*activeTxns = append(*activeTxns, &txnCopy)

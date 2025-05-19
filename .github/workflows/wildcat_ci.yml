@@ -1,0 +1,43 @@
+name: Wildcat CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: '1.24'
+
+      - name: Install dependencies
+        run: go mod tidy
+
+      - name: Run block manager tests
+        run: go test ./blockmanager -v
+
+      - name: Run bloom filter tests
+        run: go test ./bloomfilter -v
+
+      - name: Run lru tests
+        run: go test ./lru -v
+
+      - name: Run queue tests
+        run: go test ./queue -v
+
+      - name: Run skiplist tests
+        run: go test ./skiplist -v
+
+      - name: Run core tests
+        run: go test -v
