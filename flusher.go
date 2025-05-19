@@ -253,6 +253,11 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 	// Update the current size of the level
 	atomic.AddInt64(&level1.currentSize, sstable.Size)
 
+	// Delete original memtable wal
+	if err := os.Remove(memt.wal.path); err != nil {
+		return fmt.Errorf("failed to remove WAL file: %w", err)
+	}
+
 	flusher.db.log(fmt.Sprintf("SSTable %d added to level 1, min: %s, max: %s, entries: %d",
 		sstable.Id, string(sstable.Min), string(sstable.Max), entryCount))
 
