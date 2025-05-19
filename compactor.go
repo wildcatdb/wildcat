@@ -85,7 +85,7 @@ func newCompactor(db *DB, maxConcurrency int) *Compactor {
 // backgroundProcess runs the compaction process in the background
 func (compactor *Compactor) backgroundProcess() {
 	defer compactor.db.wg.Done()
-	ticker := time.NewTicker(time.Millisecond * 24)
+	ticker := time.NewTicker(CompactorTickerInterval)
 	defer ticker.Stop()
 
 	for {

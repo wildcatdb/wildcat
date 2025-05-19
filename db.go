@@ -34,13 +34,19 @@ import (
 
 // Constants for compaction policy
 const (
-	CompactionCooldownPeriod   = 100 * time.Millisecond
+	CompactionCooldownPeriod   = 1 * time.Second
 	CompactionBatchSize        = 4   // Max number of SSTables to compact at once
 	CompactionSizeRatio        = 1.2 // Level size ratio that triggers compaction
 	CompactionSizeThreshold    = 4   // Number of files to trigger size-tiered compaction
 	CompactionScoreSizeWeight  = 0.7 // Weight for size-based score
 	CompactionScoreCountWeight = 0.3 // Weight for count-based score
 	MaxCompactionConcurrency   = 2   // Maximum concurrent compactions
+)
+
+// Constants for background operations
+const (
+	FlusherTickerInterval   = 64 * time.Microsecond // Interval for flusher ticker
+	CompactorTickerInterval = 64 * time.Millisecond // Interval for compactor ticker
 )
 
 const (
@@ -692,6 +698,7 @@ func (db *DB) log(msg string) {
 	}
 }
 
+// ForceFlush forces the flush of all memtables and immutable memtables
 func (db *DB) ForceFlush() error {
 	if db == nil {
 		return errors.New("database is nil")
@@ -730,7 +737,9 @@ func (idgs *IDGeneratorState) loadState() error {
 	if err != nil {
 		return fmt.Errorf("failed to open ID generator state file: %w", err)
 	}
-	defer idgsFile.Close()
+	defer func(idgsFile *os.File) {
+		_ = idgsFile.Close()
+	}(idgsFile)
 
 	// Read the ID generator state from the file
 	if _, err := fmt.Fscanf(idgsFile, "%d %d %d", &idgs.lastSstID, &idgs.lastWalID, &idgs.lastTxnID); err != nil {
@@ -762,7 +771,9 @@ func (idgs *IDGeneratorState) saveState() error {
 	if err != nil {
 		return fmt.Errorf("failed to open ID generator state file: %w", err)
 	}
-	defer idgsFile.Close()
+	defer func(idgsFile *os.File) {
+		_ = idgsFile.Close()
+	}(idgsFile)
 
 	// Write the ID generator state to the file
 	if _, err = fmt.Fprintf(idgsFile, "%d %d %d", idgs.lastSstID, idgs.lastWalID, idgs.lastTxnID); err != nil {

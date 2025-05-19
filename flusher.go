@@ -75,7 +75,7 @@ func (flusher *Flusher) queueMemtable() error {
 // backgroundProcess starts the background process for flushing memtables
 func (flusher *Flusher) backgroundProcess() {
 	defer flusher.db.wg.Done()
-	ticker := time.NewTicker(time.Millisecond * 24)
+	ticker := time.NewTicker(FlusherTickerInterval)
 	defer ticker.Stop()
 
 	for {
@@ -140,12 +140,12 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 	klogPath := fmt.Sprintf("%s%s1%s%s%d%s", flusher.db.opts.Directory, LevelPrefix, string(os.PathSeparator), SSTablePrefix, sstable.Id, KLogExtension)
 	vlogPath := fmt.Sprintf("%s%s1%s%s%d%s", flusher.db.opts.Directory, LevelPrefix, string(os.PathSeparator), SSTablePrefix, sstable.Id, VLogExtension)
 
-	klogBm, err := blockmanager.Open(klogPath, os.O_RDWR|os.O_CREATE, 0666, blockmanager.SyncOption(flusher.db.opts.SyncOption))
+	klogBm, err := blockmanager.Open(klogPath, os.O_RDWR|os.O_CREATE, memt.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption))
 	if err != nil {
 		return fmt.Errorf("failed to open KLog block manager: %w", err)
 	}
 
-	vlogBm, err := blockmanager.Open(vlogPath, os.O_RDWR|os.O_CREATE, 0666, blockmanager.SyncOption(flusher.db.opts.SyncOption))
+	vlogBm, err := blockmanager.Open(vlogPath, os.O_RDWR|os.O_CREATE, memt.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption))
 	if err != nil {
 		return fmt.Errorf("failed to open VLog block manager: %w", err)
 	}
