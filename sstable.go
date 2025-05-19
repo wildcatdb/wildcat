@@ -23,6 +23,7 @@ import (
 	"orindb/blockmanager"
 	"os"
 	"strconv"
+	"sync"
 )
 
 // SSTable represents a sorted string table
@@ -35,6 +36,14 @@ type SSTable struct {
 	EntryCount int    // The number of entries in the SSTable
 	Level      int    // The level of the SSTable
 	db         *DB    // Reference to the database (not exported)
+}
+
+// SSTableIterator is an iterator for the SSTable
+type SSTableIterator struct {
+	iterator    *blockmanager.Iterator
+	blockSet    BlockSet    // Current block set being iterated
+	blockSetIdx int64       // Index of the current block set
+	lock        *sync.Mutex // Mutex for thread safety
 }
 
 // KLogEntry represents a key-value entry in the KLog
@@ -50,16 +59,11 @@ type BlockSet struct {
 	Size    int64        // Size of the block set
 }
 
-type ValueWithTimestamp struct {
-	Value     []byte
-	Timestamp int64
-}
-
 // get retrieves a value from the SSTable using the key and timestamp
 func (sst *SSTable) get(key []byte, timestamp int64) ([]byte, int64) {
 	// Skip range check if Min or Max are empty
 	// Empty Min/Max indicate either an empty SSTable (which we can skip safely)
-	// or a corrupted range (which we should check just in case)
+	// or a corrupted range
 	if len(sst.Min) > 0 && len(sst.Max) > 0 {
 		// Only skip if key is definitely outside the range
 		if bytes.Compare(key, sst.Min) < 0 || bytes.Compare(key, sst.Max) > 0 {
@@ -175,4 +179,132 @@ func (sst *SSTable) kLogPath() string {
 func (sst *SSTable) vLogPath() string {
 	return sst.db.opts.Directory + LevelPrefix + strconv.Itoa(sst.Level) +
 		string(os.PathSeparator) + SSTablePrefix + strconv.FormatInt(sst.Id, 10) + VLogExtension
+}
+
+// iterator creates a new iterator for the SSTable
+func (sst *SSTable) iterator() *SSTableIterator {
+	// Open the KLog block manager
+	klogPath := sst.kLogPath()
+	klogBm, err := blockmanager.Open(klogPath, os.O_RDONLY, sst.db.opts.Permission,
+		blockmanager.SyncOption(sst.db.opts.SyncOption))
+	if err != nil {
+		return nil
+	}
+
+	// Create a new iterator for the KLog
+	iter := klogBm.Iterator()
+
+	// Skip the first block which contains SSTable metadata
+	_, _, err = iter.Next()
+	if err != nil {
+		return nil
+	}
+
+	// Read first block
+	data, _, err := iter.Next()
+	if err != nil {
+		return nil
+	}
+
+	// Deserialize the block set
+	var blockset BlockSet
+	err = blockset.deserializeBlockSet(data)
+	if err != nil {
+		return nil
+	}
+
+	return &SSTableIterator{iterator: iter, blockSetIdx: 0, lock: &sync.Mutex{}, blockSet: blockset}
+}
+
+// next retrieves the next key-value pair from the iterator
+func (it *SSTableIterator) next() ([]byte, []byte, int64, error) {
+	it.lock.Lock()
+	defer it.lock.Unlock()
+
+	// We check if blockSet idx is at end
+	if it.blockSetIdx >= int64(len(it.blockSet.Entries)) {
+		// Read the next block
+		data, _, err := it.iterator.Next()
+		if err != nil {
+			return nil, nil, 0, err
+		}
+
+		// Deserialize the block set
+		err = it.blockSet.deserializeBlockSet(data)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+
+		it.blockSetIdx = 0
+
+		// Get value from the block set entry
+		val, _, err := it.iterator.BlockManager().Read(it.blockSet.Entries[it.blockSetIdx].ValueBlockID)
+		if err != nil {
+			return nil, nil, 0, err
+
+		}
+
+		return it.blockSet.Entries[it.blockSetIdx].Key, val, it.blockSet.Entries[it.blockSetIdx].Timestamp, nil
+	} else {
+		it.blockSetIdx++
+		if it.blockSetIdx >= int64(len(it.blockSet.Entries)) {
+			return nil, nil, 0, fmt.Errorf("end of block set reached")
+		}
+
+		val, _, err := it.iterator.BlockManager().Read(it.blockSet.Entries[it.blockSetIdx].ValueBlockID)
+		if err != nil {
+			return nil, nil, 0, err
+
+		}
+
+		return it.blockSet.Entries[it.blockSetIdx].Key, val, it.blockSet.Entries[it.blockSetIdx].Timestamp, nil
+	}
+
+}
+
+// prev go back one entry in the iterator
+func (it *SSTableIterator) prev() ([]byte, []byte, int64, error) {
+	it.lock.Lock()
+	defer it.lock.Unlock()
+
+	// Check if we can go back
+	if it.blockSetIdx <= 0 {
+		// Go prev on the iterator
+		data, _, err := it.iterator.Prev()
+		if err != nil {
+			return nil, nil, 0, err
+		}
+
+		// Deserialize the block set
+		err = it.blockSet.deserializeBlockSet(data)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+
+		// Set the block set index to the last entry
+		it.blockSetIdx = int64(len(it.blockSet.Entries)) - 1
+		if it.blockSetIdx < 0 {
+			return nil, nil, 0, fmt.Errorf("no more entries in block set")
+		}
+
+		// Get value from the block set entry
+		val, _, err := it.iterator.BlockManager().Read(it.blockSet.Entries[it.blockSetIdx].ValueBlockID)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+
+		return it.blockSet.Entries[it.blockSetIdx].Key, val, it.blockSet.Entries[it.blockSetIdx].Timestamp, nil
+
+	}
+
+	// Decrement the index to go back
+	it.blockSetIdx--
+
+	// Get value from the block set entry
+	val, _, err := it.iterator.BlockManager().Read(it.blockSet.Entries[it.blockSetIdx].ValueBlockID)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+
+	return it.blockSet.Entries[it.blockSetIdx].Key, val, it.blockSet.Entries[it.blockSetIdx].Timestamp, nil
 }

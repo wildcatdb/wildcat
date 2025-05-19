@@ -93,11 +93,11 @@ func (compactor *Compactor) backgroundProcess() {
 		case <-compactor.db.closeCh:
 			return
 		case <-ticker.C:
-			//// Check and schedule compactions
-			//compactor.checkAndScheduleCompactions()
-			//
-			//// Execute pending compactions if under concurrency limit
-			//compactor.executeCompactions()
+			// Check and schedule compactions
+			compactor.checkAndScheduleCompactions()
+
+			// Execute pending compactions if under concurrency limit
+			compactor.executeCompactions()
 		}
 	}
 }
@@ -385,8 +385,8 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 	err = compactor.mergeSSTables(sstables, klogBm, vlogBm, newSSTable)
 	if err != nil {
 		// Clean up on error
-		os.Remove(klogPath)
-		os.Remove(vlogPath)
+		_ = os.Remove(klogPath)
+		_ = os.Remove(vlogPath)
 		return fmt.Errorf("failed to merge SSTables: %w", err)
 	}
 
@@ -452,14 +452,14 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 		// Remove from LRU first
 		if bm, ok := compactor.db.lru.Get(oldKlogPath); ok {
 			if bm, ok := bm.(*blockmanager.BlockManager); ok {
-				bm.Close()
+				_ = bm.Close()
 			}
 			compactor.db.lru.Delete(oldKlogPath)
 		}
 
 		if bm, ok := compactor.db.lru.Get(oldVlogPath); ok {
 			if bm, ok := bm.(*blockmanager.BlockManager); ok {
-				bm.Close()
+				_ = bm.Close()
 			}
 			compactor.db.lru.Delete(oldVlogPath)
 		}

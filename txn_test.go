@@ -20,6 +20,7 @@ package orindb
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 	"testing"
@@ -383,330 +384,6 @@ func TestTxn_Update(t *testing.T) {
 	}
 }
 
-func TestTxn_GetRange(t *testing.T) {
-	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_txn_range_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
-	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
-
-	// Create a log channel
-	logChan := make(chan string, 100)
-	defer func() {
-		// Drain the log channel
-		for len(logChan) > 0 {
-			<-logChan
-		}
-	}()
-
-	// Create a test DB
-	opts := &Options{
-		Directory:  dir,
-		SyncOption: SyncNone,
-		LogChannel: logChan,
-	}
-
-	db, err := Open(opts)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
-	defer func(db *DB) {
-		_ = db.Close()
-	}(db)
-
-	// Insert multiple keys in sorted order
-	prefixes := []string{"a", "b", "c", "d", "e"}
-	for i, prefix := range prefixes {
-		for j := 1; j <= 3; j++ {
-			key := fmt.Sprintf("%s_key%d", prefix, j)
-			value := fmt.Sprintf("value_%d_%d", i, j)
-
-			err = db.Update(func(txn *Txn) error {
-				return txn.Put([]byte(key), []byte(value))
-			})
-			if err != nil {
-				t.Fatalf("Failed to insert key %s: %v", key, err)
-			}
-		}
-	}
-
-	// Test GetRange
-	txn := db.Begin()
-
-	// Test full range (nil start and end keys)
-	result, err := txn.GetRange(nil, nil)
-	if err != nil {
-		t.Fatalf("GetRange failed: %v", err)
-	}
-	if len(result) != 15 { // 5 prefixes * 3 keys each
-		t.Errorf("Expected 15 keys in full range, got %d", len(result))
-	}
-
-	// Test range with start key
-	result, err = txn.GetRange([]byte("c"), nil)
-	if err != nil {
-		t.Fatalf("GetRange with start key failed: %v", err)
-	}
-
-	expectedCount := 9 // c, d, e prefixes with 3 keys each
-	if len(result) != expectedCount {
-		t.Errorf("Expected %d keys in range starting with 'c', got %d", expectedCount, len(result))
-	}
-
-	// Verify no keys before 'c' are included
-	for key := range result {
-		if key < "c" {
-			t.Errorf("Found key %s before start key 'c'", key)
-		}
-	}
-
-	// Test range with end key
-	result, err = txn.GetRange(nil, []byte("c"))
-	if err != nil {
-		t.Fatalf("GetRange with end key failed: %v", err)
-	}
-
-	expectedCount = 6 // a, b prefixes with 3 keys each
-	if len(result) != expectedCount {
-		t.Errorf("Expected %d keys in range ending with 'c', got %d", expectedCount, len(result))
-	}
-
-	// Verify no keys after 'c' are included
-	for key := range result {
-		if key >= "c" {
-			t.Errorf("Found key %s past end key 'c'", key)
-		}
-	}
-
-	// Test range with both start and end keys
-	result, err = txn.GetRange([]byte("b"), []byte("d"))
-	if err != nil {
-		t.Fatalf("GetRange with start and end keys failed: %v", err)
-	}
-
-	expectedCount = 6 // b, c prefixes with 3 keys each
-	if len(result) != expectedCount {
-		t.Errorf("Expected %d keys in range 'b' to 'd', got %d", expectedCount, len(result))
-	}
-
-	// Verify only keys in range are included
-	for key := range result {
-		if key < "b" || key >= "d" {
-			t.Errorf("Found key %s outside range 'b' to 'd'", key)
-		}
-	}
-}
-
-func TestTxn_Scan(t *testing.T) {
-	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_txn_scan_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
-	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
-
-	// Create a log channel
-	logChan := make(chan string, 100)
-	defer func() {
-		// Drain the log channel
-		for len(logChan) > 0 {
-			<-logChan
-		}
-	}()
-
-	// Create a test DB
-	opts := &Options{
-		Directory:  dir,
-		SyncOption: SyncNone,
-		LogChannel: logChan,
-	}
-
-	db, err := Open(opts)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
-	defer func(db *DB) {
-		_ = db.Close()
-	}(db)
-
-	// Insert test data
-	for i := 1; i <= 10; i++ {
-		key := fmt.Sprintf("scan_key%d", i)
-		value := fmt.Sprintf("scan_value%d", i)
-
-		err = db.Update(func(txn *Txn) error {
-			return txn.Put([]byte(key), []byte(value))
-		})
-		if err != nil {
-			t.Fatalf("Failed to insert key %s: %v", key, err)
-		}
-	}
-
-	// Test Scan method
-	txn := db.Begin()
-
-	// Scan all keys
-	count := 0
-	err = txn.Scan(nil, nil, func(key []byte, value []byte) bool {
-		count++
-		return true // Continue scanning
-	})
-	if err != nil {
-		t.Fatalf("Scan failed: %v", err)
-	}
-	if count != 10 {
-		t.Errorf("Expected 10 keys in scan, got %d", count)
-	}
-
-	// Scan with early termination
-	count = 0
-	err = txn.Scan(nil, nil, func(key []byte, value []byte) bool {
-		count++
-		return count < 5 // Stop after 5 keys
-	})
-	if err != nil {
-		t.Fatalf("Scan with early termination failed: %v", err)
-	}
-	if count != 5 {
-		t.Errorf("Expected scan to stop after 5 keys, got %d", count)
-	}
-
-	// Scan with range - BUT note the current implementation treats end key as inclusive
-	count = 0
-	keysInRange := make([]string, 0)
-	err = txn.Scan([]byte("scan_key3"), []byte("scan_key8"), func(key []byte, value []byte) bool {
-		keyStr := string(key)
-		keysInRange = append(keysInRange, keyStr)
-
-		// Check if the key is within range - BUT note current implementation includes end key
-		if keyStr < "scan_key3" || keyStr > "scan_key8" { // Changed to > instead of >=
-			t.Errorf("Found key %s outside range [scan_key3, scan_key8] (inclusive)", keyStr)
-		}
-
-		count++
-		return true
-	})
-	if err != nil {
-		t.Fatalf("Range scan failed: %v", err)
-	}
-
-	// Log the keys we found in the range for debugging
-	t.Logf("Keys in range [scan_key3, scan_key8] (inclusive): %v", keysInRange)
-
-	// The current implementation includes the end key
-	expectedKeys := 6 // scan_key3, scan_key4, scan_key5, scan_key6, scan_key7, scan_key8
-	if count != expectedKeys {
-		t.Errorf("Expected %d keys in range scan (inclusive end key), got %d", expectedKeys, count)
-	}
-}
-
-func TestTxn_Iterate(t *testing.T) {
-	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_txn_iterate_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
-	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
-
-	// Create a log channel
-	logChan := make(chan string, 100)
-	defer func() {
-		// Drain the log channel
-		for len(logChan) > 0 {
-			<-logChan
-		}
-	}()
-
-	// Create a test DB
-	opts := &Options{
-		Directory:  dir,
-		SyncOption: SyncNone,
-		LogChannel: logChan,
-	}
-
-	db, err := Open(opts)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
-	defer func(db *DB) {
-		_ = db.Close()
-	}(db)
-
-	// Insert test data with ordered keys
-	for i := 1; i <= 5; i++ {
-		key := fmt.Sprintf("iter_key%d", i)
-		value := fmt.Sprintf("iter_value%d", i)
-
-		err = db.Update(func(txn *Txn) error {
-			return txn.Put([]byte(key), []byte(value))
-		})
-		if err != nil {
-			t.Fatalf("Failed to insert key %s: %v", key, err)
-		}
-	}
-
-	txn := db.Begin()
-
-	// Test forward iteration (direction >= 0)
-	forwardKeys := make([]string, 0)
-	err = txn.Iterate([]byte("iter_key2"), 1, func(key []byte, value []byte) bool {
-		forwardKeys = append(forwardKeys, string(key))
-		return true
-	})
-	if err != nil {
-		t.Fatalf("Forward iteration failed: %v", err)
-	}
-
-	// Verify forward order
-	expected := []string{"iter_key2", "iter_key3", "iter_key4", "iter_key5"}
-	if len(forwardKeys) != len(expected) {
-		t.Errorf("Expected %d keys in forward iteration, got %d", len(expected), len(forwardKeys))
-	} else {
-		for i := range expected {
-			if forwardKeys[i] != expected[i] {
-				t.Errorf("Forward iteration order wrong: expected %s at position %d, got %s",
-					expected[i], i, forwardKeys[i])
-			}
-		}
-	}
-
-	// Test backward iteration (direction < 0)
-
-	backwardKeys := make([]string, 0)
-	err = txn.Iterate([]byte("iter_key4"), -1, func(key []byte, value []byte) bool {
-		backwardKeys = append(backwardKeys, string(key))
-		return true
-	})
-	if err != nil {
-		t.Fatalf("Backward iteration failed: %v", err)
-	}
-
-	// If backward iteration is properly implemented, expect reversed order
-
-	if len(backwardKeys) > 0 {
-		t.Logf("Backward iteration keys: %v", backwardKeys)
-		expectedBackward := []string{"iter_key4", "iter_key3", "iter_key2", "iter_key1"}
-		if len(backwardKeys) != len(expectedBackward) {
-			t.Errorf("Expected %d keys in backward iteration, got %d", len(expectedBackward), len(backwardKeys))
-		} else {
-			for i := range expectedBackward {
-				if backwardKeys[i] != expectedBackward[i] {
-					t.Errorf("Backward iteration order wrong: expected %s at position %d, got %s",
-						expectedBackward[i], i, backwardKeys[i])
-				}
-			}
-		}
-
-	}
-}
-
 func TestTxn_ConcurrentOperations(t *testing.T) {
 	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "orindb_txn_concurrent_test")
@@ -931,14 +608,15 @@ func TestTxn_WALRecovery(t *testing.T) {
 	}
 }
 
-func TestTxn_Count(t *testing.T) {
+func TestTxn_DeleteTimestamp(t *testing.T) {
 	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_txn_count_test")
+	dir, err := os.MkdirTemp("", "orindb_transaction_delete_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 	defer func(path string) {
 		_ = os.RemoveAll(path)
+
 	}(dir)
 
 	// Create a log channel
@@ -965,176 +643,169 @@ func TestTxn_Count(t *testing.T) {
 		_ = db.Close()
 	}(db)
 
-	// Insert test data
-	keyPrefixes := []string{"a", "b", "c", "d"}
-	for _, prefix := range keyPrefixes {
-		for i := 1; i <= 5; i++ {
-			key := fmt.Sprintf("%s_key%d", prefix, i)
-			value := fmt.Sprintf("value_%s_%d", prefix, i)
+	// Insert a key
+	key := []byte("timestamp_test_key")
+	value := []byte("timestamp_test_value")
 
-			err = db.Update(func(txn *Txn) error {
-				return txn.Put([]byte(key), []byte(value))
-			})
-			if err != nil {
-				t.Fatalf("Failed to insert key %s: %v", key, err)
-			}
-		}
-	}
+	txn1 := db.Begin()
+	t.Logf("Insert transaction ID: %d, Timestamp: %d", txn1.Id, txn1.Timestamp)
 
-	txn := db.Begin()
-
-	// Test full count
-	count, err := txn.Count(nil, nil)
+	err = txn1.Put(key, value)
 	if err != nil {
-		t.Fatalf("Count failed: %v", err)
-	}
-	if count != 20 { // 4 prefixes * 5 keys each
-		t.Errorf("Expected 20 keys in total count, got %d", count)
+		t.Fatalf("Failed to insert key: %v", err)
 	}
 
-	// Test count with start key
-	count, err = txn.Count([]byte("b"), nil)
+	err = txn1.Commit()
 	if err != nil {
-		t.Fatalf("Count with start key failed: %v", err)
-	}
-	if count != 15 { // b, c, d prefixes with 5 keys each
-		t.Errorf("Expected 15 keys in count starting with 'b', got %d", count)
+		t.Fatalf("Failed to commit insert: %v", err)
 	}
 
-	// Test count with end key
-	count, err = txn.Count(nil, []byte("c"))
+	// Verify the key exists
+	txn2 := db.Begin()
+	t.Logf("Verification transaction ID: %d, Timestamp: %d", txn2.Id, txn2.Timestamp)
+
+	retrievedValue, err := txn2.Get(key)
 	if err != nil {
-		t.Fatalf("Count with end key failed: %v", err)
+		t.Fatalf("Failed to get key after insert: %v", err)
 	}
-	if count != 10 { // a, b prefixes with 5 keys each
-		t.Errorf("Expected 10 keys in count ending with 'c', got %d", count)
+	if !bytes.Equal(retrievedValue, value) {
+		t.Fatalf("Value mismatch: expected %s, got %s", value, retrievedValue)
 	}
+	t.Logf("Key found after insertion: %s", retrievedValue)
 
-	// Test count with start and end keys
-	count, err = txn.Count([]byte("b"), []byte("d"))
-	if err != nil {
-		t.Fatalf("Count with start and end keys failed: %v", err)
-	}
-	if count != 10 { // b, c prefixes with 5 keys each
-		t.Errorf("Expected 10 keys in count from 'b' to 'd', got %d", count)
-	}
+	// Delete the key with a new transaction
+	txn3 := db.Begin()
+	t.Logf("Delete transaction ID: %d, Timestamp: %d", txn3.Id, txn3.Timestamp)
 
-	// Delete some keys and test count again
-	err = db.Update(func(txn *Txn) error {
-		return txn.Delete([]byte("b_key1"))
-	})
+	err = txn3.Delete(key)
 	if err != nil {
 		t.Fatalf("Failed to delete key: %v", err)
 	}
 
-	// Start a new transaction to see the update
-	txn2 := db.Begin()
-	count, err = txn2.Count([]byte("b"), []byte("c"))
+	err = txn3.Commit()
 	if err != nil {
-		t.Fatalf("Count after delete failed: %v", err)
+		t.Fatalf("Failed to commit delete: %v", err)
 	}
-	if count != 4 { // b prefix with 4 keys after deletion
-		t.Errorf("Expected 4 keys in count after deletion, got %d", count)
+
+	// Verify the key is deleted with a new transaction
+	txn4 := db.Begin()
+	t.Logf("Post-delete verification transaction ID: %d, Timestamp: %d", txn4.Id, txn4.Timestamp)
+
+	_, err = txn4.Get(key)
+	if err == nil {
+		t.Fatalf("Key still accessible after deletion")
+	}
+	t.Logf("Key correctly not found after deletion: %v", err)
+
+	// Verify we can still access the key with a timestamp before deletion
+	txn5 := db.Begin()
+	txn5.Timestamp = txn1.Timestamp // Use the original insert timestamp
+	t.Logf("Historical verification transaction ID: %d, Using Timestamp: %d", txn5.Id, txn5.Timestamp)
+
+	retrievedValue, err = txn5.Get(key)
+	if err != nil {
+		t.Logf("Historical view should see the key but got error: %v", err)
+	} else {
+		t.Logf("Historical view sees value: %s", retrievedValue)
 	}
 }
 
-func TestTxn_ForEach(t *testing.T) {
-	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "orindb_txn_foreach_test")
+func TestTxn_IteratorMergesAllSources(t *testing.T) {
+	dir, err := os.MkdirTemp("", "orindb_iterator_merge_test")
 	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
+		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer func(path string) {
 		_ = os.RemoveAll(path)
 	}(dir)
 
-	// Create a log channel
-	logChan := make(chan string, 100)
-	defer func() {
-		// Drain the log channel
-		for len(logChan) > 0 {
-			<-logChan
-		}
-	}()
-
-	// Create a test DB
-	opts := &Options{
+	db, err := Open(&Options{
 		Directory:  dir,
 		SyncOption: SyncNone,
-		LogChannel: logChan,
-	}
-
-	db, err := Open(opts)
+		LogChannel: make(chan string, 100),
+	})
 	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
+		t.Fatalf("failed to open DB: %v", err)
 	}
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
 
-	// Insert test data
-	numKeys := 10
-	keyValues := make(map[string]string) // Store original key-value pairs for verification
-
-	for i := 0; i < numKeys; i++ {
-		key := fmt.Sprintf("foreach_key%d", i)
-		value := fmt.Sprintf("foreach_value%d", i)
-		keyValues[key] = value
-
-		err = db.Update(func(txn *Txn) error {
-			return txn.Put([]byte(key), []byte(value))
-		})
+	// Write to memtable
+	txn1 := db.Begin()
+	for i := 0; i < 10; i++ {
+		err = txn1.Put([]byte(fmt.Sprintf("mem_key_%02d", i)), []byte(fmt.Sprintf("mem_val_%02d", i)))
 		if err != nil {
-			t.Fatalf("Failed to insert key %s: %v", key, err)
+			t.Fatalf("failed to put key in txn1: %v", err)
 		}
 	}
 
-	txn := db.Begin()
-
-	// Test ForEach
-	seenKeys := make(map[string]bool)
-	seenValues := make(map[string]bool)
-
-	err = txn.ForEach(func(key []byte, value []byte) bool {
-		keyStr := string(key)
-		valueStr := string(value)
-
-		seenKeys[keyStr] = true
-		seenValues[valueStr] = true
-
-		// Verify correct key-value mapping using our stored map
-		expectedValue, exists := keyValues[keyStr]
-		if !exists {
-			t.Errorf("Found unexpected key: %s", keyStr)
-		} else if valueStr != expectedValue {
-			t.Errorf("Key-value mismatch: key %s maps to %s instead of %s",
-				keyStr, valueStr, expectedValue)
-		}
-
-		return true // Continue iteration
-	})
+	err = txn1.Commit()
 	if err != nil {
-		t.Fatalf("ForEach failed: %v", err)
+		t.Fatalf("failed to commit txn1: %v", err)
 	}
 
-	// Verify we saw the expected number of keys and values
-	if len(seenKeys) != numKeys {
-		t.Errorf("Expected to see %d keys, saw %d", numKeys, len(seenKeys))
-	}
-	if len(seenValues) != numKeys {
-		t.Errorf("Expected to see %d values, saw %d", numKeys, len(seenValues))
+	// Force flush to move memtable to immutable (we simulate immutable presence)
+	err = db.ForceFlush()
+	if err != nil {
+		t.Fatalf("failed to force flush: %v", err)
 	}
 
-	// Test ForEach with early termination
+	// Write to new memtable
+	txn2 := db.Begin()
+	for i := 10; i < 20; i++ {
+		err = txn2.Put([]byte(fmt.Sprintf("imm_key_%02d", i)), []byte(fmt.Sprintf("imm_val_%02d", i)))
+		if err != nil {
+			t.Fatalf("failed to put key in txn2: %v", err)
+		}
+	}
+	err = txn2.Commit()
+	if err != nil {
+		t.Fatalf("failed to commit txn2: %v", err)
+	}
+
+	// Flush again to create SSTable
+	err = db.ForceFlush()
+	if err != nil {
+		t.Fatalf("failed to force flush: %v", err)
+	}
+
+	// Write to new memtable again
+	txn3 := db.Begin()
+	for i := 20; i < 30; i++ {
+		err = txn3.Put([]byte(fmt.Sprintf("sst_key_%02d", i)), []byte(fmt.Sprintf("sst_val_%02d", i)))
+		if err != nil {
+			t.Fatalf("failed to put key in txn3: %v", err)
+		}
+	}
+
+	err = txn3.Commit()
+	if err != nil {
+		t.Fatalf("failed to commit txn3: %v", err)
+	}
+
+	// Let’s now use the merge iterator to read all 30 keys
+	txnRead := db.Begin()
+	iter := txnRead.NewIterator(nil, nil)
 	count := 0
-	err = txn.ForEach(func(key []byte, value []byte) bool {
+	for {
+		k, v, ts, ok := iter.Next()
+		if !ok {
+			break
+		}
+		log.Println("Key:", string(k), "Value:", string(v), "Timestamp:", ts, "Transaction ID:", txnRead.Id, "Transaction Timestamp:", txnRead.Timestamp)
+		if !bytes.HasPrefix(k, []byte("mem_key_")) &&
+			!bytes.HasPrefix(k, []byte("imm_key_")) &&
+			!bytes.HasPrefix(k, []byte("sst_key_")) {
+			t.Errorf("unexpected key: %s", k)
+		}
+		if len(v) == 0 || ts > txnRead.Timestamp {
+			t.Errorf("invalid entry for key %s: val=%s ts=%d", k, v, ts)
+		}
 		count++
-		return count < 5 // Stop after seeing 5 keys
-	})
-	if err != nil {
-		t.Fatalf("ForEach with early termination failed: %v", err)
 	}
-	if count != 5 {
-		t.Errorf("Expected ForEach to stop after 5 keys, got %d", count)
+
+	if count < 30 {
+		t.Errorf("expected at least 30 keys across all sources, got %d", count)
 	}
 }

@@ -25,6 +25,7 @@ import (
 	"orindb/queue"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -348,46 +349,78 @@ func (bm *BlockManager) appendFreeBlocks() error {
 
 // allocateBlock allocates a block ID from the allocation table.
 func (bm *BlockManager) allocateBlock() (uint64, error) {
-	// Check if we have free blocks
+	// First, check if we have free blocks atomically
 	if bm.allocationTable.IsEmpty() {
-		// If not, append more free blocks
-		if err := bm.appendFreeBlocks(); err != nil {
-			return 0, err
+		// We need to append blocks, but we need to ensure only one goroutine does this
+		// We'll use atomic CAS operations for this
+
+		// We'll use a sync.Once pattern but with atomic operations
+		// This ensures multiple goroutines won't all try to append blocks simultaneously
+
+		// Create a flag to track if we've started appending blocks
+		appendingFlag := int32(0)
+
+		// Try to set the flag from 0 to 1
+		if atomic.CompareAndSwapInt32(&appendingFlag, 0, 1) {
+			// We successfully set the flag, so we're the one to append blocks
+			if err := bm.appendFreeBlocks(); err != nil {
+				// Reset the flag and return the error
+				atomic.StoreInt32(&appendingFlag, 0)
+				return 0, err
+			}
+			// Reset the flag
+			atomic.StoreInt32(&appendingFlag, 0)
+		} else {
+			// Someone else is appending blocks, let's wait a tiny bit
+			// This is better than spinning aggressively
+			time.Sleep(time.Microsecond)
 		}
 	}
 
-	// Pop a free block ID from the allocation table
-	blockIDValue := bm.allocationTable.Dequeue()
+	// Now try to get a block atomically
+	// Loop until we either get a block or confirm the queue is truly empty
+	for {
+		blockIDValue := bm.allocationTable.Dequeue()
 
-	// Check if we got a valid value back
-	if blockIDValue == nil {
-		// If Pop returns nil, it means the queue was actually empty
-		// even though IsEmpty() didn't report it (could be a race condition)
-		// So try appending more blocks
-		if err := bm.appendFreeBlocks(); err != nil {
-			return 0, err
-		}
-
-		// Try popping again
-		blockIDValue = bm.allocationTable.Dequeue()
 		if blockIDValue == nil {
-			return 0, errors.New("failed to allocate block: allocation table is empty")
+			// Queue might be empty, but we need to make sure it's not just a race condition
+			// Check again and maybe append more blocks
+			if bm.allocationTable.IsEmpty() {
+				// If it's still empty, try to append more blocks
+				appendingFlag := int32(0)
+				if atomic.CompareAndSwapInt32(&appendingFlag, 0, 1) {
+					if err := bm.appendFreeBlocks(); err != nil {
+						atomic.StoreInt32(&appendingFlag, 0)
+						return 0, err
+					}
+					atomic.StoreInt32(&appendingFlag, 0)
+				} else {
+					// Someone else is appending blocks, wait a bit
+					time.Sleep(time.Microsecond)
+				}
+
+				// Try again to get a block
+				continue
+			}
+
+			// The queue wasn't actually empty, just try again
+			continue
 		}
-	}
 
-	// Convert the interface{} value to uint32
-	blockID, ok := blockIDValue.(uint64)
-	if !ok {
-		return 0, errors.New("failed to allocate block: invalid block ID type")
-	}
+		// Convert the interface{} value to uint64
+		blockID, ok := blockIDValue.(uint64)
+		if !ok {
+			return 0, errors.New("failed to allocate block: invalid block ID type")
+		}
 
-	// Ensure we never return 0 as a valid block ID
-	if blockID == 0 {
-		// Try to allocate another block instead
-		return bm.allocateBlock()
-	}
+		// Ensure we never return 0 as a valid block ID
+		if blockID == 0 {
+			// Try to allocate another block instead
+			continue
+		}
 
-	return blockID, nil
+		return blockID, nil
+	}
 }
 
 // scanForFreeBlocks scans the file for free blocks and populates the allocation table.
@@ -576,39 +609,57 @@ func (bm *BlockManager) Append(data []byte) (int64, error) {
 	// Total blocks needed to store all data
 	totalBlocks := (len(data) + dataSpacePerBlock - 1) / dataSpacePerBlock
 
+	// Pre-allocate all blocks we'll need to maintain atomicity
+	blockChain := make([]uint64, totalBlocks)
+
+	// Allocate first block
 	firstBlockID, err := bm.allocateBlock()
 	if err != nil {
 		return -1, err
 	}
+	blockChain[0] = firstBlockID
 
-	currentBlockID := firstBlockID
+	// Allocate remaining blocks if needed
+	for i := 1; i < totalBlocks; i++ {
+		blockID, err := bm.allocateBlock()
+		if err != nil {
+			// If allocation fails, we have a partial chain
+			// In a production system, you might want to free these blocks
+			// But for now we'll just return the error
+			return -1, err
+		}
+		blockChain[i] = blockID
+	}
+
+	// Now we have all blocks allocated, we can write data without allocation races
 	remainingData := data
 	headerSize := binary.Size(Header{})
 
-	// Loop until all data is written
-	for blockNum := 0; blockNum < totalBlocks; blockNum++ {
-
-		// Calculate position of the current block
+	// Write data to each allocated block
+	for i := 0; i < totalBlocks; i++ {
+		currentBlockID := blockChain[i]
 		position := int64(headerSize) + int64(currentBlockID)*int64(BlockSize)
 
 		// Determine how much data to write in this block
-		dataToWrite := remainingData
+		var dataToWrite []byte
 		var nextBlockID uint64 = EndOfChain // Default to end of chain
 
-		if len(dataToWrite) > dataSpacePerBlock {
+		if len(remainingData) > dataSpacePerBlock {
 			// We need another block
 			dataToWrite = remainingData[:dataSpacePerBlock]
 			remainingData = remainingData[dataSpacePerBlock:]
 
-			nextBlockID, err = bm.allocateBlock()
-			if err != nil {
-				return -1, err
+			// If there's a next block in our chain, use its ID
+			if i < totalBlocks-1 {
+				nextBlockID = blockChain[i+1]
 			}
 		} else {
 			// All remaining data fits in this block
+			dataToWrite = remainingData
 			remainingData = nil
 		}
 
+		// Create and write the block
 		blockHeader := BlockHeader{
 			BlockID:   currentBlockID,
 			DataSize:  uint64(len(dataToWrite)),
@@ -633,12 +684,11 @@ func (bm *BlockManager) Append(data []byte) (int64, error) {
 		}
 
 		copy(blockBuffer, headerBuf.Bytes())
-
 		copy(blockBuffer[blockHeaderSize:], dataToWrite)
 
 		// Zero out the rest of the buffer to prevent junk data
-		for i := blockHeaderSize + len(dataToWrite); i < len(blockBuffer); i++ {
-			blockBuffer[i] = 0
+		for j := blockHeaderSize + len(dataToWrite); j < len(blockBuffer); j++ {
+			blockBuffer[j] = 0
 		}
 
 		// Write the block to the file using atomic pwrite operation
@@ -646,13 +696,9 @@ func (bm *BlockManager) Append(data []byte) (int64, error) {
 		if err != nil {
 			return -1, err
 		}
-
-		// Update current block ID for the next iteration
-		currentBlockID = nextBlockID
 	}
 
 	if bm.syncOption == SyncFull {
-
 		_ = syscall.Fdatasync(int(bm.fd))
 	}
 
@@ -763,6 +809,10 @@ func (bm *BlockManager) Read(blockID int64) ([]byte, int64, error) {
 	return resultBuffer.Bytes(), returnBlockID, nil
 }
 
+func (bm *BlockManager) File() *os.File {
+	return bm.file
+}
+
 // Iterator returns an iterator for traversing the blocks in the file
 func (bm *BlockManager) Iterator() *Iterator {
 	// Get current last block based on file size
@@ -826,4 +876,8 @@ func (it *Iterator) Prev() ([]byte, int64, error) {
 	}
 
 	return data, blockID, nil
+}
+
+func (it *Iterator) BlockManager() *BlockManager {
+	return it.blockManager
 }

@@ -18,6 +18,7 @@
 package skiplist
 
 import (
+	"bytes"
 	"fmt"
 	"sync"
 	"testing"
@@ -29,12 +30,15 @@ func TestSkipListBasicPutGet(t *testing.T) {
 
 	now := time.Now().UnixNano()
 	key := []byte("hello")
-	val := "world"
+	val := []byte("world")
 
 	sl.Put(key, val, now)
 
-	got := sl.Get(key, now)
-	if got != val {
+	got, _, exists := sl.Get(key, now)
+	if !exists {
+		t.Errorf("key %s should exist", key)
+	}
+	if !bytes.Equal(got, val) {
 		t.Errorf("expected %v, got %v", val, got)
 	}
 }
@@ -47,24 +51,33 @@ func TestSkipListGetOlderVersion(t *testing.T) {
 	ts3 := ts2 + 10
 	key := []byte("versioned")
 
-	sl.Put(key, "v1", ts1)
-	sl.Put(key, "v2", ts2)
+	sl.Put(key, []byte("v1"), ts1)
+	sl.Put(key, []byte("v2"), ts2)
 
 	// Get value at ts1 (should return v1)
-	got := sl.Get(key, ts1)
-	if got != "v1" {
+	got, _, exists := sl.Get(key, ts1)
+	if !exists {
+		t.Errorf("key %s should exist at ts1", key)
+	}
+	if !bytes.Equal(got, []byte("v1")) {
 		t.Errorf("expected v1, got %v", got)
 	}
 
 	// Get value at ts2 (should return v2)
-	got = sl.Get(key, ts2)
-	if got != "v2" {
+	got, _, exists = sl.Get(key, ts2)
+	if !exists {
+		t.Errorf("key %s should exist at ts2", key)
+	}
+	if !bytes.Equal(got, []byte("v2")) {
 		t.Errorf("expected v2, got %v", got)
 	}
 
 	// Get value at ts3 (should return v2)
-	got = sl.Get(key, ts3)
-	if got != "v2" {
+	got, _, exists = sl.Get(key, ts3)
+	if !exists {
+		t.Errorf("key %s should exist at ts3", key)
+	}
+	if !bytes.Equal(got, []byte("v2")) {
 		t.Errorf("expected v2, got %v", got)
 	}
 }
@@ -76,10 +89,14 @@ func TestSkipListDelete(t *testing.T) {
 	ts2 := ts1 + 100
 	key := []byte("tempkey")
 
-	sl.Put(key, "exists", ts1)
+	sl.Put(key, []byte("exists"), ts1)
 
 	// Ensure it's there
-	if got := sl.Get(key, ts1); got != "exists" {
+	got, _, exists := sl.Get(key, ts1)
+	if !exists {
+		t.Errorf("key %s should exist at ts1", key)
+	}
+	if !bytes.Equal(got, []byte("exists")) {
 		t.Errorf("expected exists at ts1, got %v", got)
 	}
 
@@ -90,13 +107,18 @@ func TestSkipListDelete(t *testing.T) {
 	}
 
 	// Check that it still exists before delete timestamp
-	if got := sl.Get(key, ts1); got != "exists" {
+	got, _, exists = sl.Get(key, ts1)
+	if !exists {
+		t.Errorf("key %s should still exist at ts1 after delete at ts2", key)
+	}
+	if !bytes.Equal(got, []byte("exists")) {
 		t.Errorf("expected exists at ts1, got %v", got)
 	}
 
 	// Check that it is deleted after ts2
-	if got := sl.Get(key, ts2); got != nil {
-		t.Errorf("expected nil at ts2 after delete, got %v", got)
+	_, _, exists = sl.Get(key, ts2)
+	if exists {
+		t.Errorf("expected key to be deleted at ts2, but it exists")
 	}
 }
 
@@ -106,16 +128,22 @@ func TestSkipListInsertOverwrite(t *testing.T) {
 	ts := time.Now().UnixNano()
 	key := []byte("dupkey")
 
-	sl.Put(key, "first", ts)
-	sl.Put(key, "second", ts+10)
+	sl.Put(key, []byte("first"), ts)
+	sl.Put(key, []byte("second"), ts+10)
 
-	got := sl.Get(key, ts)
-	if got != "first" {
+	got, _, exists := sl.Get(key, ts)
+	if !exists {
+		t.Errorf("key %s should exist at ts", key)
+	}
+	if !bytes.Equal(got, []byte("first")) {
 		t.Errorf("expected first at ts, got %v", got)
 	}
 
-	got = sl.Get(key, ts+10)
-	if got != "second" {
+	got, _, exists = sl.Get(key, ts+10)
+	if !exists {
+		t.Errorf("key %s should exist at ts+10", key)
+	}
+	if !bytes.Equal(got, []byte("second")) {
 		t.Errorf("expected second at ts+10, got %v", got)
 	}
 }
@@ -126,9 +154,9 @@ func TestSkipListGetNonExistent(t *testing.T) {
 	key := []byte("missing")
 	ts := time.Now().UnixNano()
 
-	got := sl.Get(key, ts)
-	if got != nil {
-		t.Errorf("expected nil for missing key, got %v", got)
+	_, _, exists := sl.Get(key, ts)
+	if exists {
+		t.Errorf("expected non-existent key to return exists=false")
 	}
 }
 
@@ -137,9 +165,9 @@ func TestIteratorForwardTraversal(t *testing.T) {
 
 	// Insert multiple keys
 	ts := time.Now().UnixNano()
-	sl.Put([]byte("key0"), "value0", ts)
-	sl.Put([]byte("key2"), "value2", ts+10)
-	sl.Put([]byte("key3"), "value3", ts+20)
+	sl.Put([]byte("key0"), []byte("value0"), ts)
+	sl.Put([]byte("key2"), []byte("value2"), ts+10)
+	sl.Put([]byte("key3"), []byte("value3"), ts+20)
 
 	// Create an iterator starting at the first key
 	it := sl.NewIterator(nil, ts+20)
@@ -159,8 +187,8 @@ func TestIteratorForwardTraversal(t *testing.T) {
 			t.Errorf("Expected key %s at position %d, got %s", expectedKeys[i], i, string(key))
 		}
 
-		if value.(string) != expectedValues[i] {
-			t.Errorf("Expected value %s at position %d, got %s", expectedValues[i], i, value.(string))
+		if string(value) != expectedValues[i] {
+			t.Errorf("Expected value %s at position %d, got %s", expectedValues[i], i, string(value))
 		}
 	}
 
@@ -176,9 +204,9 @@ func TestIteratorBackwardTraversal(t *testing.T) {
 
 	// Insert multiple keys
 	ts := time.Now().UnixNano()
-	sl.Put([]byte("key1"), "value1", ts)
-	sl.Put([]byte("key2"), "value2", ts+10)
-	sl.Put([]byte("key3"), "value3", ts+20)
+	sl.Put([]byte("key1"), []byte("value1"), ts)
+	sl.Put([]byte("key2"), []byte("value2"), ts+10)
+	sl.Put([]byte("key3"), []byte("value3"), ts+20)
 
 	// Create an iterator starting at the first key
 	it := sl.NewIterator([]byte("key1"), ts+20)
@@ -198,8 +226,8 @@ func TestIteratorBackwardTraversal(t *testing.T) {
 			t.Errorf("Expected key %s at position %d, got %s", expectedKeys[i], i, string(key))
 		}
 
-		if value.(string) != expectedValues[i] {
-			t.Errorf("Expected value %s at position %d, got %s", expectedValues[i], i, value.(string))
+		if string(value) != expectedValues[i] {
+			t.Errorf("Expected value %s at position %d, got %s", expectedValues[i], i, string(value))
 		}
 	}
 
@@ -218,8 +246,8 @@ func TestIteratorBackwardTraversal(t *testing.T) {
 			t.Errorf("Expected key %s at position %d, got %s", expectedKeysReverse[i], i, string(key))
 		}
 
-		if value.(string) != expectedValuesReverse[i] {
-			t.Errorf("Expected value %s at position %d, got %s", expectedValuesReverse[i], i, value.(string))
+		if string(value) != expectedValuesReverse[i] {
+			t.Errorf("Expected value %s at position %d, got %s", expectedValuesReverse[i], i, string(value))
 		}
 	}
 
@@ -239,18 +267,18 @@ func TestIteratorSnapshotIsolation(t *testing.T) {
 	ts3 := ts2 + 10
 	key := []byte("key")
 
-	sl.Put(key, "v1", ts1)
-	sl.Put(key, "v2", ts2)
-	sl.Put(key, "v3", ts3)
+	sl.Put(key, []byte("v1"), ts1)
+	sl.Put(key, []byte("v2"), ts2)
+	sl.Put(key, []byte("v3"), ts3)
 
 	// Create an iterator with a snapshot at ts2
 	it := sl.NewIterator(key, ts2)
 
 	// Ensure the iterator sees the correct version
 	k, v, _, exists := it.Next()
-	if !exists || string(k) != "key" || v != "v2" {
-		t.Errorf("expected key='key', value='v2', got key='%s', value='%v', exists=%v",
-			string(k), v, exists)
+	if !exists || string(k) != "key" || string(v) != "v2" {
+		t.Errorf("expected key='key', value='v2', got key='%s', value='%s', exists=%v",
+			string(k), string(v), exists)
 	}
 
 	// Ensure the iterator does not see versions beyond ts2
@@ -276,7 +304,7 @@ func TestSkipListConcurrentPutGet(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < opsPerGoroutine; j++ {
 				key := []byte(fmt.Sprintf("key-%d-%d", gid, j))
-				value := fmt.Sprintf("value-%d-%d", gid, j)
+				value := []byte(fmt.Sprintf("value-%d-%d", gid, j))
 				ts := time.Now().UnixNano()
 				sl.Put(key, value, ts)
 			}
@@ -294,7 +322,7 @@ func TestSkipListConcurrentPutGet(t *testing.T) {
 			for j := 0; j < opsPerGoroutine; j++ {
 				key := []byte(fmt.Sprintf("key-%d-%d", gid, j))
 				ts := time.Now().UnixNano()
-				_ = sl.Get(key, ts)
+				_, _, _ = sl.Get(key, ts)
 			}
 		}(i)
 	}
@@ -319,7 +347,7 @@ func TestSkipListConcurrentPutDelete(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < opsPerGoroutine; j++ {
 				key := []byte(fmt.Sprintf("key-%d-%d", gid, j))
-				value := fmt.Sprintf("value-%d-%d", gid, j)
+				value := []byte(fmt.Sprintf("value-%d-%d", gid, j))
 				ts := time.Now().UnixNano()
 				sl.Put(key, value, ts)
 			}
@@ -351,7 +379,7 @@ func TestSkipListConcurrentIterators(t *testing.T) {
 	ts := time.Now().UnixNano()
 	for i := 0; i < 1000; i++ {
 		key := []byte(fmt.Sprintf("key-%d", i))
-		value := fmt.Sprintf("value-%d", i)
+		value := []byte(fmt.Sprintf("value-%d", i))
 		sl.Put(key, value, ts+int64(i))
 	}
 
@@ -362,8 +390,7 @@ func TestSkipListConcurrentIterators(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			it := sl.NewIterator([]byte("key-0"), ts+1000)
-			var k []byte
-			var v interface{}
+			var k, v []byte
 			var exists bool
 			for {
 				k, v, _, exists = it.Next()
@@ -401,19 +428,19 @@ func TestSkipListGetMinMax(t *testing.T) {
 	}
 
 	// Insert some data
-	sl.Put([]byte("apple"), "red", ts)
-	sl.Put([]byte("banana"), "yellow", ts+10)
-	sl.Put([]byte("cherry"), "red", ts+20)
-	sl.Put([]byte("date"), "brown", ts+30)
-	sl.Put([]byte("elderberry"), "purple", ts+40)
+	sl.Put([]byte("apple"), []byte("red"), ts)
+	sl.Put([]byte("banana"), []byte("yellow"), ts+10)
+	sl.Put([]byte("cherry"), []byte("red"), ts+20)
+	sl.Put([]byte("date"), []byte("brown"), ts+30)
+	sl.Put([]byte("elderberry"), []byte("purple"), ts+40)
 
 	// Test GetMin at current time
 	minKey, minVal, exists = sl.GetMin(ts + 50)
 	if !exists {
 		t.Errorf("GetMin on non-empty list should return exists=true")
 	}
-	if string(minKey) != "apple" || minVal != "red" {
-		t.Errorf("GetMin expected key='apple', val='red', got key='%s', val='%v'", minKey, minVal)
+	if string(minKey) != "apple" || string(minVal) != "red" {
+		t.Errorf("GetMin expected key='apple', val='red', got key='%s', val='%s'", minKey, minVal)
 	}
 
 	// Test GetMax at current time
@@ -421,8 +448,8 @@ func TestSkipListGetMinMax(t *testing.T) {
 	if !exists {
 		t.Errorf("GetMax on non-empty list should return exists=true")
 	}
-	if string(maxKey) != "elderberry" || maxVal != "purple" {
-		t.Errorf("GetMax expected key='elderberry', val='purple', got key='%s', val='%v'", maxKey, maxVal)
+	if string(maxKey) != "elderberry" || string(maxVal) != "purple" {
+		t.Errorf("GetMax expected key='elderberry', val='purple', got key='%s', val='%s'", maxKey, maxVal)
 	}
 
 	// Test with deleted min and max
@@ -434,8 +461,8 @@ func TestSkipListGetMinMax(t *testing.T) {
 	if !exists {
 		t.Errorf("GetMin should return exists=true")
 	}
-	if string(minKey) != "banana" || minVal != "yellow" {
-		t.Errorf("GetMin expected key='banana', val='yellow', got key='%s', val='%v'", minKey, minVal)
+	if string(minKey) != "banana" || string(minVal) != "yellow" {
+		t.Errorf("GetMin expected key='banana', val='yellow', got key='%s', val='%s'", minKey, minVal)
 	}
 
 	// Test GetMax after deletion
@@ -443,31 +470,31 @@ func TestSkipListGetMinMax(t *testing.T) {
 	if !exists {
 		t.Errorf("GetMax should return exists=true")
 	}
-	if string(maxKey) != "date" || maxVal != "brown" {
-		t.Errorf("GetMax expected key='date', val='brown', got key='%s', val='%v'", maxKey, maxVal)
+	if string(maxKey) != "date" || string(maxVal) != "brown" {
+		t.Errorf("GetMax expected key='date', val='brown', got key='%s', val='%s'", maxKey, maxVal)
 	}
 
 	// Test timestamp sensitivity
 	// Get min/max at ts+15 (should see apple and banana, but not cherry, date, elderberry)
 	minKey, minVal, exists = sl.GetMin(ts + 15)
-	if !exists || string(minKey) != "apple" || minVal != "red" {
-		t.Errorf("GetMin at ts+15 expected key='apple', val='red', got exists=%v, key='%s', val='%v'",
+	if !exists || string(minKey) != "apple" || string(minVal) != "red" {
+		t.Errorf("GetMin at ts+15 expected key='apple', val='red', got exists=%v, key='%s', val='%s'",
 			exists, minKey, minVal)
 	}
 
 	maxKey, maxVal, exists = sl.GetMax(ts + 15)
-	if !exists || string(maxKey) != "banana" || maxVal != "yellow" {
-		t.Errorf("GetMax at ts+15 expected key='banana', val='yellow', got exists=%v, key='%s', val='%v'",
+	if !exists || string(maxKey) != "banana" || string(maxVal) != "yellow" {
+		t.Errorf("GetMax at ts+15 expected key='banana', val='yellow', got exists=%v, key='%s', val='%s'",
 			exists, maxKey, maxVal)
 	}
 
 	// Add a new version of an existing key
-	sl.Put([]byte("banana"), "green", ts+80) // Banana ripeness changed
+	sl.Put([]byte("banana"), []byte("green"), ts+80) // Banana ripeness changed
 
 	// Test GetMin with version changes
 	minKey, minVal, exists = sl.GetMin(ts + 90)
-	if !exists || string(minKey) != "banana" || minVal != "green" {
-		t.Errorf("GetMin after version change expected key='banana', val='green', got exists=%v, key='%s', val='%v'",
+	if !exists || string(minKey) != "banana" || string(minVal) != "green" {
+		t.Errorf("GetMin after version change expected key='banana', val='green', got exists=%v, key='%s', val='%s'",
 			exists, minKey, minVal)
 	}
 
@@ -497,7 +524,7 @@ func BenchmarkSkipListPut(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		key := []byte(fmt.Sprintf("key-%d", i))
-		value := fmt.Sprintf("value-%d", i)
+		value := []byte(fmt.Sprintf("value-%d", i))
 		sl.Put(key, value, now+int64(i))
 	}
 }
@@ -509,13 +536,13 @@ func BenchmarkSkipListGet(b *testing.B) {
 	// Prepopulate the skip list
 	for i := 0; i < 1000; i++ {
 		key := []byte(fmt.Sprintf("key-%d", i))
-		value := fmt.Sprintf("value-%d", i)
+		value := []byte(fmt.Sprintf("value-%d", i))
 		sl.Put(key, value, now+int64(i))
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		key := []byte(fmt.Sprintf("key-%d", i%1000)) // Cycle through existing keys
-		_ = sl.Get(key, now+int64(i))
+		_, _, _ = sl.Get(key, now+int64(i))
 	}
 }

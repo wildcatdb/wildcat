@@ -18,7 +18,6 @@
 package skiplist
 
 import (
-	"bytes"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -28,6 +27,9 @@ import (
 
 const MaxLevel = 16
 const p = 0.25
+
+// KeyComparator defines the interface for comparing keys
+type KeyComparator func(a, b []byte) int
 
 type ValueVersionType int
 
@@ -40,7 +42,7 @@ const (
 
 // ValueVersion represents a single version of a value in MVCC
 type ValueVersion struct {
-	Data      interface{}      // Value data
+	Data      []byte           // Value data
 	Timestamp int64            // Version timestamp
 	Type      ValueVersionType // Type of version (write or delete)
 	Next      *ValueVersion    // Pointer to the previous version (linked list)
@@ -53,26 +55,59 @@ type Node struct {
 	key      []byte                   // key used for searches
 	versions unsafe.Pointer           // atomic pointer to the head of version chain
 	mutex    sync.RWMutex             // mutex for version chain updates
-
 }
 
 // SkipList represents a concurrent skip list data structure with MVCC
 type SkipList struct {
-	header   *Node        // special header node
-	level    atomic.Value // current maximum level of the list (atomic)
-	rng      *rand.Rand   // random number generator with its own lock
-	rngMutex sync.Mutex   // mutex for the random number generator
+	header     *Node         // special header node
+	level      atomic.Value  // current maximum level of the list (atomic)
+	rng        *rand.Rand    // random number generator with its own lock
+	rngMutex   sync.Mutex    // mutex for the random number generator
+	comparator KeyComparator // user-provided comparator function
 }
 
 // Iterator provides a bidirectional iterator for the skip list with snapshot isolation
 type Iterator struct {
-	skipList      *SkipList // Reference to the skip list
+	SkipList      *SkipList // Reference to the skip list
 	current       *Node     // Current node in the iteration
 	readTimestamp int64     // Timestamp for snapshot isolation
 }
 
-// New creates a new concurrent skip list with MVCC
+// DefaultComparator is the default key comparison function
+// Returns -1 if a < b, 0 if a == b, 1 if a > b
+func DefaultComparator(a, b []byte) int {
+	// Byte-by-byte comparison
+	minLen := len(a)
+	if len(b) < minLen {
+		minLen = len(b)
+	}
+
+	for i := 0; i < minLen; i++ {
+		if a[i] < b[i] {
+			return -1
+		} else if a[i] > b[i] {
+			return 1
+		}
+	}
+
+	// If all bytes compared so far are equal, the shorter key is "less than"
+	if len(a) < len(b) {
+		return -1
+	} else if len(a) > len(b) {
+		return 1
+	}
+
+	// Keys are identical
+	return 0
+}
+
+// New creates a new concurrent skip list with MVCC using the default comparator
 func New() *SkipList {
+	return NewWithComparator(DefaultComparator)
+}
+
+// NewWithComparator creates a new concurrent skip list with a custom key comparator
+func NewWithComparator(cmp KeyComparator) *SkipList {
 	// Create header node
 	header := &Node{
 		key: []byte{},
@@ -85,8 +120,9 @@ func New() *SkipList {
 
 	// Create the skip list
 	sl := &SkipList{
-		header: header,
-		rng:    rand.New(rand.NewSource(time.Now().UnixNano())),
+		header:     header,
+		rng:        rand.New(rand.NewSource(time.Now().UnixNano())),
+		comparator: cmp,
 	}
 
 	// Set initial level to 1
@@ -154,7 +190,7 @@ func (n *Node) findVisibleVersion(readTimestamp int64) *ValueVersion {
 }
 
 // addVersion adds a new version to the node
-func (n *Node) addVersion(data interface{}, timestamp int64, versionType ValueVersionType) {
+func (n *Node) addVersion(data []byte, timestamp int64, versionType ValueVersionType) {
 	// Create new version
 	newVersion := &ValueVersion{
 		Data:      data,
@@ -177,7 +213,7 @@ func (n *Node) addVersion(data interface{}, timestamp int64, versionType ValueVe
 }
 
 // Get retrieves a value from the skip list given a key and a read timestamp
-func (sl *SkipList) Get(searchKey []byte, readTimestamp int64) (interface{}, int64, bool) {
+func (sl *SkipList) Get(searchKey []byte, readTimestamp int64) ([]byte, int64, bool) {
 	var prev *Node
 	var curr *Node
 	var currPtr unsafe.Pointer
@@ -197,7 +233,7 @@ func (sl *SkipList) Get(searchKey []byte, readTimestamp int64) (interface{}, int
 		// Traverse the current level
 		for curr != nil {
 			// If the current key is greater or equal, stop traversing this level
-			if bytes.Compare(curr.key, searchKey) >= 0 {
+			if sl.comparator(curr.key, searchKey) >= 0 {
 				break
 			}
 
@@ -215,7 +251,8 @@ func (sl *SkipList) Get(searchKey []byte, readTimestamp int64) (interface{}, int
 	// Search for the node at level 0
 	for curr != nil {
 		// Check if we found the key
-		if bytes.Equal(curr.key, searchKey) {
+		cmp := sl.comparator(curr.key, searchKey)
+		if cmp == 0 {
 			// Find the visible version at the given read timestamp
 			version := curr.findVisibleVersion(readTimestamp)
 			if version != nil && version.Type != Delete {
@@ -225,7 +262,7 @@ func (sl *SkipList) Get(searchKey []byte, readTimestamp int64) (interface{}, int
 		}
 
 		// If we've gone too far, the key doesn't exist
-		if bytes.Compare(curr.key, searchKey) > 0 {
+		if cmp > 0 {
 			return nil, 0, false
 		}
 
@@ -238,7 +275,7 @@ func (sl *SkipList) Get(searchKey []byte, readTimestamp int64) (interface{}, int
 }
 
 // Put inserts or updates a value in the skip list with the given key
-func (sl *SkipList) Put(searchKey []byte, newValue interface{}, writeTimestamp int64) {
+func (sl *SkipList) Put(searchKey []byte, newValue []byte, writeTimestamp int64) {
 	var retry bool
 	var topLevel int
 	var existingNode *Node
@@ -259,7 +296,7 @@ func (sl *SkipList) Put(searchKey []byte, newValue interface{}, writeTimestamp i
 			curr = (*Node)(currPtr)
 
 			for curr != nil {
-				if bytes.Compare(curr.key, searchKey) >= 0 {
+				if sl.comparator(curr.key, searchKey) >= 0 {
 					break
 				}
 				prev = curr
@@ -273,11 +310,12 @@ func (sl *SkipList) Put(searchKey []byte, newValue interface{}, writeTimestamp i
 		curr = (*Node)(currPtr)
 
 		for curr != nil {
-			if bytes.Equal(curr.key, searchKey) {
+			cmp := sl.comparator(curr.key, searchKey)
+			if cmp == 0 {
 				existingNode = curr
 				break
 			}
-			if bytes.Compare(curr.key, searchKey) > 0 {
+			if cmp > 0 {
 				break
 			}
 			prev = curr
@@ -371,7 +409,7 @@ func (sl *SkipList) Delete(searchKey []byte, deleteTimestamp int64) bool {
 		// Traverse the current level
 		for curr != nil {
 			// If the current key is greater or equal, stop traversing this level
-			if bytes.Compare(curr.key, searchKey) >= 0 {
+			if sl.comparator(curr.key, searchKey) >= 0 {
 				break
 			}
 
@@ -389,14 +427,15 @@ func (sl *SkipList) Delete(searchKey []byte, deleteTimestamp int64) bool {
 	// Search for the node at level 0
 	for curr != nil {
 		// Check if we found the key
-		if bytes.Equal(curr.key, searchKey) {
+		cmp := sl.comparator(curr.key, searchKey)
+		if cmp == 0 {
 			// Add a delete version
 			curr.addVersion(nil, deleteTimestamp, Delete)
 			return true
 		}
 
 		// If we've gone too far, the key doesn't exist
-		if bytes.Compare(curr.key, searchKey) > 0 {
+		if cmp > 0 {
 			return false
 		}
 
@@ -420,7 +459,7 @@ func (sl *SkipList) NewIterator(startKey []byte, readTimestamp int64) *Iterator 
 			for {
 				currPtr := atomic.LoadPointer(&curr.forward[i])
 				next := (*Node)(currPtr)
-				if next == nil || bytes.Compare(next.key, startKey) >= 0 {
+				if next == nil || sl.comparator(next.key, startKey) >= 0 {
 					break
 				}
 				curr = next
@@ -431,7 +470,7 @@ func (sl *SkipList) NewIterator(startKey []byte, readTimestamp int64) *Iterator 
 	// Return the iterator with curr as current
 	// First call to Next() will move to the appropriate node
 	return &Iterator{
-		skipList:      sl,
+		SkipList:      sl,
 		current:       curr,
 		readTimestamp: readTimestamp,
 	}
@@ -439,7 +478,7 @@ func (sl *SkipList) NewIterator(startKey []byte, readTimestamp int64) *Iterator 
 
 // Next moves the iterator to the next node and returns the key and visible version
 // Returns nil, nil, false if there are no more nodes or no visible versions
-func (it *Iterator) Next() ([]byte, interface{}, int64, bool) {
+func (it *Iterator) Next() ([]byte, []byte, int64, bool) {
 	if it.current == nil {
 		return nil, nil, 0, false
 	}
@@ -464,7 +503,7 @@ func (it *Iterator) Next() ([]byte, interface{}, int64, bool) {
 
 // Prev moves the iterator to the previous node and returns the key and visible version
 // Returns nil, nil, false if there are no more nodes or no visible versions
-func (it *Iterator) Prev() ([]byte, interface{}, int64, bool) {
+func (it *Iterator) Prev() ([]byte, []byte, int64, bool) {
 	if it.current == nil {
 		return nil, nil, 0, false
 	}
@@ -474,7 +513,7 @@ func (it *Iterator) Prev() ([]byte, interface{}, int64, bool) {
 	it.current = (*Node)(currPtr)
 
 	// Return the key and visible version at the read timestamp
-	if it.current != nil && it.current != it.skipList.header {
+	if it.current != nil && it.current != it.SkipList.header {
 		version := it.current.findVisibleVersion(it.readTimestamp)
 		if version != nil && version.Type != Delete {
 			return it.current.key, version.Data, version.Timestamp, true
@@ -487,9 +526,23 @@ func (it *Iterator) Prev() ([]byte, interface{}, int64, bool) {
 	return nil, nil, 0, false
 }
 
+func (it *Iterator) Peek() ([]byte, []byte, int64, bool) {
+	if it.current == nil {
+		return nil, nil, 0, false
+	}
+
+	// Return the key and visible version at the read timestamp
+	version := it.current.findVisibleVersion(it.readTimestamp)
+	if version != nil && version.Type != Delete {
+		return it.current.key, version.Data, version.Timestamp, true
+	}
+
+	return nil, nil, 0, false
+}
+
 // GetMin retrieves the minimum key-value pair from the skip list
 // Returns the key, value, and a boolean indicating success
-func (sl *SkipList) GetMin(readTimestamp int64) ([]byte, interface{}, bool) {
+func (sl *SkipList) GetMin(readTimestamp int64) ([]byte, []byte, bool) {
 	// Start at the header node
 	curr := sl.header
 
@@ -520,7 +573,7 @@ func (sl *SkipList) GetMin(readTimestamp int64) ([]byte, interface{}, bool) {
 
 // GetMax retrieves the maximum key-value pair from the skip list
 // Returns the key, value, and a boolean indicating success
-func (sl *SkipList) GetMax(readTimestamp int64) ([]byte, interface{}, bool) {
+func (sl *SkipList) GetMax(readTimestamp int64) ([]byte, []byte, bool) {
 	// Start at the header node
 	curr := sl.header
 	var lastVisible *Node
@@ -544,6 +597,9 @@ func (sl *SkipList) GetMax(readTimestamp int64) ([]byte, interface{}, bool) {
 
 	// If we found a visible node, return it
 	if lastVisible != nil {
+		if lastVisibleVersion == nil {
+			return nil, nil, false
+		}
 		return lastVisible.key, lastVisibleVersion.Data, true
 	}
 

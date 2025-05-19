@@ -197,7 +197,7 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 	// Fetch from active memtable
 	val, ts, ok := txn.db.memtable.Load().(*Memtable).skiplist.Get(key, txn.Timestamp)
 	if ok && ts > bestTimestamp {
-		bestValue = val.([]byte)
+		bestValue = val
 		bestTimestamp = ts
 	}
 
@@ -206,7 +206,7 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 		memt := item.(*Memtable)
 		val, ts, ok = memt.skiplist.Get(key, txn.Timestamp)
 		if ok && ts > bestTimestamp {
-			bestValue = val.([]byte)
+			bestValue = val
 			bestTimestamp = ts
 		}
 		return true // Continue searching
@@ -214,7 +214,7 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 
 	if val != nil && ts <= txn.Timestamp {
 		if ts > bestTimestamp {
-			bestValue = val.([]byte)
+			bestValue = val
 			bestTimestamp = ts
 			if ts == txn.Timestamp {
 				return bestValue, nil // Early return
@@ -253,127 +253,6 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 	}
 
 	return nil, fmt.Errorf("key not found")
-}
-
-// NewIterator creates a bidirectional iterator for the transaction
-func (txn *Txn) NewIterator(startKey []byte) *Iterator {
-	return txn.newIterator(startKey)
-}
-
-// GetRange retrieves all key-value pairs in the given key range
-func (txn *Txn) GetRange(startKey, endKey []byte) (map[string][]byte, error) {
-	result := make(map[string][]byte)
-
-	// Get an iterator starting at the start key
-	iter := txn.NewIterator(startKey)
-
-	// Iterate until we reach the end key or run out of keys
-	for {
-		key, value, ok := iter.Next()
-		if !ok {
-			break
-		}
-
-		// Check if we've gone past the end key
-		if endKey != nil && bytes.Compare(key, endKey) > 0 {
-			break
-		}
-
-		// Add to result
-		result[string(key)] = value.([]byte)
-	}
-
-	return result, nil
-}
-
-// Count returns the number of entries in the given key range
-func (txn *Txn) Count(startKey, endKey []byte) (int, error) {
-	count := 0
-
-	// Get an iterator starting at the start key
-	iter := txn.NewIterator(startKey)
-
-	// Iterate until we reach the end key or run out of keys
-	for {
-		key, _, ok := iter.Next()
-		if !ok {
-			break
-		}
-
-		// Check if we've gone past the end key
-		if endKey != nil && bytes.Compare(key, endKey) > 0 {
-			break
-		}
-
-		count++
-	}
-
-	return count, nil
-}
-
-// Scan executes a function on each key-value pair in the given range
-func (txn *Txn) Scan(startKey, endKey []byte, fn func(key []byte, value []byte) bool) error {
-	// Get an iterator starting at the start key
-	iter := txn.NewIterator(startKey)
-
-	// Iterate until we reach the end key or run out of keys
-	for {
-		key, value, ok := iter.Next()
-		if !ok {
-			break
-		}
-
-		// Check if we've gone past the end key
-		if endKey != nil && bytes.Compare(key, endKey) > 0 {
-			break
-		}
-
-		// Apply the function
-		// If it returns false, stop scanning
-		if !fn(key, value.([]byte)) {
-			break
-		}
-	}
-
-	return nil
-}
-
-// ForEach iterates through all entries in the database
-func (txn *Txn) ForEach(fn func(key []byte, value []byte) bool) error {
-	return txn.Scan(nil, nil, fn)
-}
-
-// Iterate is a higher-level bidirectional iterator using callbacks
-func (txn *Txn) Iterate(startKey []byte, direction int, fn func(key []byte, value []byte) bool) error {
-	// Get a merge iterator starting at the given key
-	iter := txn.NewIterator(startKey)
-
-	// Iterate in the specified direction
-	var key []byte
-	var value interface{}
-	var ok bool
-
-	for {
-		if direction >= 0 {
-			// Forward iteration
-			key, value, ok = iter.Next()
-		} else {
-			// Backward iteration
-			key, value, ok = iter.Prev()
-		}
-
-		if !ok {
-			break
-		}
-
-		// Apply the function
-		// If it returns false, stop iterating
-		if !fn(key, value.([]byte)) {
-			break
-		}
-	}
-
-	return nil
 }
 
 // Update performs an atomic update using a transaction
@@ -434,4 +313,8 @@ func (txn *Txn) appendWal() error {
 	}
 
 	return nil
+}
+
+func (txn *Txn) NewIterator(startKey []byte, prefix []byte) *MergeIterator {
+	return NewMergeIterator(txn, startKey, prefix)
 }

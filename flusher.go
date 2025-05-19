@@ -194,7 +194,7 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 			blockset.Size += int64(len(key))
 		} else {
 			// Normal entry - handle as before
-			id, err := vlogBm.Append(value.([]byte)[:])
+			id, err := vlogBm.Append(value[:])
 			if err != nil {
 				return fmt.Errorf("failed to write VLog: %w", err)
 			}
@@ -206,7 +206,7 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 			}
 
 			blockset.Entries = append(blockset.Entries, klogEntry)
-			blockset.Size += int64(len(key) + len(value.([]byte)))
+			blockset.Size += int64(len(key) + len(value))
 		}
 	}
 

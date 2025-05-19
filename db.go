@@ -692,6 +692,32 @@ func (db *DB) log(msg string) {
 	}
 }
 
+func (db *DB) ForceFlush() error {
+	if db == nil {
+		return errors.New("database is nil")
+	}
+
+	// Force flush all memtables
+	err := db.flusher.flushMemtable(db.memtable.Load().(*Memtable))
+	if err != nil {
+		return fmt.Errorf("failed to force flush memtable: %w", err)
+	}
+
+	// Force flush all immutable memtables
+	db.flusher.immutable.ForEach(func(item interface{}) bool {
+		if memt, ok := item.(*Memtable); ok {
+			err := db.flusher.flushMemtable(memt)
+			if err != nil {
+				db.log(fmt.Sprintf("Failed to flush immutable memtable: %v", err))
+				return false // Stop iteration on error
+			}
+		}
+		return true // Continue iteration
+	})
+
+	return nil
+}
+
 // loadState loads the ID generator state from a file
 func (idgs *IDGeneratorState) loadState() error {
 	if idgs == nil {

@@ -33,8 +33,8 @@ type Level struct {
 	path        string                     // The path to the level directory
 	sstables    atomic.Pointer[[]*SSTable] // Atomic pointer to the list of SSTables
 	capacity    int                        // The capacity of the level
-	currentSize int64                      // atomic size of the level
-	db          *DB                        // Reference to the database (not exported)
+	currentSize int64                      // Atomic size of the level
+	db          *DB                        // Reference to the database\
 }
 
 // reopen opens an existing level directories sstables
@@ -74,7 +74,7 @@ func (l *Level) reopen() error {
 		// Get corresponding VLog file path with proper path construction
 		vlogPath := fmt.Sprintf("%s%s%d%s", levelPath, SSTablePrefix, id, VLogExtension)
 
-		// Check if VLog file exists - add more graceful handling
+		// Check if VLog file exists
 		if _, err := os.Stat(vlogPath); os.IsNotExist(err) {
 			// Log the issue but continue instead of failing completely
 			l.db.log(fmt.Sprintf("Warning: VLog file not found for SSTable %d: %v - skipping", id, err))
