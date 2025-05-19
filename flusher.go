@@ -52,7 +52,7 @@ func (flusher *Flusher) queueMemtable() error {
 		db:       flusher.db,
 		skiplist: skiplist.New(),
 		wal: &WAL{
-			path: fmt.Sprintf("%s%s%d%s", flusher.db.opts.Directory, string(os.PathSeparator), walId, WALFileExtension),
+			path: fmt.Sprintf("%s%d%s", flusher.db.opts.Directory, walId, WALFileExtension),
 		}}
 
 	// Open the new WAL
@@ -152,11 +152,12 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 
 	if flusher.db.opts.BloomFilter {
 		// Create a bloom filter for the SSTable
-		sstable.BloomFilter, err = memt.createBloomFilter()
+		sstable.BloomFilter, err = memt.createBloomFilter(int64(entryCount))
 		if err != nil {
 			return fmt.Errorf("failed to create bloom filter: %w", err)
 
 		}
+
 	}
 
 	// Encode metadata
@@ -187,8 +188,6 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 		if !ok {
 			break // No more entries
 		}
-
-		entryCount++
 
 		// Check if this is a deletion marker
 		if value == nil {
