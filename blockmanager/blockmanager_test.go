@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"github.com/guycipher/wildcat/queue"
 	"hash/crc32"
 	"io/ioutil"
 	"math/rand"
@@ -26,7 +27,6 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-	"wildcat/queue"
 )
 
 func TestWriteHeader(t *testing.T) {
