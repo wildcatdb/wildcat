@@ -473,6 +473,7 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 }
 
 // mergeSSTables merges multiple SSTables into a new SSTable
+// mergeSSTables merges multiple SSTables into a new SSTable with optimized tombstone handling
 func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *blockmanager.BlockManager, newSSTable *SSTable) error {
 	// Write metadata as first block
 	sstableData, err := newSSTable.serializeSSTable()
@@ -485,12 +486,20 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 		return fmt.Errorf("failed to write KLog: %w", err)
 	}
 
+	// Determine if this is the bottom level (for tombstone removal)
+	isBottomLevel := newSSTable.Level == len(*compactor.db.levels.Load())-1
+
+	// Get the oldest active read timestamp if available
+	// If not tracking this, we use a conservative approach and keep tombstones
+	var oldestReadTimestamp int64
+
+	oldestReadTimestamp = atomic.LoadInt64(&compactor.db.oldestActiveRead)
+
 	// Create a merged iterator over all input SSTables
 	iterators := make([]*sstCompactionIterator, len(sstables))
 	for i, table := range sstables {
 		iterators[i] = newSSTCompactionIterator(table)
 	}
-
 	mergeIter := newMergeCompactionIterator(iterators)
 
 	// Create a block set for the merged data
@@ -502,6 +511,77 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 	entryCount := 0
 	var totalSize int64 = 0
 
+	// Keep track of the last seen key for potential tombstone optimization
+	var lastKey []byte
+	var lastKeyTombstone bool
+	var savedTombstones int
+	var droppedTombstones int
+
+	// Helper function to check if a value is a tombstone
+	isTombstone := func(valueBlockID int64, value interface{}) bool {
+		// Special marker for deletion
+		if valueBlockID == -1 {
+			return true
+		}
+
+		// Check if the value is nil or empty (another tombstone indicator)
+		valueBytes, ok := value.([]byte)
+		return !ok || valueBytes == nil || len(valueBytes) == 0
+	}
+
+	// Helper function to determine if a tombstone should be kept
+	shouldKeepTombstone := func(key []byte, ts int64) bool {
+		// Always keep tombstones in non-bottom levels
+		if !isBottomLevel {
+			return true
+		}
+
+		// Drop tombstones older than possible oldest active read in bottom level
+		if oldestReadTimestamp > 0 && ts < oldestReadTimestamp {
+			return false
+		}
+
+		// Check if key exists in other SSTables that aren't part of this compaction
+		// This would require scanning all other SSTables, which can be expensive
+		// For now, we use a simplified approach - keep tombstones that are recent
+
+		// Check overlap with SSTables in other levels
+		for levelNum, level := range *compactor.db.levels.Load() {
+			// Skip the current level and target level
+			if levelNum == newSSTable.Level || levelNum == sstables[0].Level {
+				continue
+			}
+
+			levelSSTables := level.sstables.Load()
+			if levelSSTables == nil {
+				continue
+			}
+
+			// Check if the key might be in any SSTable range
+			for _, table := range *levelSSTables {
+				// Skip tables that are part of this compaction
+				isCompacting := false
+				for _, compactingTable := range sstables {
+					if table.Id == compactingTable.Id {
+						isCompacting = true
+						break
+					}
+				}
+				if isCompacting {
+					continue
+				}
+
+				// If key is in the range of this SSTable, we need to keep the tombstone
+				if bytes.Compare(key, table.Min) >= 0 && bytes.Compare(key, table.Max) <= 0 {
+					return true
+				}
+			}
+		}
+
+		// If we reach here, the tombstone is likely not needed
+		return false
+	}
+
 	// Iterate through all entries and merge them
 	for {
 		key, value, ts, valid := mergeIter.next()
@@ -509,20 +589,57 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 			break
 		}
 
-		// Write the value to VLog
-		id, err := vlogBm.Append(value.([]byte))
-		if err != nil {
-			return fmt.Errorf("failed to write VLog: %w", err)
+		// Check if this is a tombstone
+		valueBlockID := int64(-1)
+		if value != nil {
+			// For real values, we write to VLog and get a block ID
+			var err error
+			valueBlockID, err = vlogBm.Append(value.([]byte))
+			if err != nil {
+				return fmt.Errorf("failed to write VLog: %w", err)
+			}
 		}
 
+		isTomb := isTombstone(valueBlockID, value)
+
+		// TOMBSTONE HANDLING STRATEGY
+		if isTomb {
+			// Tombstone found - decide if we should keep it
+			if !shouldKeepTombstone(key, ts) {
+				droppedTombstones++
+				continue // Skip this tombstone entirely
+			}
+
+			// Check for consecutive tombstones (potential range optimization)
+			if lastKeyTombstone && bytes.Equal(lastKey, key) {
+				// Skip duplicate tombstones for the same key
+				continue
+			}
+
+			savedTombstones++
+		}
+
+		// Remember last key and tombstone status for potential optimizations
+		lastKey = key
+		lastKeyTombstone = isTomb
+
+		// Add the entry to the block set
 		klogEntry := &KLogEntry{
 			Key:          key,
 			Timestamp:    ts,
-			ValueBlockID: id,
+			ValueBlockID: valueBlockID,
 		}
 
 		blockset.Entries = append(blockset.Entries, klogEntry)
-		entrySize := int64(len(key) + len(value.([]byte)))
+
+		// Calculate entry size - for tombstones, only count the key size
+		var entrySize int64
+		if isTomb {
+			entrySize = int64(len(key))
+		} else {
+			entrySize = int64(len(key) + len(value.([]byte)))
+		}
+
 		blockset.Size += entrySize
 		totalSize += entrySize
 		entryCount++

@@ -94,20 +94,21 @@ type Options struct {
 
 // DB represents the main OrinDB structure
 type DB struct {
-	opts           *Options                 // Configuration options
-	txns           atomic.Pointer[[]*Txn]   // Atomic pointer to the transactions
-	levels         atomic.Pointer[[]*Level] // Atomic pointer to the levels
-	lru            *lru.LRU                 // LRU cache for block managers
-	flusher        *Flusher                 // Flusher for memtables
-	compactor      *Compactor               // Compactor for SSTables
-	memtable       atomic.Value             // The current memtable
-	wg             *sync.WaitGroup          // WaitGroup for synchronization
-	closeCh        chan struct{}            // Channel for closing up
-	sstIdGenerator *IDGenerator             // ID generator for SSTables
-	walIdGenerator *IDGenerator             // ID generator for WAL files
-	txnIdGenerator *IDGenerator             // ID generator for transactions
-	logChannel     chan string              // Log channel, instead of log file or standard output we log to a channel
-	idgs           *IDGeneratorState        // ID generator state
+	opts             *Options                 // Configuration options
+	txns             atomic.Pointer[[]*Txn]   // Atomic pointer to the transactions
+	levels           atomic.Pointer[[]*Level] // Atomic pointer to the levels
+	lru              *lru.LRU                 // LRU cache for block managers
+	flusher          *Flusher                 // Flusher for memtables
+	compactor        *Compactor               // Compactor for SSTables
+	memtable         atomic.Value             // The current memtable
+	wg               *sync.WaitGroup          // WaitGroup for synchronization
+	closeCh          chan struct{}            // Channel for closing up
+	sstIdGenerator   *IDGenerator             // ID generator for SSTables
+	walIdGenerator   *IDGenerator             // ID generator for WAL files
+	txnIdGenerator   *IDGenerator             // ID generator for transactions
+	logChannel       chan string              // Log channel, instead of log file or standard output we log to a channel
+	idgs             *IDGeneratorState        // ID generator state
+	oldestActiveRead int64                    // Oldest active read timestamp
 }
 
 // IDGeneratorState represents the state of the ID generator.
