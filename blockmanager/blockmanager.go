@@ -31,7 +31,7 @@ import (
 const MagicNumber = uint32(0x57494C44)        // "WILD"
 const Version = uint32(1)                     // Version of the file format
 const BlockSize = uint32(512)                 // Smaller the better, faster in our tests
-const Allotment = uint64(16)                  // How many blocks we can allot at once from the file
+const Allotment = uint64(16)                  // How many blocks we can allot at once to the file.  We allocate this many blocks once allocationTable is empty
 const EndOfChain = uint64(0xFFFFFFFFFFFFFFFF) // Marker for end of blockchain (overflowed block)
 
 // SyncOption defines the synchronization options for the file
@@ -55,9 +55,9 @@ type Header struct {
 // BlockHeader represents the header of a block in the file
 type BlockHeader struct {
 	CRC       uint32 // CRC32 checksum of the block header
-	BlockID   uint64 // Changed from uint32 to uint64
-	DataSize  uint64 // Changed from uint32 to uint64
-	NextBlock uint64 // Changed from uint32 to uint64
+	BlockID   uint64 // Unique ID of the block
+	DataSize  uint64 // Size of the data in the block
+	NextBlock uint64 // ID of the next block in the chain (or EndOfChain if this is the last block)
 }
 
 // BlockManager manages the allocation and deallocation of blocks in a file
@@ -140,6 +140,7 @@ func Open(filename string, flag int, perm os.FileMode, syncOpt SyncOption, durat
 		}
 	}
 
+	// If syncOption is SyncPartial, start the background sync goroutine
 	if bm.syncOption == SyncPartial {
 		bm.wg.Add(1)
 		go bm.backgroundSync()
