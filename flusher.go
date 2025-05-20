@@ -60,7 +60,12 @@ func (flusher *Flusher) queueMemtable() error {
 	}
 
 	// Add the new WAL to the LRU cache
-	flusher.db.lru.Put(newMemtable.wal.path, walBm)
+	flusher.db.lru.Put(newMemtable.wal.path, walBm, func(key, value interface{}) {
+		// Close the block manager when evicted from LRU
+		if bm, ok := value.(*blockmanager.BlockManager); ok {
+			_ = bm.Close()
+		}
+	})
 
 	// Push the current memtable to the immutable stack
 	flusher.immutable.Enqueue(flusher.db.memtable.Load().(*Memtable))
@@ -232,8 +237,18 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 	flusher.db.log(fmt.Sprintf("Flushed %d entries to SSTable %d", entryCount, sstable.Id))
 
 	// Add both KLog and VLog to the LRU cache
-	flusher.db.lru.Put(klogPath, klogBm)
-	flusher.db.lru.Put(vlogPath, vlogBm)
+	flusher.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
+		// Close the block manager when evicted from LRU
+		if bm, ok := value.(*blockmanager.BlockManager); ok {
+			_ = bm.Close()
+		}
+	})
+	flusher.db.lru.Put(vlogPath, vlogBm, func(key, value interface{}) {
+		// Close the block manager when evicted from LRU
+		if bm, ok := value.(*blockmanager.BlockManager); ok {
+			_ = bm.Close()
+		}
+	})
 
 	// Add the SSTable to level 1
 	levels := flusher.db.levels.Load()

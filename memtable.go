@@ -56,7 +56,12 @@ func (memtable *Memtable) replay(activeTxns *[]*Txn) error {
 		}
 
 		// Add to LRU cache
-		memtable.db.lru.Put(memtable.wal.path, walBm)
+		memtable.db.lru.Put(memtable.wal.path, walBm, func(key, value interface{}) {
+			// Close the block manager when evicted from LRU
+			if bm, ok := value.(*blockmanager.BlockManager); ok {
+				_ = bm.Close()
+			}
+		})
 	} else {
 		memtable.db.log(fmt.Sprintf("Found WAL file in LRU cache: %s", memtable.wal.path))
 		// Use the cached WAL file handle

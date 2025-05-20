@@ -436,8 +436,18 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 	}
 
 	// Add KLog and VLog managers to LRU cache
-	compactor.db.lru.Put(klogPath, klogBm)
-	compactor.db.lru.Put(vlogPath, vlogBm)
+	compactor.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
+		// Close the block manager when evicted from LRU
+		if bm, ok := value.(*blockmanager.BlockManager); ok {
+			_ = bm.Close()
+		}
+	})
+	compactor.db.lru.Put(vlogPath, vlogBm, func(key, value interface{}) {
+		// Close the block manager when evicted from LRU
+		if bm, ok := value.(*blockmanager.BlockManager); ok {
+			_ = bm.Close()
+		}
+	})
 
 	// Clean up the old SSTable files
 	for _, table := range sstables {
@@ -714,7 +724,12 @@ func newSSTCompactionIterator(sst *SSTable) *sstCompactionIterator {
 		if err != nil {
 			return &sstCompactionIterator{eof: true}
 		}
-		sst.db.lru.Put(klogPath, klogBm)
+		sst.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
+			// Close the block manager when evicted from LRU
+			if bm, ok := value.(*blockmanager.BlockManager); ok {
+				_ = bm.Close()
+			}
+		})
 	}
 
 	iter := &sstCompactionIterator{
@@ -794,7 +809,12 @@ func (iter *sstCompactionIterator) next() ([]byte, interface{}, int64, bool) {
 			iter.eof = true
 			return nil, nil, 0, false
 		}
-		iter.sstable.db.lru.Put(vlogPath, vlogBm)
+		iter.sstable.db.lru.Put(vlogPath, vlogBm, func(key, value interface{}) {
+			// Close the block manager when evicted from LRU
+			if bm, ok := value.(*blockmanager.BlockManager); ok {
+				_ = bm.Close()
+			}
+		})
 	}
 
 	// Read the value from VLog
