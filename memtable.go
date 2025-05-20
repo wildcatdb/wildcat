@@ -167,7 +167,12 @@ func (memtable *Memtable) createBloomFilter(entries int64) (*bloomfilter.BloomFi
 			break
 		}
 
-		bf.Add(key)
+		err = bf.Add(key)
+		if err != nil {
+			// We log a warning
+			memtable.db.log(fmt.Sprintf("Warning: failed to add key to Bloom filter: %v - skipping", err))
+			continue
+		}
 	}
 
 	return bf, nil

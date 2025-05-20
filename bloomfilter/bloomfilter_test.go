@@ -41,7 +41,11 @@ func TestAddAndContains(t *testing.T) {
 
 	data := []byte("testdata")
 
-	bf.Add(data)
+	err = bf.Add(data)
+	if err != nil {
+		t.Errorf("Error adding data to BloomFilter: %v", err)
+	}
+
 	if !bf.Contains(data) {
 		t.Errorf("Expected BloomFilter to contain data")
 	}
@@ -61,7 +65,11 @@ func BenchmarkAdd(b *testing.B) {
 	data := []byte("testdata")
 
 	for i := 0; i < b.N; i++ {
-		bf.Add(data)
+		err = bf.Add(data)
+		if err != nil {
+			b.Errorf("Error adding data to BloomFilter: %v", err)
+
+		}
 	}
 }
 
@@ -72,7 +80,10 @@ func BenchmarkContains(b *testing.B) {
 	}
 
 	data := []byte("testdata")
-	bf.Add(data)
+	err = bf.Add(data)
+	if err != nil {
+		b.Errorf("Error adding data to BloomFilter: %v", err)
+	}
 
 	for i := 0; i < b.N; i++ {
 		bf.Contains(data)

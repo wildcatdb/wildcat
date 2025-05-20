@@ -57,14 +57,19 @@ func New(expectedItems uint, falsePositiveRate float64) (*BloomFilter, error) {
 }
 
 // Add adds an item to the Bloom filter
-func (bf *BloomFilter) Add(data []byte) {
+func (bf *BloomFilter) Add(data []byte) error {
 	for _, hf := range bf.hashFuncs {
 		hf.Reset()
-		hf.Write(data)
-		hash := hf.Sum64()
-		position := hash % uint64(bf.Size)
+		_, err := hf.Write(data)
+		if err != nil {
+			return err
+		}
+		h := hf.Sum64()
+		position := h % uint64(bf.Size)
 		bf.Bitset[position/8] |= 1 << (position % 8)
 	}
+
+	return nil
 }
 
 // Contains checks if an item might exist in the Bloom filter

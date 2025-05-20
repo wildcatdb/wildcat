@@ -43,6 +43,8 @@ const (
 	SyncPartial                   // Do a sync in the background at intervals
 )
 
+// Why use pread and pwrite? https://stackoverflow.com/questions/7592822/what-are-the-advantages-of-pwrite-and-pread-over-fwrite-and-fread
+
 // Header represents the header of the file
 type Header struct {
 	CRC         uint32 // CRC32 checksum of the header
@@ -289,7 +291,7 @@ func (bm *BlockManager) appendFreeBlocks() error {
 
 		// Create a block header for a free block
 		blockHeader := BlockHeader{
-			BlockID:   newBlockID,
+			BlockID:   newBlockID, // Unique ID of the block
 			DataSize:  0,          // No data for free blocks
 			NextBlock: EndOfChain, // End of chain for free blocks
 		}
@@ -468,10 +470,10 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 			continue
 		}
 
-		// A block is considered non-free if:
+		// A block is considered non-free if
 		// 1. It has data (DataSize > 0)
 		// 2. It's marked as an end of chain (NextBlock == EndOfChain and DataSize > 0)
-		//    Note: Free blocks might also have NextBlock == EndOfChain but they have DataSize == 0
+		// Also free blocks might also have NextBlock == EndOfChain but they have DataSize == 0
 		if blockHeader.DataSize > 0 {
 			firstNonFreeBlockFromEnd = i
 			break
@@ -847,7 +849,7 @@ func (it *Iterator) Next() ([]byte, int64, error) {
 	it.history = append(it.history, it.blockID)
 	it.blockID = uint32(blockID) + 1
 
-	return data, int64(blockID), nil
+	return data, blockID, nil
 }
 
 // Prev moves the iterator to the previous block
