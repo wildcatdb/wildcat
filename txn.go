@@ -258,15 +258,10 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 				return bestValue, nil // Early return
 			}
 
-			// If we found a deletion marker, we can return nil
-			if val == nil && ts == 0 {
-				return nil, fmt.Errorf("key not found")
-			}
-
 		}
 	}
 
-	if bestValue != nil {
+	if bestValue != nil { // Checks if we found a value, can be tombstone
 		return bestValue, nil
 	}
 
