@@ -347,7 +347,12 @@ func (db *DB) reinstate() error {
 		}
 
 		// Add the WAL to the LRU cache
-		db.lru.Put(newWalPath, walBm)
+		db.lru.Put(newWalPath, walBm, func(key, value interface{}) {
+			// Close the block manager when evicted from LRU
+			if bm, ok := value.(*blockmanager.BlockManager); ok {
+				_ = bm.Close()
+			}
+		})
 
 		// Initialize empty transactions slice
 		txns := make([]*Txn, 0)
@@ -381,7 +386,12 @@ func (db *DB) reinstate() error {
 		}
 
 		// Add WAL to LRU cache
-		db.lru.Put(walPath, walBm)
+		db.lru.Put(walPath, walBm, func(key, value interface{}) {
+			// Close the block manager when evicted from LRU
+			if bm, ok := value.(*blockmanager.BlockManager); ok {
+				_ = bm.Close()
+			}
+		})
 
 		// Process all transaction entries in this WAL
 		iter := walBm.Iterator()
@@ -542,7 +552,12 @@ func (db *DB) reinstate() error {
 	}
 
 	// Update or add to LRU cache
-	db.lru.Put(activeWALPath, activeWalBm)
+	db.lru.Put(activeWALPath, activeWalBm, func(key, value interface{}) {
+		// Close the block manager when evicted from LRU
+		if bm, ok := value.(*blockmanager.BlockManager); ok {
+			_ = bm.Close()
+		}
+	})
 
 	// Populate the active memtable with all committed transactions
 	populateMemtableFromTxns(activeMemt, globalTxnMap, false)

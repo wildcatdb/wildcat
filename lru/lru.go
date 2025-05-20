@@ -24,14 +24,22 @@ import (
 	"unsafe"
 )
 
+type EvictionCallback func(key, value interface{}) // For when a key is evicted
+
+// ValueWrapper is a wrapper for values stored in the LRU list
+type ValueWrapper struct {
+	data interface{} // Actual data
+}
+
 // Node represents a node in the linked list
 type Node struct {
-	key       interface{}
-	value     interface{}
-	accessCnt uint64         // Count of accesses, atomically updated
-	timestamp int64          // Time of insertion
-	next      unsafe.Pointer // *Node - using unsafe.Pointer for atomic operations
-	prev      unsafe.Pointer // *Node - using unsafe.Pointer for atomic operations
+	key       interface{}      // Key of the node
+	value     unsafe.Pointer   // *ValueWrapper
+	accessCnt uint64           // Count of accesses, atomically updated
+	timestamp int64            // Time of insertion
+	next      unsafe.Pointer   // *Node - using unsafe.Pointer for atomic operations
+	prev      unsafe.Pointer   // *Node - using unsafe.Pointer for atomic operations
+	onEvict   EvictionCallback // Callback function when a node is evicted
 }
 
 // LRU is a lockless linked list with capacity constraints
@@ -57,15 +65,16 @@ func New(capacity int64, evictRatio float64, accessWeight float64) *LRU {
 		accessWeight = 0.7 // Default to 70% weight for access count
 	}
 
-	// Create a sentinel node for the head and tail
+	// Create a sentinel node for the head and tail with a value wrapper
+	valueWrapper := &ValueWrapper{data: nil}
 	sentinel := &Node{
 		key:       nil,
-		value:     nil,
+		value:     unsafe.Pointer(valueWrapper),
 		accessCnt: 0,
 		timestamp: time.Now().UnixNano(),
 	}
 
-	return &LRU{
+	lru := &LRU{
 		head:         unsafe.Pointer(sentinel),
 		tail:         unsafe.Pointer(sentinel),
 		length:       0,
@@ -74,14 +83,14 @@ func New(capacity int64, evictRatio float64, accessWeight float64) *LRU {
 		accessWeight: accessWeight,
 		timeWeight:   1 - accessWeight,
 	}
+
+	return lru
 }
 
 // Get retrieves a value by key and updates access count
 func (list *LRU) Get(key interface{}) (interface{}, bool) {
 	// Start from the head
 	current := (*Node)(atomic.LoadPointer(&list.head))
-
-	// Skip the sentinel node
 	current = (*Node)(atomic.LoadPointer(&current.next))
 
 	// Traverse the list
@@ -89,7 +98,12 @@ func (list *LRU) Get(key interface{}) (interface{}, bool) {
 		if current.key == key {
 			// Increment access count atomically
 			atomic.AddUint64(&current.accessCnt, 1)
-			return current.value, true
+
+			// Load the value pointer atomically
+			valuePtr := atomic.LoadPointer(&current.value)
+			value := (*ValueWrapper)(valuePtr)
+
+			return value.data, true
 		}
 		current = (*Node)(atomic.LoadPointer(&current.next))
 	}
@@ -97,7 +111,7 @@ func (list *LRU) Get(key interface{}) (interface{}, bool) {
 }
 
 // Put adds or updates a key-value pair
-func (list *LRU) Put(key, value interface{}) bool {
+func (list *LRU) Put(key, value interface{}, onEvict ...EvictionCallback) bool {
 	// First check if the key already exists
 	current := (*Node)(atomic.LoadPointer(&list.head))
 
@@ -107,9 +121,21 @@ func (list *LRU) Put(key, value interface{}) bool {
 	// Traverse the list to find existing key
 	for current != nil {
 		if current.key == key {
-			// Update value and access count
-			current.value = value
+			// Create a new value wrapper
+			newValue := &ValueWrapper{data: value}
+
+			// Store the callback if provided (for future eviction)
+			if len(onEvict) > 0 && onEvict[0] != nil {
+				// Update the node's eviction callback
+				current.onEvict = onEvict[0]
+			}
+
+			// Replace value atomically
+			atomic.StorePointer(&current.value, unsafe.Pointer(newValue))
+
+			// Update access count atomically
 			atomic.AddUint64(&current.accessCnt, 1)
+
 			return true
 		}
 		current = (*Node)(atomic.LoadPointer(&current.next))
@@ -120,13 +146,19 @@ func (list *LRU) Put(key, value interface{}) bool {
 		list.evict()
 	}
 
-	// Create new node
+	// Create new node with value in wrapper
+	valueWrapper := &ValueWrapper{data: value}
 	newNode := &Node{
 		key:       key,
-		value:     value,
+		value:     unsafe.Pointer(valueWrapper),
 		accessCnt: 1,
 		timestamp: time.Now().UnixNano(),
 		next:      nil,
+	}
+
+	if len(onEvict) > 0 && onEvict[0] != nil {
+		newNode.onEvict = onEvict[0]
+
 	}
 
 	// Add node to the list using CAS
@@ -138,8 +170,21 @@ func (list *LRU) Put(key, value interface{}) bool {
 			// Set prev pointer of new node
 			atomic.StorePointer(&newNode.prev, unsafe.Pointer(tail))
 
-			// Try to update the tail
-			atomic.CompareAndSwapPointer(&list.tail, unsafe.Pointer(tail), unsafe.Pointer(newNode))
+			// Try to update the tail, we will keep trying until successful or another thread does it
+			for {
+				if atomic.CompareAndSwapPointer(&list.tail, unsafe.Pointer(tail), unsafe.Pointer(newNode)) {
+					break // We successfully updated the tail
+				}
+
+				// If another thread already updated the tail to our node, we're done
+				currentTail := (*Node)(atomic.LoadPointer(&list.tail))
+				if currentTail == newNode {
+					break
+				}
+
+				// Small backoff
+				runtime.Gosched()
+			}
 
 			// Increment length
 			atomic.AddInt64(&list.length, 1)
@@ -211,19 +256,46 @@ func (list *LRU) evict() {
 		toEvict = 1
 	}
 
-	// Build a slice of nodes to calculate eviction scores
-	nodes := make([]*Node, 0, length)
-	current := (*Node)(atomic.LoadPointer(&list.head))
-	current = (*Node)(atomic.LoadPointer(&current.next)) // Skip sentinel
+	// Take a snapshot of the list - with retry logic for consistency
+	var nodes []*Node
+	for attempt := 0; attempt < 3; attempt++ { // Try a few times for consistency
+		tempNodes := make([]*Node, 0, length)
+		current := (*Node)(atomic.LoadPointer(&list.head))
+		current = (*Node)(atomic.LoadPointer(&current.next)) // Skip sentinel
 
-	for current != nil {
-		nodes = append(nodes, current)
-		current = (*Node)(atomic.LoadPointer(&current.next))
+		// Create snapshot with consistent next pointers
+		for current != nil {
+			tempNodes = append(tempNodes, current)
+			current = (*Node)(atomic.LoadPointer(&current.next))
+		}
+
+		// If we got approximately the expected length, use this snapshot
+		if int64(len(tempNodes)) >= length*80/100 {
+			nodes = tempNodes
+			break
+		}
+
+		// Small backoff before retry
+		runtime.Gosched()
 	}
 
 	// Skip if there are no nodes (shouldn't happen)
 	if len(nodes) == 0 {
 		return
+	}
+
+	// Take snapshot of access counts to ensure consistency during scoring
+	type nodeWithAccessCount struct {
+		node        *Node
+		accessCount uint64
+	}
+
+	nodesWithCounts := make([]nodeWithAccessCount, len(nodes))
+	for i, node := range nodes {
+		nodesWithCounts[i] = nodeWithAccessCount{
+			node:        node,
+			accessCount: atomic.LoadUint64(&node.accessCnt),
+		}
 	}
 
 	// Calculate scores for eviction
@@ -232,15 +304,15 @@ func (list *LRU) evict() {
 	var newestTime int64 = nodes[0].timestamp
 	var oldestTime int64 = nodes[0].timestamp
 
-	for _, node := range nodes {
-		if atomic.LoadUint64(&node.accessCnt) > maxAccess {
-			maxAccess = atomic.LoadUint64(&node.accessCnt)
+	for _, nodeInfo := range nodesWithCounts {
+		if nodeInfo.accessCount > maxAccess {
+			maxAccess = nodeInfo.accessCount
 		}
-		if node.timestamp > newestTime {
-			newestTime = node.timestamp
+		if nodeInfo.node.timestamp > newestTime {
+			newestTime = nodeInfo.node.timestamp
 		}
-		if node.timestamp < oldestTime {
-			oldestTime = node.timestamp
+		if nodeInfo.node.timestamp < oldestTime {
+			oldestTime = nodeInfo.node.timestamp
 		}
 	}
 
@@ -256,17 +328,17 @@ func (list *LRU) evict() {
 	}
 
 	scoredNodes := make([]scoredNode, len(nodes))
-	for i, node := range nodes {
+	for i, nodeInfo := range nodesWithCounts {
 		// Normalize access count (0-1, higher is better)
-		accessNorm := float64(atomic.LoadUint64(&node.accessCnt)) / float64(maxAccess)
+		accessNorm := float64(nodeInfo.accessCount) / float64(maxAccess)
 
 		// Normalize time (0-1, newer is better)
-		timeNorm := float64(node.timestamp-oldestTime) / float64(newestTime-oldestTime)
+		timeNorm := float64(nodeInfo.node.timestamp-oldestTime) / float64(newestTime-oldestTime)
 
-		// Calculate score - higher means less likely to evict
+		// Calculate score, higher means less likely to evict
 		score := (list.accessWeight * accessNorm) + (list.timeWeight * timeNorm)
 
-		scoredNodes[i] = scoredNode{node: node, score: score}
+		scoredNodes[i] = scoredNode{node: nodeInfo.node, score: score}
 	}
 
 	// Sort by score (ascending, lowest first)
@@ -274,25 +346,58 @@ func (list *LRU) evict() {
 		return scoredNodes[i].score < scoredNodes[j].score
 	})
 
-	// Evict the nodes with lowest scores
+	// Collect nodes to evict and their callbacks (to avoid modifying the list while iterating)
+	type evictionInfo struct {
+		key      interface{}
+		value    interface{}
+		callback EvictionCallback
+	}
+
+	nodesToEvict := make([]evictionInfo, 0, toEvict)
+
+	// Add nodes to evict list
 	for i := 0; i < toEvict && i < len(scoredNodes); i++ {
-		list.Delete(scoredNodes[i].node.key)
+		node := scoredNodes[i].node
+
+		// Get the value
+		valuePtr := atomic.LoadPointer(&node.value)
+		valueWrapper := (*ValueWrapper)(valuePtr)
+
+		// Add to eviction list
+		nodesToEvict = append(nodesToEvict, evictionInfo{
+			key:      node.key,
+			value:    valueWrapper.data,
+			callback: node.onEvict,
+		})
+	}
+
+	// Evict the nodes with lowest scores
+	for _, info := range nodesToEvict {
+		// Call the callback if it exists
+		if info.callback != nil {
+			info.callback(info.key, info.value)
+		}
+
+		// Delete the node
+		list.Delete(info.key)
 	}
 }
 
 // ForEach iterates through the list safely and applies a function to each node
 func (list *LRU) ForEach(fn func(key, value interface{}, accessCount uint64) bool) {
 	current := (*Node)(atomic.LoadPointer(&list.head))
-
-	// Skip the sentinel node
 	current = (*Node)(atomic.LoadPointer(&current.next))
 
 	for current != nil {
-		// Increment access count
+		// Load access count atomically
 		accesses := atomic.LoadUint64(&current.accessCnt)
 
+		// Load value atomically
+		valuePtr := atomic.LoadPointer(&current.value)
+		valueWrapper := (*ValueWrapper)(valuePtr)
+
 		// Apply function
-		if !fn(current.key, current.value, accesses) {
+		if !fn(current.key, valueWrapper.data, accesses) {
 			break
 		}
 
@@ -303,10 +408,11 @@ func (list *LRU) ForEach(fn func(key, value interface{}, accessCount uint64) boo
 
 // Clear empties the list
 func (list *LRU) Clear() {
-	// Create a new sentinel node
+	// Create a new sentinel node with nil value wrapper
+	valueWrapper := &ValueWrapper{data: nil}
 	sentinel := &Node{
 		key:       nil,
-		value:     nil,
+		value:     unsafe.Pointer(valueWrapper),
 		accessCnt: 0,
 		timestamp: time.Now().UnixNano(),
 	}

@@ -250,8 +250,9 @@ func (bm *BlockManager) backgroundSync() {
 
 	for {
 		select {
+
 		case <-ticker.C:
-			_ = syscall.Fdatasync(int(bm.fd)) // Use fdatasync for better performance
+			_ = Fdatasync(bm.fd)
 
 		case <-bm.closeChan:
 			return

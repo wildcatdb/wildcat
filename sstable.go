@@ -90,7 +90,12 @@ func (sst *SSTable) get(key []byte, timestamp int64) ([]byte, int64) {
 			sst.db.log(fmt.Sprintf("Warning: Failed to open KLog %s: %v", klogPath, err))
 			return nil, 0
 		}
-		sst.db.lru.Put(klogPath, klogBm)
+		sst.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
+			// Close the block manager when evicted from LRU
+			if bm, ok := value.(*blockmanager.BlockManager); ok {
+				_ = bm.Close()
+			}
+		})
 	}
 
 	if sst.db.opts.BloomFilter {
@@ -156,7 +161,12 @@ func (sst *SSTable) get(key []byte, timestamp int64) ([]byte, int64) {
 			if err != nil {
 				return nil, 0
 			}
-			sst.db.lru.Put(vlogPath, vlogBm)
+			sst.db.lru.Put(vlogPath, vlogBm, func(key, value interface{}) {
+				// Close the block manager when evicted from LRU
+				if bm, ok := value.(*blockmanager.BlockManager); ok {
+					_ = bm.Close()
+				}
+			})
 		}
 
 		// Read the value from VLog
