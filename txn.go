@@ -147,8 +147,10 @@ func (txn *Txn) Commit() error {
 		return err
 	}
 
-	// Check if we need to flush the memtable to stack
+	// Check if we need to enqueue the memtable for flush
 	if atomic.LoadInt64(&txn.db.memtable.Load().(*Memtable).size) > txn.db.opts.WriteBufferSize {
+
+		// Enqueue the memtable for flush and swap
 		err = txn.db.flusher.queueMemtable()
 		if err != nil {
 			return fmt.Errorf("failed to queue memtable: %w", err)
@@ -240,14 +242,27 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 			}
 
 			// Try to get the value from this SSTable
-			val, ts := sstable.get(key, txn.Timestamp)
+			val, ts = sstable.get(key, txn.Timestamp)
 
 			// If we found a value and it's newer than what we have so far
 			// but still not newer than our read timestamp
 			if val != nil && ts <= txn.Timestamp && ts > bestTimestamp {
 				bestValue = val
 				bestTimestamp = ts
+
 			}
+
+			// If we found a value that is exactly the same as our read timestamp
+			// we can return it immediately
+			if ts == txn.Timestamp {
+				return bestValue, nil // Early return
+			}
+
+			// If we found a deletion marker, we can return nil
+			if val == nil && ts == 0 {
+				return nil, fmt.Errorf("key not found")
+			}
+
 		}
 	}
 
