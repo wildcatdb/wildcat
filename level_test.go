@@ -29,7 +29,9 @@ func TestLevel_BasicOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -153,7 +155,9 @@ func TestLevel_Reopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a log channel that won't be closed in this test
 	logChan := make(chan string, 100)
@@ -289,7 +293,9 @@ func TestLevel_SizeMethods(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -377,7 +383,9 @@ func TestLevel_ErrorHandling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)

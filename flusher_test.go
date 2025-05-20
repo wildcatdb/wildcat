@@ -259,7 +259,9 @@ func TestFlusher_ErrorHandling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -350,7 +352,9 @@ func TestFlusher_ErrorHandling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to reopen database after error: %v", err)
 	}
-	defer db2.Close()
+	defer func(db2 *DB) {
+		_ = db2.Close()
+	}(db2)
 
 	// Verify we can read at least some of the keys
 	var readSuccessCount int
@@ -379,7 +383,9 @@ func TestFlusher_MultipleFlushesWithUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -402,7 +408,9 @@ func TestFlusher_MultipleFlushesWithUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
 
 	// Write the same keys multiple times across different flushes
 	// This tests handling updates to the same keys in different SSTables
@@ -481,7 +489,9 @@ func TestFlusher_ConcurrentReadsWithFlush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -504,7 +514,9 @@ func TestFlusher_ConcurrentReadsWithFlush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
 
 	// Insert test data and ensure it's fully committed before starting readers
 	const keyCount = 500
@@ -641,7 +653,9 @@ func TestFlusher_VariousKeySizes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -664,7 +678,9 @@ func TestFlusher_VariousKeySizes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
 
 	// Test various key sizes
 	keySizes := []int{1, 10, 100, 1000}
@@ -763,7 +779,9 @@ func TestFlusher_RecoveryAfterCrash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -840,7 +858,7 @@ func TestFlusher_RecoveryAfterCrash(t *testing.T) {
 
 		// Force close without properly shutting down flusher
 		// We use Close() since there's no "crash" simulation API
-		db.Close()
+		_ = db.Close()
 	}
 
 	// Drain log channel
@@ -861,7 +879,9 @@ func TestFlusher_RecoveryAfterCrash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to reopen database after crash: %v", err)
 	}
-	defer db2.Close()
+	defer func(db2 *DB) {
+		_ = db2.Close()
+	}(db2)
 
 	// Give recovery operations time to complete
 	time.Sleep(200 * time.Millisecond)
@@ -908,7 +928,9 @@ func TestFlusher_EmptyFlush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -931,7 +953,9 @@ func TestFlusher_EmptyFlush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
-	defer db.Close()
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
 
 	// Queue an empty memtable (no writes performed)
 	err = db.flusher.queueMemtable()

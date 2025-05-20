@@ -108,7 +108,7 @@ func BenchmarkDBBloomFilterPartialSync(b *testing.B) {
 
 	b.Log("Pre-filling keys...")
 	for i := 0; i < ops; i++ {
-		err := db.Update(func(txn *Txn) error {
+		err = db.Update(func(txn *Txn) error {
 			key := []byte(fmt.Sprintf("key%d", i))
 			val := make([]byte, valueSize)
 			rand.Read(val)
@@ -122,7 +122,7 @@ func BenchmarkDBBloomFilterPartialSync(b *testing.B) {
 	b.Run("Write", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			err := db.Update(func(txn *Txn) error {
+			err = db.Update(func(txn *Txn) error {
 				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
 				val := make([]byte, valueSize)
 				rand.Read(val)
@@ -137,9 +137,9 @@ func BenchmarkDBBloomFilterPartialSync(b *testing.B) {
 	b.Run("Read", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			err := db.Update(func(txn *Txn) error {
+			err = db.Update(func(txn *Txn) error {
 				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				_, err := txn.Get(key)
+				_, err = txn.Get(key)
 				return err
 			})
 			if err != nil {
@@ -150,12 +150,12 @@ func BenchmarkDBBloomFilterPartialSync(b *testing.B) {
 
 	b.Run("ConcurrentWrite", func(b *testing.B) {
 		b.ResetTimer()
-		var wg sync.WaitGroup
+		wg = &sync.WaitGroup{}
 		wg.Add(b.N)
 		for i := 0; i < b.N; i++ {
 			go func(i int) {
 				defer wg.Done()
-				err := db.Update(func(txn *Txn) error {
+				err = db.Update(func(txn *Txn) error {
 					key := []byte(fmt.Sprintf("concurrent_key%d", rand.Intn(ops)))
 					val := make([]byte, valueSize)
 					rand.Read(val)
@@ -171,14 +171,14 @@ func BenchmarkDBBloomFilterPartialSync(b *testing.B) {
 
 	b.Run("ConcurrentRead", func(b *testing.B) {
 		b.ResetTimer()
-		var wg sync.WaitGroup
+		wg = &sync.WaitGroup{}
 		wg.Add(b.N)
 		for i := 0; i < b.N; i++ {
 			go func(i int) {
 				defer wg.Done()
-				err := db.Update(func(txn *Txn) error {
+				err = db.Update(func(txn *Txn) error {
 					key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-					_, err := txn.Get(key)
+					_, err = txn.Get(key)
 					return err
 				})
 				if err != nil {
@@ -226,7 +226,7 @@ func BenchmarkDBPartialSync(b *testing.B) {
 
 	b.Log("Pre-filling keys...")
 	for i := 0; i < ops; i++ {
-		err := db.Update(func(txn *Txn) error {
+		err = db.Update(func(txn *Txn) error {
 			key := []byte(fmt.Sprintf("key%d", i))
 			val := make([]byte, valueSize)
 			rand.Read(val)
@@ -240,7 +240,7 @@ func BenchmarkDBPartialSync(b *testing.B) {
 	b.Run("Write", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			err := db.Update(func(txn *Txn) error {
+			err = db.Update(func(txn *Txn) error {
 				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
 				val := make([]byte, valueSize)
 				rand.Read(val)
@@ -255,7 +255,7 @@ func BenchmarkDBPartialSync(b *testing.B) {
 	b.Run("Read", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			err := db.Update(func(txn *Txn) error {
+			err = db.Update(func(txn *Txn) error {
 				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
 				_, err := txn.Get(key)
 				return err
@@ -268,12 +268,12 @@ func BenchmarkDBPartialSync(b *testing.B) {
 
 	b.Run("ConcurrentWrite", func(b *testing.B) {
 		b.ResetTimer()
-		var wg sync.WaitGroup
+		wg = &sync.WaitGroup{}
 		wg.Add(b.N)
 		for i := 0; i < b.N; i++ {
 			go func(i int) {
 				defer wg.Done()
-				err := db.Update(func(txn *Txn) error {
+				err = db.Update(func(txn *Txn) error {
 					key := []byte(fmt.Sprintf("concurrent_key%d", rand.Intn(ops)))
 					val := make([]byte, valueSize)
 					rand.Read(val)
@@ -289,14 +289,14 @@ func BenchmarkDBPartialSync(b *testing.B) {
 
 	b.Run("ConcurrentRead", func(b *testing.B) {
 		b.ResetTimer()
-		var wg sync.WaitGroup
+		wg = &sync.WaitGroup{}
 		wg.Add(b.N)
 		for i := 0; i < b.N; i++ {
 			go func(i int) {
 				defer wg.Done()
-				err := db.Update(func(txn *Txn) error {
+				err = db.Update(func(txn *Txn) error {
 					key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-					_, err := txn.Get(key)
+					_, err = txn.Get(key)
 					return err
 				})
 				if err != nil {
@@ -343,7 +343,7 @@ func BenchmarkDBBloomFilter(b *testing.B) {
 
 	b.Log("Pre-filling keys...")
 	for i := 0; i < ops; i++ {
-		err := db.Update(func(txn *Txn) error {
+		err = db.Update(func(txn *Txn) error {
 			key := []byte(fmt.Sprintf("key%d", i))
 			val := make([]byte, valueSize)
 			rand.Read(val)
@@ -357,7 +357,7 @@ func BenchmarkDBBloomFilter(b *testing.B) {
 	b.Run("Write", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			err := db.Update(func(txn *Txn) error {
+			err = db.Update(func(txn *Txn) error {
 				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
 				val := make([]byte, valueSize)
 				rand.Read(val)
@@ -372,7 +372,7 @@ func BenchmarkDBBloomFilter(b *testing.B) {
 	b.Run("Read", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			err := db.Update(func(txn *Txn) error {
+			err = db.Update(func(txn *Txn) error {
 				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
 				_, err := txn.Get(key)
 				return err
@@ -385,12 +385,12 @@ func BenchmarkDBBloomFilter(b *testing.B) {
 
 	b.Run("ConcurrentWrite", func(b *testing.B) {
 		b.ResetTimer()
-		var wg sync.WaitGroup
+		wg = &sync.WaitGroup{}
 		wg.Add(b.N)
 		for i := 0; i < b.N; i++ {
 			go func(i int) {
 				defer wg.Done()
-				err := db.Update(func(txn *Txn) error {
+				err = db.Update(func(txn *Txn) error {
 					key := []byte(fmt.Sprintf("concurrent_key%d", rand.Intn(ops)))
 					val := make([]byte, valueSize)
 					rand.Read(val)
@@ -406,14 +406,14 @@ func BenchmarkDBBloomFilter(b *testing.B) {
 
 	b.Run("ConcurrentRead", func(b *testing.B) {
 		b.ResetTimer()
-		var wg sync.WaitGroup
+		wg = &sync.WaitGroup{}
 		wg.Add(b.N)
 		for i := 0; i < b.N; i++ {
 			go func(i int) {
 				defer wg.Done()
-				err := db.Update(func(txn *Txn) error {
+				err = db.Update(func(txn *Txn) error {
 					key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-					_, err := txn.Get(key)
+					_, err = txn.Get(key)
 					return err
 				})
 				if err != nil {
@@ -462,7 +462,7 @@ func BenchmarkManySST(b *testing.B) {
 
 	b.Log("Pre-filling keys...")
 	for i := 0; i < ops; i++ {
-		err := db.Update(func(txn *Txn) error {
+		err = db.Update(func(txn *Txn) error {
 			key := []byte(fmt.Sprintf("key%d", i))
 			val := make([]byte, valueSize)
 			rand.Read(val)
@@ -476,7 +476,7 @@ func BenchmarkManySST(b *testing.B) {
 	b.Run("Write", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			err := db.Update(func(txn *Txn) error {
+			err = db.Update(func(txn *Txn) error {
 				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
 				val := make([]byte, valueSize)
 				rand.Read(val)
@@ -491,9 +491,9 @@ func BenchmarkManySST(b *testing.B) {
 	b.Run("Read", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			err := db.Update(func(txn *Txn) error {
+			err = db.Update(func(txn *Txn) error {
 				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				_, err := txn.Get(key)
+				_, err = txn.Get(key)
 				return err
 			})
 			if err != nil {
@@ -504,12 +504,12 @@ func BenchmarkManySST(b *testing.B) {
 
 	b.Run("ConcurrentWrite", func(b *testing.B) {
 		b.ResetTimer()
-		var wg sync.WaitGroup
+		wg = &sync.WaitGroup{}
 		wg.Add(b.N)
 		for i := 0; i < b.N; i++ {
 			go func(i int) {
 				defer wg.Done()
-				err := db.Update(func(txn *Txn) error {
+				err = db.Update(func(txn *Txn) error {
 					key := []byte(fmt.Sprintf("concurrent_key%d", rand.Intn(ops)))
 					val := make([]byte, valueSize)
 					rand.Read(val)
@@ -525,14 +525,14 @@ func BenchmarkManySST(b *testing.B) {
 
 	b.Run("ConcurrentRead", func(b *testing.B) {
 		b.ResetTimer()
-		var wg sync.WaitGroup
+		wg = &sync.WaitGroup{}
 		wg.Add(b.N)
 		for i := 0; i < b.N; i++ {
 			go func(i int) {
 				defer wg.Done()
-				err := db.Update(func(txn *Txn) error {
+				err = db.Update(func(txn *Txn) error {
 					key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-					_, err := txn.Get(key)
+					_, err = txn.Get(key)
 					return err
 				})
 				if err != nil {
@@ -579,7 +579,7 @@ func BenchmarkDB(b *testing.B) {
 
 	b.Log("Pre-filling keys...")
 	for i := 0; i < ops; i++ {
-		err := db.Update(func(txn *Txn) error {
+		err = db.Update(func(txn *Txn) error {
 			key := []byte(fmt.Sprintf("key%d", i))
 			val := make([]byte, valueSize)
 			rand.Read(val)
@@ -593,7 +593,7 @@ func BenchmarkDB(b *testing.B) {
 	b.Run("Write", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			err := db.Update(func(txn *Txn) error {
+			err = db.Update(func(txn *Txn) error {
 				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
 				val := make([]byte, valueSize)
 				rand.Read(val)
@@ -608,7 +608,7 @@ func BenchmarkDB(b *testing.B) {
 	b.Run("Read", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			err := db.Update(func(txn *Txn) error {
+			err = db.Update(func(txn *Txn) error {
 				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
 				_, err := txn.Get(key)
 				return err
@@ -621,12 +621,12 @@ func BenchmarkDB(b *testing.B) {
 
 	b.Run("ConcurrentWrite", func(b *testing.B) {
 		b.ResetTimer()
-		var wg sync.WaitGroup
+		wg = &sync.WaitGroup{}
 		wg.Add(b.N)
 		for i := 0; i < b.N; i++ {
 			go func(i int) {
 				defer wg.Done()
-				err := db.Update(func(txn *Txn) error {
+				err = db.Update(func(txn *Txn) error {
 					key := []byte(fmt.Sprintf("concurrent_key%d", rand.Intn(ops)))
 					val := make([]byte, valueSize)
 					rand.Read(val)
@@ -642,14 +642,14 @@ func BenchmarkDB(b *testing.B) {
 
 	b.Run("ConcurrentRead", func(b *testing.B) {
 		b.ResetTimer()
-		var wg sync.WaitGroup
+		wg = &sync.WaitGroup{}
 		wg.Add(b.N)
 		for i := 0; i < b.N; i++ {
 			go func(i int) {
 				defer wg.Done()
-				err := db.Update(func(txn *Txn) error {
+				err = db.Update(func(txn *Txn) error {
 					key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-					_, err := txn.Get(key)
+					_, err = txn.Get(key)
 					return err
 				})
 				if err != nil {
@@ -697,7 +697,7 @@ func BenchmarkDBBloomFilterFullSync(b *testing.B) {
 
 	b.Log("Pre-filling keys...")
 	for i := 0; i < ops; i++ {
-		err := db.Update(func(txn *Txn) error {
+		err = db.Update(func(txn *Txn) error {
 			key := []byte(fmt.Sprintf("key%d", i))
 			val := make([]byte, valueSize)
 			rand.Read(val)
@@ -711,7 +711,7 @@ func BenchmarkDBBloomFilterFullSync(b *testing.B) {
 	b.Run("Write", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			err := db.Update(func(txn *Txn) error {
+			err = db.Update(func(txn *Txn) error {
 				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
 				val := make([]byte, valueSize)
 				rand.Read(val)
@@ -726,9 +726,9 @@ func BenchmarkDBBloomFilterFullSync(b *testing.B) {
 	b.Run("Read", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			err := db.Update(func(txn *Txn) error {
+			err = db.Update(func(txn *Txn) error {
 				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				_, err := txn.Get(key)
+				_, err = txn.Get(key)
 				return err
 			})
 			if err != nil {
@@ -739,12 +739,12 @@ func BenchmarkDBBloomFilterFullSync(b *testing.B) {
 
 	b.Run("ConcurrentWrite", func(b *testing.B) {
 		b.ResetTimer()
-		var wg sync.WaitGroup
+		wg = &sync.WaitGroup{}
 		wg.Add(b.N)
 		for i := 0; i < b.N; i++ {
 			go func(i int) {
 				defer wg.Done()
-				err := db.Update(func(txn *Txn) error {
+				err = db.Update(func(txn *Txn) error {
 					key := []byte(fmt.Sprintf("concurrent_key%d", rand.Intn(ops)))
 					val := make([]byte, valueSize)
 					rand.Read(val)
@@ -760,14 +760,14 @@ func BenchmarkDBBloomFilterFullSync(b *testing.B) {
 
 	b.Run("ConcurrentRead", func(b *testing.B) {
 		b.ResetTimer()
-		var wg sync.WaitGroup
+		wg = &sync.WaitGroup{}
 		wg.Add(b.N)
 		for i := 0; i < b.N; i++ {
 			go func(i int) {
 				defer wg.Done()
-				err := db.Update(func(txn *Txn) error {
+				err = db.Update(func(txn *Txn) error {
 					key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-					_, err := txn.Get(key)
+					_, err = txn.Get(key)
 					return err
 				})
 				if err != nil {
@@ -814,7 +814,7 @@ func BenchmarkDBSyncFull(b *testing.B) {
 
 	b.Log("Pre-filling keys...")
 	for i := 0; i < ops; i++ {
-		err := db.Update(func(txn *Txn) error {
+		err = db.Update(func(txn *Txn) error {
 			key := []byte(fmt.Sprintf("key%d", i))
 			val := make([]byte, valueSize)
 			rand.Read(val)
@@ -828,7 +828,7 @@ func BenchmarkDBSyncFull(b *testing.B) {
 	b.Run("Write", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			err := db.Update(func(txn *Txn) error {
+			err = db.Update(func(txn *Txn) error {
 				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
 				val := make([]byte, valueSize)
 				rand.Read(val)
@@ -843,9 +843,9 @@ func BenchmarkDBSyncFull(b *testing.B) {
 	b.Run("Read", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			err := db.Update(func(txn *Txn) error {
+			err = db.Update(func(txn *Txn) error {
 				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				_, err := txn.Get(key)
+				_, err = txn.Get(key)
 				return err
 			})
 			if err != nil {
@@ -856,12 +856,12 @@ func BenchmarkDBSyncFull(b *testing.B) {
 
 	b.Run("ConcurrentWrite", func(b *testing.B) {
 		b.ResetTimer()
-		var wg sync.WaitGroup
+		wg = &sync.WaitGroup{}
 		wg.Add(b.N)
 		for i := 0; i < b.N; i++ {
 			go func(i int) {
 				defer wg.Done()
-				err := db.Update(func(txn *Txn) error {
+				err = db.Update(func(txn *Txn) error {
 					key := []byte(fmt.Sprintf("concurrent_key%d", rand.Intn(ops)))
 					val := make([]byte, valueSize)
 					rand.Read(val)
@@ -877,14 +877,14 @@ func BenchmarkDBSyncFull(b *testing.B) {
 
 	b.Run("ConcurrentRead", func(b *testing.B) {
 		b.ResetTimer()
-		var wg sync.WaitGroup
+		wg = &sync.WaitGroup{}
 		wg.Add(b.N)
 		for i := 0; i < b.N; i++ {
 			go func(i int) {
 				defer wg.Done()
-				err := db.Update(func(txn *Txn) error {
+				err = db.Update(func(txn *Txn) error {
 					key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-					_, err := txn.Get(key)
+					_, err = txn.Get(key)
 					return err
 				})
 				if err != nil {
