@@ -19,6 +19,8 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/guycipher/wildcat/blockmanager"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -335,12 +337,49 @@ func (txn *Txn) appendWal() error {
 
 	wal, ok := txn.db.lru.Get(txn.db.memtable.Load().(*Memtable).wal.path)
 	if !ok {
-		return fmt.Errorf("failed to get WAL from LRU cache")
+		// Open the WAL file
+		walBm, err := blockmanager.Open(txn.db.memtable.Load().(*Memtable).wal.path, os.O_WRONLY|os.O_APPEND, txn.db.opts.Permission,
+			blockmanager.SyncOption(txn.db.opts.SyncOption))
+		if err != nil {
+			return fmt.Errorf("failed to open WAL block manager: %w", err)
+		}
+		// Add to LRU cache
+		txn.db.lru.Put(txn.db.memtable.Load().(*Memtable).wal.path, walBm, func(key, value interface{}) {
+			// Close the block manager when evicted from LRU
+			if bm, ok := value.(*blockmanager.BlockManager); ok {
+				_ = bm.Close()
+			}
+		})
+		// Use the newly opened WAL
+		wal = walBm
 	}
 
 	// Append the serialized transaction to the WAL
 	_, err = wal.(*blockmanager.BlockManager).Append(data)
 	if err != nil {
+		if strings.Contains(err.Error(), "bad file descriptor") {
+			// Reopen the WAL file
+			walBm, err := blockmanager.Open(txn.db.memtable.Load().(*Memtable).wal.path, os.O_WRONLY|os.O_APPEND, txn.db.opts.Permission,
+				blockmanager.SyncOption(txn.db.opts.SyncOption))
+			if err != nil {
+				return fmt.Errorf("failed to reopen WAL block manager: %w", err)
+			}
+
+			// Add to LRU cache
+			txn.db.lru.Put(txn.db.memtable.Load().(*Memtable).wal.path, walBm, func(key, value interface{}) {
+				// Close the block manager when evicted from LRU
+				if bm, ok := value.(*blockmanager.BlockManager); ok {
+					_ = bm.Close()
+				}
+			})
+
+			// Append the serialized transaction to the WAL again
+			_, err = walBm.Append(data)
+			if err != nil {
+				return fmt.Errorf("failed to append transaction to WAL: %w", err)
+			}
+
+		}
 		return err
 	}
 
