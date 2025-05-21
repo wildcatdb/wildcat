@@ -91,6 +91,7 @@ func (compactor *Compactor) backgroundProcess() {
 	for {
 		select {
 		case <-compactor.db.closeCh:
+			compactor.db.log("Compactor: shutting down background process")
 			return
 		case <-ticker.C:
 			// Check and schedule compactions
