@@ -17,12 +17,14 @@ package wildcat
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"github.com/guycipher/wildcat/blockmanager"
 	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -329,59 +331,96 @@ func (txn *Txn) remove() {
 
 // appendWal appends the transaction state to a Write-Ahead Log (WAL)
 func (txn *Txn) appendWal() error {
-	// serialize the transaction
 	data, err := txn.serializeTransaction()
 	if err != nil {
 		return fmt.Errorf("failed to serialize transaction: %w", err)
 	}
 
-	wal, ok := txn.db.lru.Get(txn.db.memtable.Load().(*Memtable).wal.path)
-	if !ok {
-		// Open the WAL file
-		walBm, err := blockmanager.Open(txn.db.memtable.Load().(*Memtable).wal.path, os.O_WRONLY|os.O_APPEND, txn.db.opts.Permission,
-			blockmanager.SyncOption(txn.db.opts.SyncOption))
-		if err != nil {
-			return fmt.Errorf("failed to open WAL block manager: %w", err)
-		}
-		// Add to LRU cache
-		txn.db.lru.Put(txn.db.memtable.Load().(*Memtable).wal.path, walBm, func(key, value interface{}) {
-			// Close the block manager when evicted from LRU
-			if bm, ok := value.(*blockmanager.BlockManager); ok {
-				_ = bm.Close()
-			}
-		})
-		// Use the newly opened WAL
-		wal = walBm
-	}
+	var lastErr error
+	for attempt := 0; attempt <= WALAppendRetry; attempt++ {
 
-	// Append the serialized transaction to the WAL
-	_, err = wal.(*blockmanager.BlockManager).Append(data)
-	if err != nil {
-		if strings.Contains(err.Error(), "bad file descriptor") {
-			// Reopen the WAL file
-			walBm, err := blockmanager.Open(txn.db.memtable.Load().(*Memtable).wal.path, os.O_WRONLY|os.O_APPEND, txn.db.opts.Permission,
-				blockmanager.SyncOption(txn.db.opts.SyncOption))
+		walPath := txn.db.memtable.Load().(*Memtable).wal.path
+		wal, ok := txn.db.lru.Get(walPath)
+		if !ok {
+			// Open the WAL file
+			walBm, err := blockmanager.Open(walPath, os.O_WRONLY|os.O_APPEND,
+				txn.db.opts.Permission, blockmanager.SyncOption(txn.db.opts.SyncOption))
 			if err != nil {
-				return fmt.Errorf("failed to reopen WAL block manager: %w", err)
+				lastErr = fmt.Errorf("failed to open WAL block manager: %w", err)
+				if attempt == WALAppendRetry {
+					return lastErr
+				}
+				time.Sleep(WALAppendBackoff)
+				continue
 			}
 
 			// Add to LRU cache
-			txn.db.lru.Put(txn.db.memtable.Load().(*Memtable).wal.path, walBm, func(key, value interface{}) {
+			txn.db.lru.Put(walPath, walBm, func(key, value interface{}) {
 				// Close the block manager when evicted from LRU
 				if bm, ok := value.(*blockmanager.BlockManager); ok {
 					_ = bm.Close()
 				}
 			})
 
-			// Append the serialized transaction to the WAL again
-			_, err = walBm.Append(data)
+			// Use the newly opened WAL
+			wal = walBm
+		}
+
+		_, err = wal.(*blockmanager.BlockManager).Append(data)
+		if err == nil {
+			// Success EXIT!!
+			return nil
+		}
+
+		lastErr = err
+
+		// Special handling for bad file descriptor errors
+		needsReopen := errors.Is(err, syscall.EBADF) ||
+			strings.Contains(err.Error(), "bad file descriptor")
+
+		if needsReopen {
+			// Remove the bad file descriptor from cache first
+			txn.db.lru.Delete(walPath)
+
+			// Reopen the WAL file
+			walBm, err := blockmanager.Open(walPath, os.O_WRONLY|os.O_APPEND,
+				txn.db.opts.Permission, blockmanager.SyncOption(txn.db.opts.SyncOption))
 			if err != nil {
-				return fmt.Errorf("failed to append transaction to WAL: %w", err)
+				lastErr = fmt.Errorf("failed to reopen WAL block manager: %w", err)
+				if attempt == WALAppendRetry {
+					return lastErr
+				}
+				time.Sleep(WALAppendBackoff)
+				continue
 			}
 
+			// Add to LRU cache
+			txn.db.lru.Put(walPath, walBm, func(key, value interface{}) {
+				if bm, ok := value.(*blockmanager.BlockManager); ok {
+					_ = bm.Close()
+				}
+			})
+
+			// Try append again immediately with the new descriptor
+			_, err = walBm.Append(data)
+			if err == nil {
+				// Success after reopen EXIT!!
+				return nil
+			}
+
+			lastErr = fmt.Errorf("failed to append transaction to WAL after reopen: %w", err)
+		} else {
+			lastErr = fmt.Errorf("failed to append transaction to WAL: %w", err)
 		}
-		return err
+
+		// Check if we've used all our retries
+		if attempt == WALAppendRetry {
+			return lastErr
+		}
+
+		// Wait before next retry
+		time.Sleep(WALAppendBackoff)
 	}
 
-	return nil
+	return lastErr
 }
