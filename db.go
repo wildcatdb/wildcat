@@ -47,14 +47,25 @@ const (
 	CompactorTickerInterval = 64 * time.Millisecond // Interval for compactor ticker
 )
 
+// Prefixes, filenames, extensions constants
 const (
-	SSTablePrefix                = "sst_"     // Prefix for SSTable files
-	LevelPrefix                  = "l"        // Prefix for level directories i.e. "l0", "l1", etc.
-	WALFileExtension             = ".wal"     // Extension for Write Ahead Log files <timestamp>.wal
-	KLogExtension                = ".klog"    // Extension for KLog files
-	VLogExtension                = ".vlog"    // Extension for VLog files
-	IDGSTFileName                = "idgstate" // Filename for ID generator state
-	BloomFilterFalsePositiveRate = 0.01       // False positive rate for Bloom filter
+	SSTablePrefix    = "sst_"     // Prefix for SSTable files
+	LevelPrefix      = "l"        // Prefix for level directories i.e. "l0", "l1", etc.
+	WALFileExtension = ".wal"     // Extension for Write Ahead Log files <timestamp>.wal
+	KLogExtension    = ".klog"    // Extension for KLog files
+	VLogExtension    = ".vlog"    // Extension for VLog files
+	IDGSTFileName    = "idgstate" // Filename for ID generator state
+)
+
+// Bloom filter constants
+const (
+	BloomFilterFalsePositiveRate = 0.01 // False positive rate for Bloom filter
+)
+
+// Txn constants
+const (
+	WALAppendRetry   = 10 // Because a WAL is flushed atomically we want to be sure if a txn append operations is caught in the middle it can retry to append to fresh WAL and not an immutable one.
+	WALAppendBackoff = 128 * time.Microsecond
 )
 
 type SyncOption int
@@ -72,7 +83,7 @@ const (
 	DefaultSyncInterval        = 16 * time.Nanosecond
 	DefaultLevelCount          = 7
 	DefaultLevelMultiplier     = 4
-	DefaultBlockManagerLRUSize = 128              // Size of the LRU cache for block managers
+	DefaultBlockManagerLRUSize = 1024             // Size of the LRU cache for block managers
 	DefaultBlockSetSize        = 64 * 1024 * 1024 // Size of the block set
 	DefaultPermission          = 0750
 )
