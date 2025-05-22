@@ -430,7 +430,7 @@ func TestMemtable_Replay(t *testing.T) {
 		WriteBufferSize: 4 * 1024 * 1024, // Set a reasonable size
 	}
 
-	// Phase 1: Create and populate the database
+	//  Create and populate the database
 	db, err := Open(opts)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -512,7 +512,7 @@ func TestMemtable_Replay(t *testing.T) {
 		<-logChan
 	}
 
-	// Phase 2: Reopen the database and verify the data was recovered through WAL replay
+	//  Reopen the database and verify the data was recovered through WAL replay
 	t.Log("Reopening database to test WAL replay...")
 	logChan = make(chan string, 100)
 	opts.LogChannel = logChan

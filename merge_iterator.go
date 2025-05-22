@@ -45,21 +45,41 @@ type MergeIterator struct {
 	comparator skiplist.KeyComparator
 	prefix     []byte
 	mutex      sync.Mutex
+	lastKey    []byte
+	atEnd      bool
+}
+
+// SSTableIteratorWrapper adapts SSTableIterator to the IteratorWithPeek interface
+type SSTableIteratorWrapper struct {
+	iter      *SSTableIterator
+	timestamp int64
+	currKey   []byte
+	currValue []byte
+	currTs    int64
+	hasPeeked bool
+	valid     bool
 }
 
 // NewMergeIterator creates a new merge iterator that combines multiple iterators
 func NewMergeIterator(txn *Txn, startKey []byte, prefix []byte) *MergeIterator {
 	var iters []IteratorWithPeek
 
+	// If we have a prefix but no startKey, use the prefix as the startKey
+	// This helps the underlying iterators start from the right position
+	effectiveStartKey := startKey
+	if len(prefix) > 0 && (len(startKey) == 0 || bytes.Compare(prefix, startKey) > 0) {
+		effectiveStartKey = prefix
+	}
+
 	// Add active memtable iterator
 	mem := txn.db.memtable.Load().(*Memtable)
-	memIter := mem.skiplist.NewIterator(startKey, txn.Timestamp)
+	memIter := mem.skiplist.NewIterator(effectiveStartKey, txn.Timestamp)
 	iters = append(iters, memIter)
 
 	// Add immutable memtables iterators from the flusher queue
 	txn.db.flusher.immutable.ForEach(func(item interface{}) bool {
 		if memt, ok := item.(*Memtable); ok {
-			immIter := memt.skiplist.NewIterator(startKey, txn.Timestamp)
+			immIter := memt.skiplist.NewIterator(effectiveStartKey, txn.Timestamp)
 			iters = append(iters, immIter)
 		}
 		return true
@@ -80,10 +100,45 @@ func NewMergeIterator(txn *Txn, startKey []byte, prefix []byte) *MergeIterator {
 			}
 
 			// Skip SSTable if we know the key is outside its range
-			if len(startKey) > 0 && len(sst.Min) > 0 && len(sst.Max) > 0 {
+			if len(effectiveStartKey) > 0 && len(sst.Min) > 0 && len(sst.Max) > 0 {
+
 				// Only skip if the key is definitely outside the range
-				if bytes.Compare(startKey, sst.Max) > 0 {
+				if bytes.Compare(effectiveStartKey, sst.Max) > 0 {
 					continue // Key is greater than max
+				}
+			}
+
+			// If we have a prefix, also check if SSTable range could contain prefix matches
+			if len(prefix) > 0 && len(sst.Min) > 0 && len(sst.Max) > 0 {
+
+				// Skip if the prefix is completely outside the SSTable range
+				if bytes.Compare(prefix, sst.Max) > 0 {
+					continue // Prefix is greater than max
+				}
+
+				// Create a prefix upper bound by incrementing the last byte
+				prefixUpperBound := make([]byte, len(prefix))
+				copy(prefixUpperBound, prefix)
+				if len(prefixUpperBound) > 0 {
+
+					// Increment the last byte to create an upper bound
+					for i := len(prefixUpperBound) - 1; i >= 0; i-- {
+						if prefixUpperBound[i] < 255 {
+							prefixUpperBound[i]++
+							break
+						}
+						if i == 0 {
+							// All bytes are 255, no upper bound possible..
+							prefixUpperBound = nil
+							break
+						}
+						prefixUpperBound[i] = 0
+					}
+
+					// Skip if the SSTable min is >= prefix upper bound
+					if prefixUpperBound != nil && bytes.Compare(sst.Min, prefixUpperBound) >= 0 {
+						continue
+					}
 				}
 			}
 
@@ -102,8 +157,8 @@ func NewMergeIterator(txn *Txn, startKey []byte, prefix []byte) *MergeIterator {
 			}
 
 			// Try to seek to the start key if provided
-			if len(startKey) > 0 {
-				if err := it.Seek(startKey); err != nil {
+			if len(effectiveStartKey) > 0 {
+				if err := it.Seek(effectiveStartKey); err != nil {
 					txn.db.log(fmt.Sprintf("Failed to seek in SSTable %d: %v", sst.Id, err))
 				}
 			}
@@ -119,19 +174,60 @@ func NewMergeIterator(txn *Txn, startKey []byte, prefix []byte) *MergeIterator {
 		comparator: skiplist.DefaultComparator,
 		prefix:     prefix,
 		mutex:      sync.Mutex{},
+		atEnd:      false,
 	}
 
+	// Initialize the heap with the first valid item from each iterator
 	for _, it := range iters {
-		k, v, ts, ok := it.Next()
-		if ok && ts <= txn.Timestamp && (prefix == nil || bytes.HasPrefix(k, prefix)) {
-			mi.heap = append(mi.heap, &IteratorItem{
-				Key:       k,
-				Value:     v,
-				Timestamp: ts,
-				Iter:      it,
-			})
-		}
+		// Keep advancing the iterator until we find a key that matches our prefix
+		for {
+			k, v, ts, ok := it.Next()
+			if !ok {
+				break // No more items in this iterator
+			}
 
+			// Check timestamp and prefix constraints
+			if ts <= txn.Timestamp && (prefix == nil || bytes.HasPrefix(k, prefix)) {
+				mi.heap = append(mi.heap, &IteratorItem{
+					Key:       k,
+					Value:     v,
+					Timestamp: ts,
+					Iter:      it,
+				})
+				break // Found a valid item, stop advancing this iterator
+			}
+
+			// If we have a prefix and this key is lexicographically greater than
+			// any possible key with our prefix, we can stop this iterator
+			if len(prefix) > 0 {
+
+				// Create prefix upper bound
+				prefixUpperBound := make([]byte, len(prefix))
+				copy(prefixUpperBound, prefix)
+				if len(prefixUpperBound) > 0 {
+					// Increment the last byte to create an upper bound
+					incremented := false
+					for i := len(prefixUpperBound) - 1; i >= 0; i-- {
+						if prefixUpperBound[i] < 255 {
+							prefixUpperBound[i]++
+							incremented = true
+							break
+						}
+						if i == 0 {
+							// All bytes are 255, no upper bound possible
+							incremented = false
+							break
+						}
+						prefixUpperBound[i] = 0
+					}
+
+					// If we found an upper bound and current key is >= upper bound, stop
+					if incremented && bytes.Compare(k, prefixUpperBound) >= 0 {
+						break
+					}
+				}
+			}
+		}
 	}
 
 	// Build min-heap based on keys
@@ -145,8 +241,12 @@ func (mi *MergeIterator) Next() ([]byte, []byte, int64, bool) {
 	defer mi.mutex.Unlock()
 
 	if len(mi.heap) == 0 {
+		mi.atEnd = true
 		return nil, nil, 0, false
 	}
+
+	// Reset atEnd flag since we're advancing
+	mi.atEnd = false
 
 	// Get the smallest key from the heap
 	top := mi.heap[0]
@@ -154,34 +254,83 @@ func (mi *MergeIterator) Next() ([]byte, []byte, int64, bool) {
 	value := top.Value
 	timestamp := top.Timestamp
 
-	// Advance this iterator to its next value
-	k, v, ts, ok := top.Iter.Next()
+	// Advance this iterator to its next valid value
+	for {
+		k, v, ts, ok := top.Iter.Next()
 
-	// If the iterator has more values, update the heap
-	if ok && ts <= mi.txn.Timestamp && (mi.prefix == nil || bytes.HasPrefix(k, mi.prefix)) {
-		// Update the item with new values
-		top.Key = k
-		top.Value = v
-		top.Timestamp = ts
-
-		// Maintain heap property
-		heapFixDown(mi.heap, 0, mi.comparator)
-	} else {
-		// Remove this iterator from the heap
-		if len(mi.heap) > 1 {
-			// Replace with the last element and fix heap
-			mi.heap[0] = mi.heap[len(mi.heap)-1]
-			mi.heap = mi.heap[:len(mi.heap)-1]
-			heapFixDown(mi.heap, 0, mi.comparator)
-		} else {
-			// Just remove the last element
-			mi.heap = mi.heap[:0]
+		if !ok {
+			// No more items in this iterator, remove it from heap
+			if len(mi.heap) > 1 {
+				mi.heap[0] = mi.heap[len(mi.heap)-1]
+				mi.heap = mi.heap[:len(mi.heap)-1]
+				heapFixDown(mi.heap, 0, mi.comparator)
+			} else {
+				mi.heap = mi.heap[:0]
+			}
+			break
 		}
+
+		// Check timestamp and prefix constraints
+		if ts <= mi.txn.Timestamp && (mi.prefix == nil || bytes.HasPrefix(k, mi.prefix)) {
+			// Update the item with new values
+			top.Key = k
+			top.Value = v
+			top.Timestamp = ts
+			// Maintain heap property
+			heapFixDown(mi.heap, 0, mi.comparator)
+			break
+		}
+
+		// If we have a prefix and this key is lexicographically greater than
+		// any possible key with our prefix, remove this iterator from heap
+		if len(mi.prefix) > 0 {
+
+			// Create prefix upper bound
+			prefixUpperBound := make([]byte, len(mi.prefix))
+			copy(prefixUpperBound, mi.prefix)
+			if len(prefixUpperBound) > 0 {
+
+				// Increment the last byte to create an upper bound
+				incremented := false
+				for i := len(prefixUpperBound) - 1; i >= 0; i-- {
+					if prefixUpperBound[i] < 255 {
+						prefixUpperBound[i]++
+						incremented = true
+						break
+					}
+					if i == 0 {
+
+						// All bytes are 255, no upper bound possible
+						incremented = false
+						break
+					}
+					prefixUpperBound[i] = 0
+				}
+
+				// If we found an upper bound and current key is >= upper bound, remove iterator
+				if incremented && bytes.Compare(k, prefixUpperBound) >= 0 {
+					if len(mi.heap) > 1 {
+						mi.heap[0] = mi.heap[len(mi.heap)-1]
+						mi.heap = mi.heap[:len(mi.heap)-1]
+						heapFixDown(mi.heap, 0, mi.comparator)
+					} else {
+						mi.heap = mi.heap[:0]
+					}
+					break
+				}
+			}
+		}
+
+		// Continue to next item in this iterator..
 	}
 
 	// Skip any duplicate keys (we only want the most recent version)
-	// This is optional depending on your MVCC semantics
 	mi.skipDuplicateKeys(key)
+
+	// Update lastKey to the current key (make a copy to avoid slice reuse issues)
+	mi.lastKey = make([]byte, len(key))
+
+	copy(mi.lastKey, key)
 
 	return key, value, timestamp, true
 }
@@ -189,75 +338,332 @@ func (mi *MergeIterator) Next() ([]byte, []byte, int64, bool) {
 // skipDuplicateKeys advances past any items with the same key as the one we just returned
 func (mi *MergeIterator) skipDuplicateKeys(key []byte) {
 	for len(mi.heap) > 0 && bytes.Equal(mi.heap[0].Key, key) {
+
 		top := mi.heap[0]
 
-		// Advance the iterator
-		k, v, ts, ok := top.Iter.Next()
+		// Advance the iterator to find next valid item
+		for {
+			k, v, ts, ok := top.Iter.Next()
 
-		if ok && ts <= mi.txn.Timestamp && (mi.prefix == nil || bytes.HasPrefix(k, mi.prefix)) {
-			// Update heap item
-			top.Key = k
-			top.Value = v
-			top.Timestamp = ts
-			heapFixDown(mi.heap, 0, mi.comparator)
-		} else {
-			// Remove this iterator
-			if len(mi.heap) > 1 {
-				mi.heap[0] = mi.heap[len(mi.heap)-1]
-				mi.heap = mi.heap[:len(mi.heap)-1]
-				heapFixDown(mi.heap, 0, mi.comparator)
-			} else {
-				mi.heap = mi.heap[:0]
+			if !ok {
+
+				// No more items, remove iterator from heap
+				if len(mi.heap) > 1 {
+					mi.heap[0] = mi.heap[len(mi.heap)-1]
+					mi.heap = mi.heap[:len(mi.heap)-1]
+					heapFixDown(mi.heap, 0, mi.comparator)
+				} else {
+					mi.heap = mi.heap[:0]
+				}
 				break
 			}
+
+			// Check timestamp and prefix constraints
+			if ts <= mi.txn.Timestamp && (mi.prefix == nil || bytes.HasPrefix(k, mi.prefix)) {
+				// Update heap item
+				top.Key = k
+				top.Value = v
+				top.Timestamp = ts
+				heapFixDown(mi.heap, 0, mi.comparator)
+				break
+			}
+
+			// If we have a prefix and this key is beyond our prefix range, remove iterator
+			if len(mi.prefix) > 0 {
+
+				// Create prefix upper bound
+				prefixUpperBound := make([]byte, len(mi.prefix))
+				copy(prefixUpperBound, mi.prefix)
+				if len(prefixUpperBound) > 0 {
+
+					// Increment the last byte to create an upper bound
+					incremented := false
+					for i := len(prefixUpperBound) - 1; i >= 0; i-- {
+						if prefixUpperBound[i] < 255 {
+							prefixUpperBound[i]++
+							incremented = true
+							break
+						}
+						if i == 0 {
+							// All bytes are 255, no upper bound possible
+							incremented = false
+							break
+						}
+						prefixUpperBound[i] = 0
+					}
+
+					// If we found an upper bound and current key is >= upper bound, remove iterator
+					if incremented && bytes.Compare(k, prefixUpperBound) >= 0 {
+						if len(mi.heap) > 1 {
+							mi.heap[0] = mi.heap[len(mi.heap)-1]
+							mi.heap = mi.heap[:len(mi.heap)-1]
+							heapFixDown(mi.heap, 0, mi.comparator)
+						} else {
+							mi.heap = mi.heap[:0]
+						}
+						break
+					}
+				}
+			}
+
+			// Continue to next item..
 		}
 	}
 }
 
-// Prev moves the iterator backward
+// Prev moves the iterator backward to the previous key
 func (mi *MergeIterator) Prev() ([]byte, []byte, int64, bool) {
 	mi.mutex.Lock()
 	defer mi.mutex.Unlock()
 
-	if len(mi.heap) == 0 {
+	// If no lastKey is set, we haven't started iterating yet
+	if len(mi.lastKey) == 0 {
 		return nil, nil, 0, false
 	}
 
-	// Get the largest key from the heap
-	top := mi.heap[0]
-	key := top.Key
-	value := top.Value
-	timestamp := top.Timestamp
+	// If we just reached the end of forward iteration, return the last key
+	if mi.atEnd {
+		mi.atEnd = false
 
-	// Move this iterator to its previous value
-	k, v, ts, ok := top.Iter.Prev()
-
-	// If the iterator has more values, update the heap
-	if ok && ts <= mi.txn.Timestamp && (mi.prefix == nil || bytes.HasPrefix(k, mi.prefix)) {
-		// Update the item with new values
-		top.Key = k
-		top.Value = v
-		top.Timestamp = ts
-
-		// Maintain heap property
-		heapFixDown(mi.heap, 0, mi.comparator)
-	} else {
-		// Remove this iterator from the heap
-		if len(mi.heap) > 1 {
-			// Replace with the last element and fix heap
-			mi.heap[0] = mi.heap[len(mi.heap)-1]
-			mi.heap = mi.heap[:len(mi.heap)-1]
-			heapFixDown(mi.heap, 0, mi.comparator)
-		} else {
-			// Just remove the last element
-			mi.heap = mi.heap[:0]
+		// Find the value for lastKey
+		allIterators := mi.createAllIterators(nil)
+		for _, iter := range allIterators {
+			for {
+				k, v, ts, ok := iter.Next()
+				if !ok {
+					break
+				}
+				if ts <= mi.txn.Timestamp && (mi.prefix == nil || bytes.HasPrefix(k, mi.prefix)) {
+					if bytes.Equal(k, mi.lastKey) {
+						mi.rebuildHeapAt(mi.lastKey)
+						return k, v, ts, true
+					}
+				}
+			}
 		}
 	}
 
-	// Skip any duplicate keys (we only want the most recent version)
-	mi.skipDuplicateKeys(key)
+	// Find the largest key that is less than lastKey
+	var bestKey []byte
+	var bestValue []byte
+	var bestTimestamp int64
+	var found bool
 
-	return key, value, timestamp, true
+	// Create new iterators positioned appropriately
+	allIterators := mi.createAllIterators(nil) // Start from beginning
+
+	for _, iter := range allIterators {
+		var candidateKey []byte
+		var candidateValue []byte
+		var candidateTimestamp int64
+		var candidateFound bool
+
+		// Scan this iterator to find the largest key < lastKey
+		for {
+			k, v, ts, ok := iter.Next()
+			if !ok {
+				break
+			}
+
+			// Check constraints
+			if ts > mi.txn.Timestamp {
+				continue
+			}
+			if mi.prefix != nil && !bytes.HasPrefix(k, mi.prefix) {
+				continue
+			}
+
+			// Check if this key is less than lastKey
+			if bytes.Compare(k, mi.lastKey) >= 0 {
+				break // We've gone too far
+			}
+
+			// This is a candidate.. keep the most recent one for this key
+			candidateKey = make([]byte, len(k))
+			copy(candidateKey, k)
+			candidateValue = make([]byte, len(v))
+			copy(candidateValue, v)
+			candidateTimestamp = ts
+			candidateFound = true
+		}
+
+		// Check if this iterator's candidate is better than our current best
+		if candidateFound {
+			if !found ||
+				bytes.Compare(candidateKey, bestKey) > 0 ||
+				(bytes.Equal(candidateKey, bestKey) && candidateTimestamp > bestTimestamp) {
+				bestKey = candidateKey
+				bestValue = candidateValue
+				bestTimestamp = candidateTimestamp
+				found = true
+			}
+		}
+	}
+
+	if !found {
+		// No more keys before lastKey
+		return nil, nil, 0, false
+	}
+
+	// Update lastKey to the found key
+	mi.lastKey = make([]byte, len(bestKey))
+	copy(mi.lastKey, bestKey)
+
+	// Rebuild the heap positioned at this key for future Next() calls
+	mi.rebuildHeapAt(bestKey)
+
+	return bestKey, bestValue, bestTimestamp, true
+}
+
+// createAllIterators creates fresh iterators for all sources
+func (mi *MergeIterator) createAllIterators(startKey []byte) []IteratorWithPeek {
+	var iters []IteratorWithPeek
+
+	effectiveStartKey := startKey
+	if len(mi.prefix) > 0 && (len(startKey) == 0 || bytes.Compare(mi.prefix, startKey) > 0) {
+		effectiveStartKey = mi.prefix
+	}
+
+	// Add active memtable iterator
+	mem := mi.txn.db.memtable.Load().(*Memtable)
+	memIter := mem.skiplist.NewIterator(effectiveStartKey, mi.txn.Timestamp)
+	iters = append(iters, memIter)
+
+	// Add immutable memtables iterators
+	mi.txn.db.flusher.immutable.ForEach(func(item interface{}) bool {
+		if memt, ok := item.(*Memtable); ok {
+			immIter := memt.skiplist.NewIterator(effectiveStartKey, mi.txn.Timestamp)
+			iters = append(iters, immIter)
+		}
+		return true
+	})
+
+	// Add SSTable iterators
+	levels := mi.txn.db.levels.Load()
+	for _, level := range *levels {
+		sstables := level.sstables.Load()
+		if sstables == nil {
+			continue
+		}
+
+		for _, sst := range *sstables {
+			if sst.EntryCount == 0 {
+				continue
+			}
+
+			// Skip SSTable if key is outside range
+			if len(effectiveStartKey) > 0 && len(sst.Min) > 0 && len(sst.Max) > 0 {
+				if bytes.Compare(effectiveStartKey, sst.Max) > 0 {
+					continue
+				}
+			}
+
+			// Skip if prefix is outside SSTable range
+			if len(mi.prefix) > 0 && len(sst.Min) > 0 && len(sst.Max) > 0 {
+				if bytes.Compare(mi.prefix, sst.Max) > 0 {
+					continue
+				}
+
+				// Create prefix upper bound
+				prefixUpperBound := mi.createPrefixUpperBound(mi.prefix)
+				if prefixUpperBound != nil && bytes.Compare(sst.Min, prefixUpperBound) >= 0 {
+					continue
+				}
+			}
+
+			it := sst.iterator()
+			if it == nil {
+				continue
+			}
+
+			wrapped := &SSTableIteratorWrapper{
+				iter:      it,
+				timestamp: mi.txn.Timestamp,
+				valid:     true,
+			}
+
+			if len(effectiveStartKey) > 0 {
+				if err := it.Seek(effectiveStartKey); err != nil {
+					continue
+				}
+			}
+
+			iters = append(iters, wrapped)
+		}
+	}
+
+	return iters
+}
+
+// createPrefixUpperBound creates an upper bound for prefix matching
+func (mi *MergeIterator) createPrefixUpperBound(prefix []byte) []byte {
+	if len(prefix) == 0 {
+		return nil
+	}
+
+	prefixUpperBound := make([]byte, len(prefix))
+	copy(prefixUpperBound, prefix)
+
+	// Increment the last byte to create an upper bound
+	for i := len(prefixUpperBound) - 1; i >= 0; i-- {
+		if prefixUpperBound[i] < 255 {
+			prefixUpperBound[i]++
+			return prefixUpperBound
+		}
+		if i == 0 {
+			// All bytes are 255, no upper bound possible
+			return nil
+		}
+		prefixUpperBound[i] = 0
+	}
+	return prefixUpperBound
+}
+
+// rebuildHeapAt rebuilds the heap to position all iterators at or after the given key
+func (mi *MergeIterator) rebuildHeapAt(targetKey []byte) {
+	// Clear current heap
+	mi.heap = mi.heap[:0]
+
+	// Create fresh iterators positioned at targetKey
+	allIterators := mi.createAllIterators(targetKey)
+
+	// Initialize heap with first valid item from each iterator that is >= targetKey
+	for _, iter := range allIterators {
+
+		// Find the first key >= targetKey
+		for {
+			k, v, ts, ok := iter.Next()
+			if !ok {
+				break
+			}
+
+			// Check timestamp and prefix constraints
+			if ts <= mi.txn.Timestamp && (mi.prefix == nil || bytes.HasPrefix(k, mi.prefix)) {
+
+				// Only add if key >= targetKey
+				if bytes.Compare(k, targetKey) >= 0 {
+					mi.heap = append(mi.heap, &IteratorItem{
+						Key:       k,
+						Value:     v,
+						Timestamp: ts,
+						Iter:      iter,
+					})
+					break
+				}
+			}
+
+			// Check if we've gone beyond prefix range
+			if len(mi.prefix) > 0 {
+				prefixUpperBound := mi.createPrefixUpperBound(mi.prefix)
+				if prefixUpperBound != nil && bytes.Compare(k, prefixUpperBound) >= 0 {
+					break
+				}
+			}
+		}
+	}
+
+	// Rebuild min-heap
+	heapify(mi.heap, mi.comparator)
 }
 
 // heapify builds a min-heap from an unordered array
@@ -309,17 +715,6 @@ func compare(a, b *IteratorItem, cmp skiplist.KeyComparator) int {
 	}
 
 	return 0
-}
-
-// SSTableIteratorWrapper adapts SSTableIterator to the IteratorWithPeek interface
-type SSTableIteratorWrapper struct {
-	iter      *SSTableIterator
-	timestamp int64
-	currKey   []byte
-	currValue []byte
-	currTs    int64
-	hasPeeked bool
-	valid     bool
 }
 
 // Peek returns the current key-value pair without advancing
@@ -391,8 +786,8 @@ func (s *SSTableIteratorWrapper) Prev() ([]byte, []byte, int64, bool) {
 	return k, v, ts, true
 }
 
+// Seek moves the iterator to the specified key
 func (it *SSTableIterator) Seek(key []byte) error {
-	// Lock for thread safety
 	it.lock.Lock()
 	defer it.lock.Unlock()
 
@@ -428,6 +823,7 @@ func (it *SSTableIterator) Seek(key []byte) error {
 		// Check if any key in this block is >= the search key
 		for i, entry := range blockSet.Entries {
 			if bytes.Compare(entry.Key, key) >= 0 {
+
 				// Found an entry >= our search key, update iterator state
 				it.blockSet = blockSet
 				it.blockSetIdx = int64(i)
