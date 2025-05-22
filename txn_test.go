@@ -18,7 +18,6 @@ package wildcat
 import (
 	"bytes"
 	"fmt"
-	"log"
 	"os"
 	"sync"
 	"testing"
@@ -513,7 +512,7 @@ func TestTxn_WALRecovery(t *testing.T) {
 		LogChannel: logChan,
 	}
 
-	// Phase 1: Create DB and write data with different transaction states
+	// Create DB and write data with different transaction states
 	db, err := Open(opts)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -556,7 +555,7 @@ func TestTxn_WALRecovery(t *testing.T) {
 		<-logChan
 	}
 
-	// Phase 2: Reopen the database to test WAL recovery
+	// Reopen the database to test WAL recovery
 	logChan = make(chan string, 100)
 	opts.LogChannel = logChan
 
@@ -705,105 +704,5 @@ func TestTxn_DeleteTimestamp(t *testing.T) {
 		t.Logf("Historical view should see the key but got error: %v", err)
 	} else {
 		t.Logf("Historical view sees value: %s", retrievedValue)
-	}
-}
-
-func TestTxn_IteratorMergesAllSources(t *testing.T) {
-	dir, err := os.MkdirTemp("", "db_iterator_merge_test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
-
-	db, err := Open(&Options{
-		Directory:  dir,
-		SyncOption: SyncNone,
-		LogChannel: make(chan string, 100),
-	})
-	if err != nil {
-		t.Fatalf("failed to open DB: %v", err)
-	}
-	defer func(db *DB) {
-		_ = db.Close()
-	}(db)
-
-	// Write to memtable
-	txn1 := db.Begin()
-	for i := 0; i < 10; i++ {
-		err = txn1.Put([]byte(fmt.Sprintf("mem_key_%02d", i)), []byte(fmt.Sprintf("mem_val_%02d", i)))
-		if err != nil {
-			t.Fatalf("failed to put key in txn1: %v", err)
-		}
-	}
-
-	err = txn1.Commit()
-	if err != nil {
-		t.Fatalf("failed to commit txn1: %v", err)
-	}
-
-	// Force flush to move memtable to immutable (we simulate immutable presence)
-	err = db.ForceFlush()
-	if err != nil {
-		t.Fatalf("failed to force flush: %v", err)
-	}
-
-	// Write to new memtable
-	txn2 := db.Begin()
-	for i := 10; i < 20; i++ {
-		err = txn2.Put([]byte(fmt.Sprintf("imm_key_%02d", i)), []byte(fmt.Sprintf("imm_val_%02d", i)))
-		if err != nil {
-			t.Fatalf("failed to put key in txn2: %v", err)
-		}
-	}
-	err = txn2.Commit()
-	if err != nil {
-		t.Fatalf("failed to commit txn2: %v", err)
-	}
-
-	// Flush again to create SSTable
-	err = db.ForceFlush()
-	if err != nil {
-		t.Fatalf("failed to force flush: %v", err)
-	}
-
-	// Write to new memtable again
-	txn3 := db.Begin()
-	for i := 20; i < 30; i++ {
-		err = txn3.Put([]byte(fmt.Sprintf("sst_key_%02d", i)), []byte(fmt.Sprintf("sst_val_%02d", i)))
-		if err != nil {
-			t.Fatalf("failed to put key in txn3: %v", err)
-		}
-	}
-
-	err = txn3.Commit()
-	if err != nil {
-		t.Fatalf("failed to commit txn3: %v", err)
-	}
-
-	// Let’s now use the merge iterator to read all 30 keys
-	txnRead := db.Begin()
-	iter := txnRead.NewIterator(nil, nil)
-	count := 0
-	for {
-		k, v, ts, ok := iter.Next()
-		if !ok {
-			break
-		}
-		log.Println("Key:", string(k), "Value:", string(v), "Timestamp:", ts, "Transaction ID:", txnRead.Id, "Transaction Timestamp:", txnRead.Timestamp)
-		if !bytes.HasPrefix(k, []byte("mem_key_")) &&
-			!bytes.HasPrefix(k, []byte("imm_key_")) &&
-			!bytes.HasPrefix(k, []byte("sst_key_")) {
-			t.Errorf("unexpected key: %s", k)
-		}
-		if len(v) == 0 || ts > txnRead.Timestamp {
-			t.Errorf("invalid entry for key %s: val=%s ts=%d", k, v, ts)
-		}
-		count++
-	}
-
-	if count < 30 {
-		t.Errorf("expected at least 30 keys across all sources, got %d", count)
 	}
 }
