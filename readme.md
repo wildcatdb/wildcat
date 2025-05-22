@@ -26,16 +26,17 @@ Wildcat is a high-performance embedded key-value database or you can also call i
 
 
 ## Basic Usage
+Many `Wildcat.DB*` instances can be opened simultaneously, so long as their living directories are different. Each instance is independent and can be used in parallel.
 
-### Opening a Database
+### Opening a Wildcat DB instance
 ```go
 // Create default options
 opts := &wildcat.Options{
-Directory: "/path/to/database",
+Directory: "/path/to/db",
     // Use defaults for other settings
 }
 
-// Open or create the database
+// Open or create a new Wildcat DB instance
 db, err := wildcat.Open(opts)
 if err != nil {
     log.Fatalf("Failed to open database: %v", err)
@@ -94,68 +95,6 @@ if err != nil {
     txn.Rollback()
     log.Fatal(err)
 }
-```
-
-### Batch Operations
-You can perform multiple operations in a single transaction.
-```go
-err := db.Update(func(txn *wildcat.Txn) error {
-    // Write multiple key-value pairs
-    for i := 0; i < 1000; i++ {
-        key := []byte(fmt.Sprintf("key%d", i))
-        value := []byte(fmt.Sprintf("value%d", i))
-        if err := txn.Put(key, value); err != nil {
-            return err
-        }
-    }
-    return nil
-})
-if err != nil {
-    log.Fatalf("Failed to write batch: %v", err)
-}
-```
-
-## Log Channel
-Wildcat provides a log channel for real-time logging. You can set up a goroutine to listen for log messages.
-```go
-// Create a log channel
-logChannel := make(chan string, 100) // Buffer size of 100 messages
-
-// Set up options with the log channel
-opts := &wildcat.Options{
-    Directory:       "/path/to/db",
-    LogChannel:      logChannel,
-    // Other options...
-}
-
-// Open the database
-db, err := wildcat.Open(opts)
-if err != nil {
-    // Handle error
-}
-
-wg := &sync.WaitGroup{}
-
-wg.Add(1)
-
-// Start a goroutine to listen to the log channel
-go func() {
-    defer wg.Done()
-    for msg := range logChannel {
-        // Process log messages
-        fmt.Println("wildcat:", msg)
-
-        // You could also write to a file, send to a logging service, etc.
-        // log.Println(msg)
-    }
-}()
-
-// Use..
-
-wg.Wait() // Wait for the goroutine to finish
-
-// When you're done, close the database
-defer db.Close()
 ```
 
 ## Iterating Keys
@@ -280,6 +219,68 @@ opts := &wildcat.Options{
 9. **BlockSetSize** Size of SSTable klog block sets
 10. **LogChannel** Channel for real-time logging, useful for debugging and monitoring
 11. **BloomFilter** Enable or disable bloom filters for SSTables to speed up key lookups
+
+### Batch Operations
+You can perform multiple operations in a single transaction.
+```go
+err := db.Update(func(txn *wildcat.Txn) error {
+    // Write multiple key-value pairs
+    for i := 0; i < 1000; i++ {
+        key := []byte(fmt.Sprintf("key%d", i))
+        value := []byte(fmt.Sprintf("value%d", i))
+        if err := txn.Put(key, value); err != nil {
+            return err
+        }
+    }
+    return nil
+})
+if err != nil {
+    log.Fatalf("Failed to write batch: %v", err)
+}
+```
+
+## Log Channel
+Wildcat provides a log channel for real-time logging. You can set up a goroutine to listen for log messages.
+```go
+// Create a log channel
+logChannel := make(chan string, 100) // Buffer size of 100 messages
+
+// Set up options with the log channel
+opts := &wildcat.Options{
+    Directory:       "/path/to/db",
+    LogChannel:      logChannel,
+    // Other options...
+}
+
+// Open the database
+db, err := wildcat.Open(opts)
+if err != nil {
+    // Handle error
+}
+
+wg := &sync.WaitGroup{}
+
+wg.Add(1)
+
+// Start a goroutine to listen to the log channel
+go func() {
+    defer wg.Done()
+    for msg := range logChannel {
+        // Process log messages
+        fmt.Println("wildcat:", msg)
+
+        // You could also write to a file, send to a logging service, etc.
+        // log.Println(msg)
+    }
+}()
+
+// Use..
+
+wg.Wait() // Wait for the goroutine to finish
+
+// When you're done, close the database
+defer db.Close()
+```
 
 ## Implementation Details
 ### Data Storage Architecture
