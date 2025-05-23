@@ -12,7 +12,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - Version-aware skip list for fast in-memory MVCC access
 - Atomic write path, safe for multithreaded use
 - Scalable design with background flusher and compactor
-- Durable and concurrent block storage, leveraging **direct, offset-based file I/O (using `pread`/`pwrite`)** for optimal performance and control
+- Durable and concurrent block storage, leveraging direct, offset-based file I/O (using `pread`/`pwrite`) for optimal performance and control
 - Atomic LRU for active block manager handles
 - Memtable lifecycle management and snapshot durability
 - Configurable Sync options such as `None`, `Partial (with background interval)`, `Full`
@@ -23,7 +23,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - Bidirectional iteration with MVCC-consistent visibility
 - Sustains 100K+ txns/sec writes, and hundreds of thousands of reads/sec
 - Optional Bloom filter per SSTable for fast key lookups
-- Key value separation optimization (.klog for keys, .vlog for values, klog entries point to vlog entries)
+- Key value separation optimization (`.klog` for keys, `.vlog` for values, klog entries point to vlog entries)
 - Tombstone-aware compaction with retention based on active transaction windows
 
 
@@ -31,6 +31,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 Wildcat supports opening multiple `wildcat.DB` instances in parallel, each operating independently in separate directories.
 
 ### Opening a Wildcat DB instance
+All that is required options wise is where your wildcat instance will live.
 ```go
 // Create default options
 opts := &wildcat.Options{
@@ -170,7 +171,7 @@ db.View(func(txn *wildcat.Txn) error {
 Wildcat provides several configuration options for fine-tuning.
 ```go
 opts := &wildcat.Options{
-    Directory:           "/path/to/database",
+    Directory:           "/path/to/database",     // Directory for database files
     WriteBufferSize:     32 * 1024 * 1024,        // 32MB memtable size
     SyncOption:          wildcat.SyncFull,        // Full sync for maximum durability
     SyncInterval:        128 * time.Millisecond,  // Only set when using SyncPartial, can be 0 otherwise
@@ -284,11 +285,12 @@ defer db.Close()
 - A tombstone is dropped if it's older than the oldest active read and no longer needed in higher levels.
 
 ### SSTable Metadata
-Each SSTable tracks the following main met
+Each SSTable tracks the following main meta details:
 - Min and Max keys for fast range filtering
 - EntryCount (total number of valid records) used for recreating filters if need be
 - Size (approximate byte size) used for when reopening levels
 - Optional BloomFilter for accelerated key lookups
+- Level (mainly tells us during reopening and compaction)
 
 We only list the main meta data but there is more for internal use.
 
@@ -301,7 +303,7 @@ During lookups
 - The Bloom filter is consulted first (if enabled)
 - Then Min/Max key range is checked
 - If eligible, the scan proceeds over BlockSet entries until the key is found
-- Actual values are retrieved from the VLog by offset
+- Actual values are retrieved from the VLog by block id
 
 ### Concurrency Model
 - Wildcat uses lock-free structures where possible (e.g., atomic value swaps for memtables, atomic lru, queues, and more)
