@@ -31,6 +31,7 @@ type Flusher struct {
 	db        *DB          // The db instance
 	lock      *sync.Mutex  // Mutex for thread safety
 	immutable *queue.Queue // Immutable queue for memtables
+	swapping  int32        // Atomic flag indicating if the flusher is swapping
 }
 
 // newFlusher creates a new Flusher instance
@@ -44,6 +45,16 @@ func newFlusher(db *DB) *Flusher {
 
 // queueMemtable queues the current active memtable for flushing to disk.
 func (flusher *Flusher) queueMemtable() error {
+
+	// Check if the flusher is already swapping
+	if atomic.LoadInt32(&flusher.swapping) == 1 {
+		return nil // Already swapping, no need to queue again
+	}
+
+	// Set the swapping flag to indicate that we are in the process of swapping
+	atomic.StoreInt32(&flusher.swapping, 1)
+	defer atomic.StoreInt32(&flusher.swapping, 0)
+
 	walId := flusher.db.walIdGenerator.nextID()
 	// Create a new memtable
 	newMemtable := &Memtable{
@@ -54,7 +65,7 @@ func (flusher *Flusher) queueMemtable() error {
 		}}
 
 	// Open the new WAL
-	walBm, err := blockmanager.Open(newMemtable.wal.path, os.O_RDWR|os.O_CREATE, flusher.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption))
+	walBm, err := blockmanager.Open(newMemtable.wal.path, os.O_RDWR|os.O_CREATE, flusher.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption), flusher.db.opts.SyncInterval)
 	if err != nil {
 		return fmt.Errorf("failed to open WAL block manager: %w", err)
 	}
@@ -143,12 +154,12 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 	klogPath := fmt.Sprintf("%s%s1%s%s%d%s", flusher.db.opts.Directory, LevelPrefix, string(os.PathSeparator), SSTablePrefix, sstable.Id, KLogExtension)
 	vlogPath := fmt.Sprintf("%s%s1%s%s%d%s", flusher.db.opts.Directory, LevelPrefix, string(os.PathSeparator), SSTablePrefix, sstable.Id, VLogExtension)
 
-	klogBm, err := blockmanager.Open(klogPath, os.O_RDWR|os.O_CREATE, memt.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption))
+	klogBm, err := blockmanager.Open(klogPath, os.O_RDWR|os.O_CREATE, memt.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption), flusher.db.opts.SyncInterval)
 	if err != nil {
 		return fmt.Errorf("failed to open KLog block manager: %w", err)
 	}
 
-	vlogBm, err := blockmanager.Open(vlogPath, os.O_RDWR|os.O_CREATE, memt.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption))
+	vlogBm, err := blockmanager.Open(vlogPath, os.O_RDWR|os.O_CREATE, memt.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption), flusher.db.opts.SyncInterval)
 	if err != nil {
 		return fmt.Errorf("failed to open VLog block manager: %w", err)
 	}
@@ -219,6 +230,26 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 			blockset.Entries = append(blockset.Entries, klogEntry)
 			blockset.Size += int64(len(key) + len(value))
 		}
+
+		// Check if we need to flush this blockset
+		if blockset.Size >= flusher.db.opts.BlockSetSize {
+			// Write the blockset to KLog
+			blocksetData, err := blockset.serializeBlockSet()
+			if err != nil {
+				return fmt.Errorf("failed to serialize BlockSet: %w", err)
+			}
+
+			_, err = klogBm.Append(blocksetData)
+			if err != nil {
+				return fmt.Errorf("failed to write BlockSet to KLog: %w", err)
+			}
+
+			// Reset the blockset for next iteration
+			blockset = &BlockSet{
+				Entries: make([]*KLogEntry, 0),
+				Size:    0,
+			}
+		}
 	}
 
 	// Write any remaining blockset to KLog
@@ -232,9 +263,8 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 		if err != nil {
 			return fmt.Errorf("failed to write BlockSet to KLog: %w", err)
 		}
-	}
 
-	flusher.db.log(fmt.Sprintf("Flushed %d entries to SSTable %d", entryCount, sstable.Id))
+	}
 
 	// Add both KLog and VLog to the LRU cache
 	flusher.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {

@@ -83,8 +83,8 @@ const (
 	DefaultSyncInterval        = 16 * time.Nanosecond
 	DefaultLevelCount          = 7
 	DefaultLevelMultiplier     = 4
-	DefaultBlockManagerLRUSize = 1024             // Size of the LRU cache for block managers
-	DefaultBlockSetSize        = 64 * 1024 * 1024 // Size of the block set
+	DefaultBlockManagerLRUSize = 1024            // Size of the LRU cache for block managers
+	DefaultBlockSetSize        = 8 * 1024 * 1024 // Size of the block set
 	DefaultPermission          = 0750
 )
 
@@ -352,7 +352,7 @@ func (db *DB) reinstate() error {
 			db: db,
 		})
 
-		walBm, err := blockmanager.Open(newWalPath, os.O_RDWR|os.O_CREATE, db.opts.Permission, blockmanager.SyncOption(db.opts.SyncOption))
+		walBm, err := blockmanager.Open(newWalPath, os.O_RDWR|os.O_CREATE, db.opts.Permission, blockmanager.SyncOption(db.opts.SyncOption), db.opts.SyncInterval)
 		if err != nil {
 			return fmt.Errorf("failed to open WAL block manager: %w", err)
 		}
@@ -389,7 +389,7 @@ func (db *DB) reinstate() error {
 		walBm, err := blockmanager.Open(walPath,
 			os.O_RDONLY,
 			db.opts.Permission,
-			blockmanager.SyncOption(db.opts.SyncOption))
+			blockmanager.SyncOption(db.opts.SyncOption), db.opts.SyncInterval)
 
 		if err != nil {
 			db.log(fmt.Sprintf("Warning: Failed to open WAL %s: %v - skipping", walPath, err))
@@ -556,7 +556,7 @@ func (db *DB) reinstate() error {
 	activeWalBm, err := blockmanager.Open(activeWALPath,
 		os.O_RDWR, // Open for read/write
 		db.opts.Permission,
-		blockmanager.SyncOption(db.opts.SyncOption))
+		blockmanager.SyncOption(db.opts.SyncOption), db.opts.SyncInterval)
 
 	if err != nil {
 		return fmt.Errorf("failed to reopen active WAL for writing: %w", err)

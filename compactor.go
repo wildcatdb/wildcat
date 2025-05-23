@@ -371,13 +371,13 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 		string(os.PathSeparator), SSTablePrefix, newSSTable.Id, VLogExtension)
 
 	klogBm, err := blockmanager.Open(klogPath, os.O_RDWR|os.O_CREATE, compactor.db.opts.Permission,
-		blockmanager.SyncOption(compactor.db.opts.SyncOption))
+		blockmanager.SyncOption(compactor.db.opts.SyncOption), compactor.db.opts.SyncInterval)
 	if err != nil {
 		return fmt.Errorf("failed to open KLog block manager: %w", err)
 	}
 
 	vlogBm, err := blockmanager.Open(vlogPath, os.O_RDWR|os.O_CREATE, compactor.db.opts.Permission,
-		blockmanager.SyncOption(compactor.db.opts.SyncOption))
+		blockmanager.SyncOption(compactor.db.opts.SyncOption), compactor.db.opts.SyncInterval)
 	if err != nil {
 		return fmt.Errorf("failed to open VLog block manager: %w", err)
 	}
@@ -721,7 +721,7 @@ func newSSTCompactionIterator(sst *SSTable) *sstCompactionIterator {
 		klogBm = v.(*blockmanager.BlockManager)
 	} else {
 		klogBm, err = blockmanager.Open(klogPath, os.O_RDONLY, sst.db.opts.Permission,
-			blockmanager.SyncOption(sst.db.opts.SyncOption))
+			blockmanager.SyncOption(sst.db.opts.SyncOption), sst.db.opts.SyncInterval)
 		if err != nil {
 			return &sstCompactionIterator{eof: true}
 		}
@@ -805,7 +805,7 @@ func (iter *sstCompactionIterator) next() ([]byte, interface{}, int64, bool) {
 		vlogBm = v.(*blockmanager.BlockManager)
 	} else {
 		vlogBm, err = blockmanager.Open(vlogPath, os.O_RDONLY, iter.sstable.db.opts.Permission,
-			blockmanager.SyncOption(iter.sstable.db.opts.SyncOption))
+			blockmanager.SyncOption(iter.sstable.db.opts.SyncOption), iter.sstable.db.opts.SyncInterval)
 		if err != nil {
 			iter.eof = true
 			return nil, nil, 0, false
