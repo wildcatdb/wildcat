@@ -153,10 +153,6 @@ func (txn *Txn) Commit() error {
 
 	// Check if we need to enqueue the memtable for flush
 	if atomic.LoadInt64(&txn.db.memtable.Load().(*Memtable).size) > txn.db.opts.WriteBufferSize {
-		txns := txn.db.txns.Load()
-		if len(*txns) > 0 {
-			return nil
-		}
 
 		// Enqueue the memtable for flush and swap
 		err = txn.db.flusher.queueMemtable()
