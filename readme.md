@@ -228,15 +228,16 @@ db.View(func(txn *wildcat.Txn) error {
 You can perform multiple operations in a single transaction.
 ```go
 err := db.Update(func(txn *wildcat.Txn) error {
-// Write multiple key-value pairs
-for i := 0; i < 1000; i++ {
-key := []byte(fmt.Sprintf("key%d", i))
-value := []byte(fmt.Sprintf("value%d", i))
-if err := txn.Put(key, value); err != nil {
-return err
-}
-}
-return nil
+    // Write multiple key-value pairs
+    for i := 0; i < 1000; i++ {
+        key := []byte(fmt.Sprintf("key%d", i))
+        value := []byte(fmt.Sprintf("value%d", i))
+
+        if err := txn.Put(key, value); err != nil {
+            return err
+        }
+    }
+    return nil
 })
 ```
 
