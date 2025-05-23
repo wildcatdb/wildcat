@@ -71,827 +71,600 @@ func TestOpen(t *testing.T) {
 	wg.Wait()
 }
 
-func BenchmarkDBBloomFilterPartialSync(b *testing.B) {
+// **These are more internal benchmarks than actual database benchmarks.  They are included for completeness and work on optimizations**
+
+func BenchmarkSinglePut(b *testing.B) {
 	defer func() {
-		_ = os.RemoveAll("benchdb")
+		_ = os.RemoveAll("benchdb_single_put")
 	}()
 
-	logChannel := make(chan string, 100)
 	opts := &Options{
-		Directory:    "benchdb",
-		LogChannel:   logChannel,
-		BloomFilter:  true,
-		SyncOption:   SyncPartial,
-		SyncInterval: time.Nanosecond * 24,
+		Directory:  "benchdb_single_put",
+		SyncOption: SyncNone, // Fastest for benchmarking
 	}
-
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for msg := range logChannel {
-			b.Logf("Log: %s", msg)
-		}
-	}()
 
 	db, err := Open(opts)
 	if err != nil {
 		b.Fatalf("Failed to open database: %v", err)
 	}
-	defer func() {
+	defer func(db *DB) {
 		_ = db.Close()
-		wg.Wait()
-	}()
+	}(db)
 
-	const ops = 100_000
-	const valueSize = 256
+	key := []byte("benchmark_key")
+	value := []byte("benchmark_value_with_some_data_to_make_it_realistic")
 
-	b.Log("Pre-filling keys...")
-	for i := 0; i < ops; i++ {
-		err = db.Update(func(txn *Txn) error {
-			key := []byte(fmt.Sprintf("key%d", i))
-			val := make([]byte, valueSize)
-			rand.Read(val)
-			return txn.Put(key, val)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		err := db.Update(func(txn *Txn) error {
+			return txn.Put(key, value)
 		})
 		if err != nil {
-			b.Fatalf("Pre-fill failed at key %d: %v", i, err)
+			b.Fatalf("Put failed: %v", err)
 		}
 	}
-
-	b.Run("Write", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			err = db.Update(func(txn *Txn) error {
-				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				val := make([]byte, valueSize)
-				rand.Read(val)
-				return txn.Put(key, val)
-			})
-			if err != nil {
-				b.Fatalf("Write failed: %v", err)
-			}
-		}
-	})
-
-	b.Run("Read", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			err = db.Update(func(txn *Txn) error {
-				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				_, err = txn.Get(key)
-				return err
-			})
-			if err != nil {
-				b.Fatalf("Read failed: %v", err)
-			}
-		}
-	})
-
-	b.Run("ConcurrentWrite", func(b *testing.B) {
-		b.ResetTimer()
-		wg = &sync.WaitGroup{}
-		wg.Add(b.N)
-		for i := 0; i < b.N; i++ {
-			go func(i int) {
-				defer wg.Done()
-				err = db.Update(func(txn *Txn) error {
-					key := []byte(fmt.Sprintf("concurrent_key%d", rand.Intn(ops)))
-					val := make([]byte, valueSize)
-					rand.Read(val)
-					return txn.Put(key, val)
-				})
-				if err != nil {
-					b.Errorf("Concurrent write failed: %v", err)
-				}
-			}(i)
-		}
-		wg.Wait()
-	})
-
-	b.Run("ConcurrentRead", func(b *testing.B) {
-		b.ResetTimer()
-		wg = &sync.WaitGroup{}
-		wg.Add(b.N)
-		for i := 0; i < b.N; i++ {
-			go func(i int) {
-				defer wg.Done()
-				err = db.Update(func(txn *Txn) error {
-					key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-					_, err = txn.Get(key)
-					return err
-				})
-				if err != nil {
-					b.Errorf("Concurrent read failed: %v", err)
-				}
-			}(i)
-		}
-		wg.Wait()
-	})
 }
 
-func BenchmarkDBPartialSync(b *testing.B) {
+func BenchmarkBatchPut(b *testing.B) {
 	defer func() {
-		_ = os.RemoveAll("benchdb")
+		_ = os.RemoveAll("benchdb_batch_put")
 	}()
 
-	logChannel := make(chan string, 100)
 	opts := &Options{
-		Directory:    "benchdb",
-		LogChannel:   logChannel,
-		SyncOption:   SyncPartial,
-		SyncInterval: time.Nanosecond * 24,
+		Directory:  "benchdb_batch_put",
+		SyncOption: SyncNone,
 	}
-
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for msg := range logChannel {
-			b.Logf("Log: %s", msg)
-		}
-	}()
 
 	db, err := Open(opts)
 	if err != nil {
 		b.Fatalf("Failed to open database: %v", err)
 	}
-	defer func() {
+	defer func(db *DB) {
 		_ = db.Close()
-		wg.Wait()
-	}()
+	}(db)
 
-	const ops = 100_000
-	const valueSize = 256
+	batchSize := 100
+	value := []byte("benchmark_value_with_some_data_to_make_it_realistic")
 
-	b.Log("Pre-filling keys...")
-	for i := 0; i < ops; i++ {
-		err = db.Update(func(txn *Txn) error {
-			key := []byte(fmt.Sprintf("key%d", i))
-			val := make([]byte, valueSize)
-			rand.Read(val)
-			return txn.Put(key, val)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		err := db.Update(func(txn *Txn) error {
+			for j := 0; j < batchSize; j++ {
+				key := []byte(fmt.Sprintf("key_%d_%d", i, j))
+				if err := txn.Put(key, value); err != nil {
+					return err
+				}
+			}
+			return nil
 		})
 		if err != nil {
-			b.Fatalf("Pre-fill failed at key %d: %v", i, err)
+			b.Fatalf("Batch put failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkRandomWrites(b *testing.B) {
+	defer func() {
+		_ = os.RemoveAll("benchdb_random_writes")
+	}()
+
+	opts := &Options{
+		Directory:  "benchdb_random_writes",
+		SyncOption: SyncNone,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		b.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	rand.Seed(time.Now().UnixNano())
+	value := []byte("benchmark_value_with_some_data_to_make_it_realistic")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		keyNum := rand.Intn(10000) // Random key from 0-9999
+		key := []byte(fmt.Sprintf("random_key_%d", keyNum))
+
+		err := db.Update(func(txn *Txn) error {
+			return txn.Put(key, value)
+		})
+		if err != nil {
+			b.Fatalf("Random write failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkRandomReads(b *testing.B) {
+	defer func() {
+		_ = os.RemoveAll("benchdb_random_reads")
+	}()
+
+	opts := &Options{
+		Directory:  "benchdb_random_reads",
+		SyncOption: SyncNone,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		b.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Pre-populate with 10k keys
+	value := []byte("benchmark_value_with_some_data_to_make_it_realistic")
+	for i := 0; i < 10000; i++ {
+		key := []byte(fmt.Sprintf("random_key_%d", i))
+		err := db.Update(func(txn *Txn) error {
+			return txn.Put(key, value)
+		})
+		if err != nil {
+			b.Fatalf("Failed to populate: %v", err)
+		}
+		// Flush every 5000 keys
+		if i%5000 == 0 {
+			_ = db.ForceFlush()
+
 		}
 	}
 
-	b.Run("Write", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			err = db.Update(func(txn *Txn) error {
-				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				val := make([]byte, valueSize)
-				rand.Read(val)
-				return txn.Put(key, val)
-			})
-			if err != nil {
-				b.Fatalf("Write failed: %v", err)
-			}
-		}
-	})
+	rand.Seed(time.Now().UnixNano())
 
-	b.Run("Read", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			err = db.Update(func(txn *Txn) error {
-				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				_, err := txn.Get(key)
-				return err
-			})
-			if err != nil {
-				b.Fatalf("Read failed: %v", err)
-			}
-		}
-	})
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		keyNum := rand.Intn(10000)
+		key := []byte(fmt.Sprintf("random_key_%d", keyNum))
 
-	b.Run("ConcurrentWrite", func(b *testing.B) {
-		b.ResetTimer()
-		wg = &sync.WaitGroup{}
-		wg.Add(b.N)
-		for i := 0; i < b.N; i++ {
-			go func(i int) {
-				defer wg.Done()
-				err = db.Update(func(txn *Txn) error {
-					key := []byte(fmt.Sprintf("concurrent_key%d", rand.Intn(ops)))
-					val := make([]byte, valueSize)
-					rand.Read(val)
-					return txn.Put(key, val)
-				})
-				if err != nil {
-					b.Errorf("Concurrent write failed: %v", err)
-				}
-			}(i)
+		err := db.View(func(txn *Txn) error {
+			_, err := txn.Get(key)
+			return err
+		})
+		if err != nil {
+			b.Fatalf("Random read failed: %v", err)
 		}
-		wg.Wait()
-	})
-
-	b.Run("ConcurrentRead", func(b *testing.B) {
-		b.ResetTimer()
-		wg = &sync.WaitGroup{}
-		wg.Add(b.N)
-		for i := 0; i < b.N; i++ {
-			go func(i int) {
-				defer wg.Done()
-				err = db.Update(func(txn *Txn) error {
-					key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-					_, err = txn.Get(key)
-					return err
-				})
-				if err != nil {
-					b.Errorf("Concurrent read failed: %v", err)
-				}
-			}(i)
-		}
-		wg.Wait()
-	})
+	}
 }
 
-func BenchmarkDBBloomFilter(b *testing.B) {
+func BenchmarkRandomReads_Bloom(b *testing.B) {
 	defer func() {
-		_ = os.RemoveAll("benchdb")
+		_ = os.RemoveAll("benchdb_random_reads")
 	}()
 
-	logChannel := make(chan string, 100)
 	opts := &Options{
-		Directory:   "benchdb",
-		LogChannel:  logChannel,
+		Directory:   "benchdb_random_reads",
+		SyncOption:  SyncNone,
 		BloomFilter: true,
 	}
 
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for msg := range logChannel {
-			b.Logf("Log: %s", msg)
+	db, err := Open(opts)
+	if err != nil {
+		b.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Pre-populate with 10k keys
+	value := []byte("benchmark_value_with_some_data_to_make_it_realistic")
+	for i := 0; i < 10000; i++ {
+		key := []byte(fmt.Sprintf("random_key_%d", i))
+		err := db.Update(func(txn *Txn) error {
+			return txn.Put(key, value)
+		})
+		if err != nil {
+			b.Fatalf("Failed to populate: %v", err)
 		}
+
+		// Flush every 5000 keys
+		if i%5000 == 0 {
+			_ = db.ForceFlush()
+
+		}
+	}
+
+	rand.Seed(time.Now().UnixNano())
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		keyNum := rand.Intn(10000)
+		key := []byte(fmt.Sprintf("random_key_%d", keyNum))
+
+		err := db.View(func(txn *Txn) error {
+			_, err := txn.Get(key)
+			return err
+		})
+		if err != nil {
+			b.Fatalf("Random read failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkConcurrentWrites(b *testing.B) {
+	defer func() {
+		_ = os.RemoveAll("benchdb_concurrent_writes")
 	}()
+
+	opts := &Options{
+		Directory:  "benchdb_concurrent_writes",
+		SyncOption: SyncNone,
+	}
 
 	db, err := Open(opts)
 	if err != nil {
 		b.Fatalf("Failed to open database: %v", err)
 	}
-	defer func() {
+	defer func(db *DB) {
 		_ = db.Close()
-		wg.Wait()
-	}()
+	}(db)
 
-	const ops = 100_000
-	const valueSize = 256
+	value := []byte("benchmark_value_with_some_data_to_make_it_realistic")
+	goroutines := 10
 
-	b.Log("Pre-filling keys...")
-	for i := 0; i < ops; i++ {
-		err = db.Update(func(txn *Txn) error {
-			key := []byte(fmt.Sprintf("key%d", i))
-			val := make([]byte, valueSize)
-			rand.Read(val)
-			return txn.Put(key, val)
-		})
-		if err != nil {
-			b.Fatalf("Pre-fill failed at key %d: %v", i, err)
-		}
-	}
+	b.ResetTimer()
 
-	b.Run("Write", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			err = db.Update(func(txn *Txn) error {
-				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				val := make([]byte, valueSize)
-				rand.Read(val)
-				return txn.Put(key, val)
-			})
-			if err != nil {
-				b.Fatalf("Write failed: %v", err)
-			}
-		}
-	})
+	var wg sync.WaitGroup
+	start := make(chan struct{})
 
-	b.Run("Read", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			err = db.Update(func(txn *Txn) error {
-				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				_, err := txn.Get(key)
-				return err
-			})
-			if err != nil {
-				b.Fatalf("Read failed: %v", err)
-			}
-		}
-	})
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(goroutineID int) {
+			defer wg.Done()
+			<-start // Wait for signal to start
 
-	b.Run("ConcurrentWrite", func(b *testing.B) {
-		b.ResetTimer()
-		wg = &sync.WaitGroup{}
-		wg.Add(b.N)
-		for i := 0; i < b.N; i++ {
-			go func(i int) {
-				defer wg.Done()
-				err = db.Update(func(txn *Txn) error {
-					key := []byte(fmt.Sprintf("concurrent_key%d", rand.Intn(ops)))
-					val := make([]byte, valueSize)
-					rand.Read(val)
-					return txn.Put(key, val)
+			opsPerGoroutine := b.N / goroutines
+			for i := 0; i < opsPerGoroutine; i++ {
+				key := []byte(fmt.Sprintf("concurrent_key_%d_%d", goroutineID, i))
+				err := db.Update(func(txn *Txn) error {
+					return txn.Put(key, value)
 				})
 				if err != nil {
 					b.Errorf("Concurrent write failed: %v", err)
+					return
 				}
-			}(i)
-		}
-		wg.Wait()
-	})
-
-	b.Run("ConcurrentRead", func(b *testing.B) {
-		b.ResetTimer()
-		wg = &sync.WaitGroup{}
-		wg.Add(b.N)
-		for i := 0; i < b.N; i++ {
-			go func(i int) {
-				defer wg.Done()
-				err = db.Update(func(txn *Txn) error {
-					key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-					_, err = txn.Get(key)
-					return err
-				})
-				if err != nil {
-					b.Errorf("Concurrent read failed: %v", err)
-				}
-			}(i)
-		}
-		wg.Wait()
-	})
-}
-
-func BenchmarkManySST(b *testing.B) {
-	defer func() {
-		_ = os.RemoveAll("benchdb")
-	}()
-
-	logChannel := make(chan string, 100)
-	opts := &Options{
-		WriteBufferSize: (1024 * 1024) * 8,
-		BlockSetSize:    (1024 * 1024) * 4,
-		Directory:       "benchdb",
-		LogChannel:      logChannel,
-		BloomFilter:     true,
+			}
+		}(g)
 	}
 
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for msg := range logChannel {
-			b.Logf("Log: %s", msg)
-		}
+	close(start) // Signal all goroutines to start
+	wg.Wait()
+}
+
+func BenchmarkConcurrentReads(b *testing.B) {
+	defer func() {
+		_ = os.RemoveAll("benchdb_concurrent_reads")
 	}()
+
+	opts := &Options{
+		Directory:  "benchdb_concurrent_reads",
+		SyncOption: SyncNone,
+	}
 
 	db, err := Open(opts)
 	if err != nil {
 		b.Fatalf("Failed to open database: %v", err)
 	}
-	defer func() {
+	defer func(db *DB) {
 		_ = db.Close()
-		wg.Wait()
-	}()
+	}(db)
 
-	const ops = 100_000
-	const valueSize = 256
-
-	b.Log("Pre-filling keys...")
-	for i := 0; i < ops; i++ {
-		err = db.Update(func(txn *Txn) error {
-			key := []byte(fmt.Sprintf("key%d", i))
-			val := make([]byte, valueSize)
-			rand.Read(val)
-			return txn.Put(key, val)
+	// Pre-populate with data
+	value := []byte("benchmark_value_with_some_data_to_make_it_realistic")
+	for i := 0; i < 10000; i++ {
+		key := []byte(fmt.Sprintf("read_key_%d", i))
+		err := db.Update(func(txn *Txn) error {
+			return txn.Put(key, value)
 		})
 		if err != nil {
-			b.Fatalf("Pre-fill failed at key %d: %v", i, err)
+			b.Fatalf("Failed to populate: %v", err)
+		}
+
+		// Flush every 5000 keys
+		if i%5000 == 0 {
+			_ = db.ForceFlush()
+
 		}
 	}
 
-	b.Run("Write", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			err = db.Update(func(txn *Txn) error {
-				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				val := make([]byte, valueSize)
-				rand.Read(val)
-				return txn.Put(key, val)
-			})
-			if err != nil {
-				b.Fatalf("Write failed: %v", err)
-			}
-		}
-	})
+	goroutines := 10
+	rand.Seed(time.Now().UnixNano())
 
-	b.Run("Read", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			err = db.Update(func(txn *Txn) error {
-				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				_, err = txn.Get(key)
-				return err
-			})
-			if err != nil {
-				b.Fatalf("Read failed: %v", err)
-			}
-		}
-	})
+	b.ResetTimer()
 
-	b.Run("ConcurrentWrite", func(b *testing.B) {
-		b.ResetTimer()
-		wg = &sync.WaitGroup{}
-		wg.Add(b.N)
-		for i := 0; i < b.N; i++ {
-			go func(i int) {
-				defer wg.Done()
-				err = db.Update(func(txn *Txn) error {
-					key := []byte(fmt.Sprintf("concurrent_key%d", rand.Intn(ops)))
-					val := make([]byte, valueSize)
-					rand.Read(val)
-					return txn.Put(key, val)
-				})
-				if err != nil {
-					b.Errorf("Concurrent write failed: %v", err)
-				}
-			}(i)
-		}
-		wg.Wait()
-	})
+	var wg sync.WaitGroup
+	start := make(chan struct{})
 
-	b.Run("ConcurrentRead", func(b *testing.B) {
-		b.ResetTimer()
-		wg = &sync.WaitGroup{}
-		wg.Add(b.N)
-		for i := 0; i < b.N; i++ {
-			go func(i int) {
-				defer wg.Done()
-				err = db.Update(func(txn *Txn) error {
-					key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-					_, err = txn.Get(key)
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start // Wait for signal to start
+
+			opsPerGoroutine := b.N / goroutines
+			for i := 0; i < opsPerGoroutine; i++ {
+				keyNum := rand.Intn(1000)
+				key := []byte(fmt.Sprintf("read_key_%d", keyNum))
+				err := db.View(func(txn *Txn) error {
+					_, err := txn.Get(key)
 					return err
 				})
 				if err != nil {
 					b.Errorf("Concurrent read failed: %v", err)
+					return
 				}
-			}(i)
-		}
-		wg.Wait()
-	})
+			}
+		}()
+	}
+
+	close(start) // Signal all goroutines to start
+	wg.Wait()
 }
 
-func BenchmarkDB(b *testing.B) {
+func BenchmarkConcurrentReads_Bloom(b *testing.B) {
 	defer func() {
-		_ = os.RemoveAll("benchdb")
-
+		_ = os.RemoveAll("benchdb_concurrent_reads")
 	}()
 
-	logChannel := make(chan string, 100)
 	opts := &Options{
-		Directory:  "benchdb",
-		LogChannel: logChannel,
-	}
-
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for msg := range logChannel {
-			b.Logf("Log: %s", msg)
-		}
-	}()
-
-	db, err := Open(opts)
-	if err != nil {
-		b.Fatalf("Failed to open database: %v", err)
-	}
-	defer func() {
-		_ = db.Close()
-		wg.Wait()
-	}()
-
-	const ops = 100_000
-	const valueSize = 256
-
-	b.Log("Pre-filling keys...")
-	for i := 0; i < ops; i++ {
-		err = db.Update(func(txn *Txn) error {
-			key := []byte(fmt.Sprintf("key%d", i))
-			val := make([]byte, valueSize)
-			rand.Read(val)
-			return txn.Put(key, val)
-		})
-		if err != nil {
-			b.Fatalf("Pre-fill failed at key %d: %v", i, err)
-		}
-	}
-
-	b.Run("Write", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			err = db.Update(func(txn *Txn) error {
-				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				val := make([]byte, valueSize)
-				rand.Read(val)
-				return txn.Put(key, val)
-			})
-			if err != nil {
-				b.Fatalf("Write failed: %v", err)
-			}
-		}
-	})
-
-	b.Run("Read", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			err = db.Update(func(txn *Txn) error {
-				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				_, err := txn.Get(key)
-				return err
-			})
-			if err != nil {
-				b.Fatalf("Read failed: %v", err)
-			}
-		}
-	})
-
-	b.Run("ConcurrentWrite", func(b *testing.B) {
-		b.ResetTimer()
-		wg = &sync.WaitGroup{}
-		wg.Add(b.N)
-		for i := 0; i < b.N; i++ {
-			go func(i int) {
-				defer wg.Done()
-				err = db.Update(func(txn *Txn) error {
-					key := []byte(fmt.Sprintf("concurrent_key%d", rand.Intn(ops)))
-					val := make([]byte, valueSize)
-					rand.Read(val)
-					return txn.Put(key, val)
-				})
-				if err != nil {
-					b.Errorf("Concurrent write failed: %v", err)
-				}
-			}(i)
-		}
-		wg.Wait()
-	})
-
-	b.Run("ConcurrentRead", func(b *testing.B) {
-		b.ResetTimer()
-		wg = &sync.WaitGroup{}
-		wg.Add(b.N)
-		for i := 0; i < b.N; i++ {
-			go func(i int) {
-				defer wg.Done()
-				err = db.Update(func(txn *Txn) error {
-					key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-					_, err = txn.Get(key)
-					return err
-				})
-				if err != nil {
-					b.Errorf("Concurrent read failed: %v", err)
-				}
-			}(i)
-		}
-		wg.Wait()
-	})
-}
-
-func BenchmarkDBBloomFilterFullSync(b *testing.B) {
-	defer func() {
-		_ = os.RemoveAll("benchdb")
-	}()
-
-	logChannel := make(chan string, 100)
-	opts := &Options{
-		Directory:   "benchdb",
-		LogChannel:  logChannel,
+		Directory:   "benchdb_concurrent_reads",
+		SyncOption:  SyncNone,
 		BloomFilter: true,
-		SyncOption:  SyncFull,
 	}
-
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for msg := range logChannel {
-			b.Logf("Log: %s", msg)
-		}
-	}()
 
 	db, err := Open(opts)
 	if err != nil {
 		b.Fatalf("Failed to open database: %v", err)
 	}
-	defer func() {
+	defer func(db *DB) {
 		_ = db.Close()
-		wg.Wait()
-	}()
+	}(db)
 
-	const ops = 100_000
-	const valueSize = 256
-
-	b.Log("Pre-filling keys...")
-	for i := 0; i < ops; i++ {
-		err = db.Update(func(txn *Txn) error {
-			key := []byte(fmt.Sprintf("key%d", i))
-			val := make([]byte, valueSize)
-			rand.Read(val)
-			return txn.Put(key, val)
+	// Pre-populate with data
+	value := []byte("benchmark_value_with_some_data_to_make_it_realistic")
+	for i := 0; i < 10000; i++ {
+		key := []byte(fmt.Sprintf("read_key_%d", i))
+		err := db.Update(func(txn *Txn) error {
+			return txn.Put(key, value)
 		})
 		if err != nil {
-			b.Fatalf("Pre-fill failed at key %d: %v", i, err)
+			b.Fatalf("Failed to populate: %v", err)
+		}
+
+		// Flush every 5000 keys
+		if i%5000 == 0 {
+			_ = db.ForceFlush()
+
 		}
 	}
 
-	b.Run("Write", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			err = db.Update(func(txn *Txn) error {
-				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				val := make([]byte, valueSize)
-				rand.Read(val)
-				return txn.Put(key, val)
-			})
-			if err != nil {
-				b.Fatalf("Write failed: %v", err)
-			}
-		}
-	})
+	goroutines := 10
+	rand.Seed(time.Now().UnixNano())
 
-	b.Run("Read", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			err = db.Update(func(txn *Txn) error {
-				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				_, err = txn.Get(key)
-				return err
-			})
-			if err != nil {
-				b.Fatalf("Read failed: %v", err)
-			}
-		}
-	})
+	b.ResetTimer()
 
-	b.Run("ConcurrentWrite", func(b *testing.B) {
-		b.ResetTimer()
-		wg = &sync.WaitGroup{}
-		wg.Add(b.N)
-		for i := 0; i < b.N; i++ {
-			go func(i int) {
-				defer wg.Done()
-				err = db.Update(func(txn *Txn) error {
-					key := []byte(fmt.Sprintf("concurrent_key%d", rand.Intn(ops)))
-					val := make([]byte, valueSize)
-					rand.Read(val)
-					return txn.Put(key, val)
-				})
-				if err != nil {
-					b.Errorf("Concurrent write failed: %v", err)
-				}
-			}(i)
-		}
-		wg.Wait()
-	})
+	var wg sync.WaitGroup
+	start := make(chan struct{})
 
-	b.Run("ConcurrentRead", func(b *testing.B) {
-		b.ResetTimer()
-		wg = &sync.WaitGroup{}
-		wg.Add(b.N)
-		for i := 0; i < b.N; i++ {
-			go func(i int) {
-				defer wg.Done()
-				err = db.Update(func(txn *Txn) error {
-					key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-					_, err = txn.Get(key)
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start // Wait for signal to start
+
+			opsPerGoroutine := b.N / goroutines
+			for i := 0; i < opsPerGoroutine; i++ {
+				keyNum := rand.Intn(1000)
+				key := []byte(fmt.Sprintf("read_key_%d", keyNum))
+				err := db.View(func(txn *Txn) error {
+					_, err := txn.Get(key)
 					return err
 				})
 				if err != nil {
 					b.Errorf("Concurrent read failed: %v", err)
+					return
 				}
-			}(i)
-		}
-		wg.Wait()
-	})
+			}
+		}()
+	}
+
+	close(start) // Signal all goroutines to start
+	wg.Wait()
 }
 
-func BenchmarkDBSyncFull(b *testing.B) {
+func BenchmarkMixedWorkload(b *testing.B) {
 	defer func() {
-		_ = os.RemoveAll("benchdb")
+		_ = os.RemoveAll("benchdb_mixed_workload")
 	}()
 
-	logChannel := make(chan string, 100)
 	opts := &Options{
-		Directory:  "benchdb",
-		LogChannel: logChannel,
-		SyncOption: SyncFull,
+		Directory:  "benchdb_mixed_workload",
+		SyncOption: SyncNone,
 	}
-
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for msg := range logChannel {
-			b.Logf("Log: %s", msg)
-		}
-	}()
 
 	db, err := Open(opts)
 	if err != nil {
 		b.Fatalf("Failed to open database: %v", err)
 	}
-	defer func() {
+	defer func(db *DB) {
 		_ = db.Close()
-		wg.Wait()
-	}()
+	}(db)
 
-	const ops = 100_000
-	const valueSize = 256
-
-	b.Log("Pre-filling keys...")
-	for i := 0; i < ops; i++ {
-		err = db.Update(func(txn *Txn) error {
-			key := []byte(fmt.Sprintf("key%d", i))
-			val := make([]byte, valueSize)
-			rand.Read(val)
-			return txn.Put(key, val)
+	// Pre-populate with some data
+	value := []byte("benchmark_value_with_some_data_to_make_it_realistic")
+	for i := 0; i < 10000; i++ {
+		key := []byte(fmt.Sprintf("mixed_key_%d", i))
+		err := db.Update(func(txn *Txn) error {
+			return txn.Put(key, value)
 		})
 		if err != nil {
-			b.Fatalf("Pre-fill failed at key %d: %v", i, err)
+			b.Fatalf("Failed to populate: %v", err)
+		}
+
+		// Flush every 5000 keys
+		if i%5000 == 0 {
+			_ = db.ForceFlush()
 		}
 	}
 
-	b.Run("Write", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			err = db.Update(func(txn *Txn) error {
-				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				val := make([]byte, valueSize)
-				rand.Read(val)
-				return txn.Put(key, val)
+	rand.Seed(time.Now().UnixNano())
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if rand.Float32() < 0.3 { // 30% writes
+			key := []byte(fmt.Sprintf("mixed_key_%d", rand.Intn(2000)))
+			err := db.Update(func(txn *Txn) error {
+				return txn.Put(key, value)
 			})
 			if err != nil {
-				b.Fatalf("Write failed: %v", err)
+				b.Fatalf("Mixed workload write failed: %v", err)
 			}
-		}
-	})
-
-	b.Run("Read", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			err = db.Update(func(txn *Txn) error {
-				key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-				_, err = txn.Get(key)
+		} else { // 70% reads
+			key := []byte(fmt.Sprintf("mixed_key_%d", rand.Intn(1000)))
+			err := db.View(func(txn *Txn) error {
+				_, err := txn.Get(key)
 				return err
 			})
 			if err != nil {
-				b.Fatalf("Read failed: %v", err)
+				b.Fatalf("Mixed workload read failed: %v", err)
 			}
 		}
-	})
+	}
+}
 
-	b.Run("ConcurrentWrite", func(b *testing.B) {
-		b.ResetTimer()
-		wg = &sync.WaitGroup{}
-		wg.Add(b.N)
-		for i := 0; i < b.N; i++ {
-			go func(i int) {
-				defer wg.Done()
-				err = db.Update(func(txn *Txn) error {
-					key := []byte(fmt.Sprintf("concurrent_key%d", rand.Intn(ops)))
-					val := make([]byte, valueSize)
-					rand.Read(val)
-					return txn.Put(key, val)
-				})
-				if err != nil {
-					b.Errorf("Concurrent write failed: %v", err)
-				}
-			}(i)
-		}
-		wg.Wait()
-	})
+func BenchmarkIteration(b *testing.B) {
+	defer func() {
+		_ = os.RemoveAll("benchdb_iteration")
+	}()
 
-	b.Run("ConcurrentRead", func(b *testing.B) {
-		b.ResetTimer()
-		wg = &sync.WaitGroup{}
-		wg.Add(b.N)
-		for i := 0; i < b.N; i++ {
-			go func(i int) {
-				defer wg.Done()
-				err = db.Update(func(txn *Txn) error {
-					key := []byte(fmt.Sprintf("key%d", rand.Intn(ops)))
-					_, err = txn.Get(key)
-					return err
-				})
-				if err != nil {
-					b.Errorf("Concurrent read failed: %v", err)
-				}
-			}(i)
+	opts := &Options{
+		Directory:  "benchdb_iteration",
+		SyncOption: SyncNone,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		b.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Pre-populate with sequential keys
+	value := []byte("benchmark_value_with_some_data_to_make_it_realistic")
+	for i := 0; i < 10000; i++ {
+		key := []byte(fmt.Sprintf("iter_key_%04d", i)) // Zero-padded for proper sorting
+		err := db.Update(func(txn *Txn) error {
+			return txn.Put(key, value)
+		})
+		if err != nil {
+			b.Fatalf("Failed to populate: %v", err)
 		}
-		wg.Wait()
-	})
+
+		if i%5000 == 0 {
+			_ = db.ForceFlush()
+		}
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		err := db.View(func(txn *Txn) error {
+			iter := txn.NewIterator(nil, nil)
+			count := 0
+			for {
+				_, _, _, ok := iter.Next()
+				if !ok {
+					break
+				}
+				count++
+			}
+			return nil
+		})
+		if err != nil {
+			b.Fatalf("Iteration failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkDelete(b *testing.B) {
+	defer func() {
+		_ = os.RemoveAll("benchdb_delete")
+	}()
+
+	opts := &Options{
+		Directory:  "benchdb_delete",
+		SyncOption: SyncNone,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		b.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Pre-populate with keys to delete
+	value := []byte("benchmark_value_with_some_data_to_make_it_realistic")
+	for i := 0; i < b.N; i++ {
+		key := []byte(fmt.Sprintf("delete_key_%d", i))
+		err := db.Update(func(txn *Txn) error {
+			return txn.Put(key, value)
+		})
+		if err != nil {
+			b.Fatalf("Failed to populate: %v", err)
+		}
+	}
+
+	_ = db.ForceFlush()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := []byte(fmt.Sprintf("delete_key_%d", i))
+		err := db.Update(func(txn *Txn) error {
+			return txn.Delete(key)
+		})
+		if err != nil {
+			b.Fatalf("Delete failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkLargeValues(b *testing.B) {
+	defer func() {
+		_ = os.RemoveAll("benchdb_large_values")
+	}()
+
+	opts := &Options{
+		Directory:  "benchdb_large_values",
+		SyncOption: SyncNone,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		b.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Create a 10KB value
+	value := make([]byte, 10*1024)
+	for i := range value {
+		value[i] = byte(i % 256)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := []byte(fmt.Sprintf("large_key_%d", i))
+		err := db.Update(func(txn *Txn) error {
+			return txn.Put(key, value)
+		})
+		if err != nil {
+			b.Fatalf("Large value put failed: %v", err)
+		}
+	}
 }
