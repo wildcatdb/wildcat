@@ -24,6 +24,8 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - [SSTable Format](#sstable-format)
 - [SSTable Metadata](#sstable-metadata)
 - [Compaction](#sstables-and-compaction)
+- [Motivation](#motivation)
+- [Contributing](#contributing)
 
 ## Features
 - LSM (Log-Structured Merge) tree architecture optimized for high write throughput
@@ -70,7 +72,7 @@ if err != nil {
 defer db.Close()
 ```
 
-## Advanced Configuration
+### Advanced Configuration
 Wildcat provides several configuration options for fine-tuning.
 ```go
 opts := &wildcat.Options{
@@ -87,7 +89,7 @@ opts := &wildcat.Options{
 }
 ```
 
-### Configuration Options Explained
+#### Configuration Options Explained
 1. **Directory** The path where the database files will be stored
 2. **WriteBufferSize** Size threshold for memtable before flushing to disk
 3. **SyncOption** Controls durability vs performance tradeoff:
@@ -356,3 +358,30 @@ On crash
 This design guarantees durability, atomicity, and the ability to inspect past transactional state under failure recovery conditions.
 - WAL is replayed fully before memtable/SSTables are accessed.
 - Guarantees durability and atomicity for all committed transactions.
+
+## Motivation
+```
+My name is Alex Gaetano Padula, and I've spent the past several years fully immersed in one thing.. databases and storage engines. Not frameworks. Not trends. Just the raw, unforgiving internals of how data lives, moves, and survives.
+
+My journey began not with textbooks or formal training, but with pure curiosity. After writing my first database, CursusDB, to solve a real-time distributed problem, I couldn't stop experimenting. I dove into everything I could get my hands on.
+
+I didn't just want to use a database.
+I wanted to understand and build every layer of one, from disk to wire.
+
+I'm not a database or storage expert - I'm just someone who loves building and tinkering. I've written everything from the simplest key-value stores to complex real-time distributed systems, learning through trial and error, late-night debugging sessions, and countless experiments.
+
+Each engine taught me something new.
+Each mistake deepened my understanding.
+Each redesign brought me closer to fresh insights and ideas.
+
+And that's where Wildcat came in.
+
+I wanted to build a storage layer that didn't force you to choose between performance, safety, and usability. A system that embraced concurrency, durability, and simplicity, not as tradeoffs, but as first principles. Wildcat is my answer to the single-writer bottleneck - an MVCC, multi-writer, LSM-tree storage engine built in Go with a fully non-blocking transactional model.
+
+Wildcat isn't just code I wrote. It's the distillation of every storage engine I've experimented with, every system I've torn down to understand, and every lesson I've learned through hands-on building.
+
+It's a culmination of countless experiments, sleepless nights, LOTS of COFFEE, and a relentless curiosity about how things actually work under the hood.
+```
+
+## Contributing
+You can contribute, no problem!  Find a bug, optimization, refactor and submit a PR.  It will be reviewed.  You're only helping us all :)
