@@ -2,8 +2,28 @@
     <h1 align="left"><img width="128" src="artwork/wildcat-logo.png"></h1>
 </div>
 
+![License](https://img.shields.io/badge/license-MPL_2.0-blue)
+
+
 Wildcat is a high-performance embedded key-value database (or storage engine) written in Go. It incorporates modern database design principles including LSM (Log-Structured Merge) tree architecture, MVCC (Multi-Version Concurrency Control), and lock-free data structures for its critical paths, along with automatic background operations to deliver excellent read/write performance with strong consistency guarantees.
 
+## Table of Contents
+- [Features](#features)
+- [Basic Usage](#basic-usage)
+- [Version and Compatibility](#version-and-compatibility)
+- [Advanced Configuration](#advanced-configuration)
+- [Transaction Management](#manual-transaction-management)
+- [Iteration](#iterating-keys)
+- [Architecture Overview](#architecture-overview)
+- [Log Channel](#log-channel)
+- [MVCC Model](#mvcc-model)
+- [WAL and Durability](#wal-and-durability)
+- [Concurrency Model](#concurrency-model)
+- [Recoverability](#recoverability-guarantee-order)
+- [Isolation Levels](#isolation-levels)
+- [SSTable Format](#sstable-format)
+- [SSTable Metadata](#sstable-metadata)
+- [Compaction](#sstables-and-compaction)
 
 ## Features
 - LSM (Log-Structured Merge) tree architecture optimized for high write throughput
@@ -26,12 +46,15 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - Key value separation optimization (`.klog` for keys, `.vlog` for values, klog entries point to vlog entries)
 - Tombstone-aware compaction with retention based on active transaction windows
 
+## Version and Compatibility
+- Go 1.24+
+- Linux/macOS/Windows (64-bit)
 
 ## Basic Usage
 Wildcat supports opening multiple `wildcat.DB` instances in parallel, each operating independently in separate directories.
 
 ### Opening a Wildcat DB instance
-All that is required options wise is where your wildcat instance will live.
+The only required option is the database directory path.
 ```go
 // Create default options
 opts := &wildcat.Options{
@@ -46,6 +69,38 @@ if err != nil {
 }
 defer db.Close()
 ```
+
+## Advanced Configuration
+Wildcat provides several configuration options for fine-tuning.
+```go
+opts := &wildcat.Options{
+    Directory:           "/path/to/database",     // Directory for database files
+    WriteBufferSize:     32 * 1024 * 1024,        // 32MB memtable size
+    SyncOption:          wildcat.SyncFull,        // Full sync for maximum durability
+    SyncInterval:        128 * time.Millisecond,  // Only set when using SyncPartial, can be 0 otherwise
+    LevelCount:          7,                       // Number of LSM levels
+    LevelMultiplier:     10,                      // Size multiplier between levels
+    BlockManagerLRUSize: 256,                     // Cache size for block managers
+    BlockSetSize:        8 * 1024 * 1024,         // 8MB block set size, each klog block will have BlockSetSize of entries
+    LogChannel:          make(chan string, 1000), // Channel for real time logging
+    BloomFilter:         false,                   // Enable/disable sstable bloom filters
+}
+```
+
+### Configuration Options Explained
+1. **Directory** The path where the database files will be stored
+2. **WriteBufferSize** Size threshold for memtable before flushing to disk
+3. **SyncOption** Controls durability vs performance tradeoff:
+    - **SyncNone** Fastest, but no durability guarantees
+    - **SyncPartial** Balances performance and durability
+    - **SyncFull** Maximum durability, slower performance
+4. **SyncInterval** Time between background sync operations
+5. **LevelCount** Number of levels in the LSM tree
+6. **LevelMultiplier** Size ratio between adjacent levels
+7. **BlockManagerLRUSize** Number of block managers to cache
+8. **BlockSetSize** Size of SSTable klog block sets
+9. **LogChannel** Channel for real-time logging, useful for debugging and monitoring
+10. **BloomFilter** Enable or disable bloom filters for SSTables to speed up key lookups
 
 ### Simple Key-Value Operations
 The easiest way to interact with Wildcat is through the Update method, which handles transactions automatically.
@@ -100,8 +155,8 @@ if err != nil {
 }
 ```
 
-## Iterating Keys
-Wildcat supports MVCC-consistent, bidirectional iteration.
+### Iterating Keys
+Wildcat supports MVCC-consistent, bidirectional iteration. You iterate over keys and their values in order, no duplicates, and consistent!
 ```go
 txn := db.Begin()
 iter := txn.NewIterator(nil, nil)
@@ -139,7 +194,7 @@ db.Update(func(txn *wildcat.Txn) error {
 })
 ```
 
-## Read-Only Transactions with View
+### Read-Only Transactions with View
 ```go
 // Read a value with View
 var result []byte
@@ -167,51 +222,19 @@ db.View(func(txn *wildcat.Txn) error {
 })
 ```
 
-## Advanced Configuration
-Wildcat provides several configuration options for fine-tuning.
-```go
-opts := &wildcat.Options{
-    Directory:           "/path/to/database",     // Directory for database files
-    WriteBufferSize:     32 * 1024 * 1024,        // 32MB memtable size
-    SyncOption:          wildcat.SyncFull,        // Full sync for maximum durability
-    SyncInterval:        128 * time.Millisecond,  // Only set when using SyncPartial, can be 0 otherwise
-    LevelCount:          7,                       // Number of LSM levels
-    LevelMultiplier:     10,                      // Size multiplier between levels
-    BlockManagerLRUSize: 256,                     // Cache size for block managers
-    BlockSetSize:        8 * 1024 * 1024,         // 8MB block set size, each klog block will have BlockSetSize of entries
-    LogChannel:          make(chan string, 1000), // Channel for real time logging
-    BloomFilter:         false,                   // Enable/disable sstable bloom filters
-}
-```
-
-### Configuration Options Explained
-2. **Directory** The path where the database files will be stored
-3. **WriteBufferSize** Size threshold for memtable before flushing to disk
-4. **SyncOption** Controls durability vs performance tradeoff:
-    - **SyncNone** Fastest, but no durability guarantees
-    - **SyncPartial** Balances performance and durability
-    - **SyncFull** Maximum durability, slower performance
-5. **SyncInterval** Time between background sync operations
-6. **LevelCount** Number of levels in the LSM tree
-7. **LevelMultiplier** Size ratio between adjacent levels
-8. **BlockManagerLRUSize** Number of block managers to cache
-9. **BlockSetSize** Size of SSTable klog block sets
-10. **LogChannel** Channel for real-time logging, useful for debugging and monitoring
-11. **BloomFilter** Enable or disable bloom filters for SSTables to speed up key lookups
-
 ### Batch Operations
 You can perform multiple operations in a single transaction.
 ```go
 err := db.Update(func(txn *wildcat.Txn) error {
-    // Write multiple key-value pairs
-    for i := 0; i < 1000; i++ {
-        key := []byte(fmt.Sprintf("key%d", i))
-        value := []byte(fmt.Sprintf("value%d", i))
-        if err := txn.Put(key, value); err != nil {
-            return err
-        }
-    }
-    return nil
+// Write multiple key-value pairs
+for i := 0; i < 1000; i++ {
+key := []byte(fmt.Sprintf("key%d", i))
+value := []byte(fmt.Sprintf("value%d", i))
+if err := txn.Put(key, value); err != nil {
+return err
+}
+}
+return nil
 })
 ```
 
@@ -261,7 +284,7 @@ defer db.Close()
 ## Architecture Overview
 
 ### MVCC Model
-- Each key stores a timestamped version chain.
+- Each key stores a timestamped version chain. The timestamps used are physical nanosecond timestamps (derived `from time.Now().UnixNano())`, providing a simple yet effective global ordering for versions.
 - Transactions read the latest version ≤ their timestamp.
 - Writes are buffered and atomically committed.
 - Delete operations are recorded as tombstones.
@@ -313,7 +336,6 @@ During lookups
 - Block manager uses per-file concurrency-safe(multi writer-reader) access and is integrated with LRU for lifecycle management. It leverages direct system calls (pread/pwrite) for efficient, non-blocking disk I/O.
 - Writers never block; readers always see consistent, committed snapshots.
 - No uncommitted state ever surfaces due to internal synchronization and timestamp-based visibility guarantees.
-
 
 ### Isolation Levels
 Wildcat supports the following transactional isolation levels:
