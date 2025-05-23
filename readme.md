@@ -284,7 +284,7 @@ defer db.Close()
 ## Architecture Overview
 
 ### MVCC Model
-- Each key stores a timestamped version chain. The timestamps used are physical nanosecond timestamps (derived from time.Now().UnixNano()), providing a simple yet effective global ordering for versions.
+- Each key stores a timestamped version chain. The timestamps used are physical nanosecond timestamps (derived `from time.Now().UnixNano())`, providing a simple yet effective global ordering for versions.
 - Transactions read the latest version ≤ their timestamp.
 - Writes are buffered and atomically committed.
 - Delete operations are recorded as tombstones.
