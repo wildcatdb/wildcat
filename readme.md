@@ -2,31 +2,33 @@
     <h1 align="left"><img width="128" src="artwork/wildcat-logo.png"></h1>
 </div>
 
-Wildcat is a high-performance embedded key-value database or you can also call it a storage engine written in Go. It incorporates modern database design principles including LSM tree architecture, MVCC (Multi-Version Concurrency Control), and automatic background operations to deliver excellent read/write performance with strong consistency guarantees.
+Wildcat is a high-performance embedded key-value database (or storage engine) written in Go. It incorporates modern database design principles including LSM (Log-Structured Merge) tree architecture, MVCC (Multi-Version Concurrency Control), and lock-free data structures for its critical paths, along with automatic background operations to deliver excellent read/write performance with strong consistency guarantees.
+
 
 ## Features
-- LSMT(log-structure-merged-tree) architecture optimized for high write throughput
+- LSM (Log-Structured Merge) tree architecture optimized for high write throughput
 - Minimal to no blocking concurrency for readers and writers
-- Per-transaction WAL logging with recovery and rehydration
+- WAL logging captures full transaction state for recovery and rehydration
 - Version-aware skip list for fast in-memory MVCC access
 - Atomic write path, safe for multithreaded use
 - Scalable design with background flusher and compactor
-- Durable and concurrent block storage
+- Durable and concurrent block storage, leveraging **direct, offset-based file I/O (using `pread`/`pwrite`)** for optimal performance and control
 - Atomic LRU for active block manager handles
 - Memtable lifecycle management and snapshot durability
-- Configurable Sync options, `None`, `Partial (w/ background interval)`, `Full`
-- MVCC with snapshot isolation (with read timestamp)
-- WALs ensure durability and crash recovery of state, including active transactions
-- Automatic multi-threaded background compaction that maintains optimal performance over time
+- Configurable Sync options such as `None`, `Partial (with background interval)`, `Full`
+- Snapshot-isolated MVCC with read timestamps
+- Crash recovery restores all in-flight and committed transactions
+- Automatic multi-threaded background compaction
 - Full ACID transaction support
-- Bidirectional iteration for efficient data scanning
-- Can sustain write throughput at 100K+ txns/sec
-- Handles hundreds of thousands of concurrent read ops/sec with default settings
-- Bloom filter per sstable for fast key lookups
+- Bidirectional iteration with MVCC-consistent visibility
+- Sustains 100K+ txns/sec writes, and hundreds of thousands of reads/sec
+- Optional Bloom filter per SSTable for fast key lookups
+- Key value separation optimization (.klog for keys, .vlog for values, klog entries point to vlog entries)
+- Tombstone-aware compaction with retention based on active transaction windows
 
 
 ## Basic Usage
-Many `Wildcat.DB*` instances can be opened simultaneously, so long as their living directories are different. Each instance is independent and can be used in parallel.
+Wildcat supports opening multiple `wildcat.DB` instances in parallel, each operating independently in separate directories.
 
 ### Opening a Wildcat DB instance
 ```go
@@ -39,7 +41,7 @@ Directory: "/path/to/db",
 // Open or create a new Wildcat DB instance
 db, err := wildcat.Open(opts)
 if err != nil {
-    log.Fatalf("Failed to open database: %v", err)
+    // Handle error
 }
 defer db.Close()
 ```
@@ -52,7 +54,7 @@ err := db.Update(func(txn *wildcat.Txn) error {
     return txn.Put([]byte("hello"), []byte("world"))
 })
 if err != nil {
-    log.Fatalf("Failed to write: %v", err)
+    // Handle error
 }
 
 // Read a value
@@ -64,7 +66,7 @@ err = db.Update(func(txn *wildcat.Txn) error {
 })
 
 if err != nil {
-    log.Fatalf("Failed to read: %v", err)
+    // Handle error
 } else {
     fmt.Println("Value:", string(result)) // Outputs: Value: world
 }
@@ -80,34 +82,29 @@ txn := db.Begin()
 err := txn.Put([]byte("key1"), []byte("value1"))
 if err != nil {
     txn.Rollback()
-    log.Fatal(err)
+    // Handle error
 }
 
 value, err := txn.Get([]byte("key1"))
 if err != nil {
     txn.Rollback()
-    log.Fatal(err)
+    // Handle error
 }
 
 // Commit or rollback
 err = txn.Commit()
 if err != nil {
     txn.Rollback()
-    log.Fatal(err)
+    // Handle commit error
 }
 ```
 
 ## Iterating Keys
-Wildcat supports bidirectional, MVCC-consistent iteration within a transaction using `txn.NewIterator(startKey, prefix)`.
+Wildcat supports MVCC-consistent, bidirectional iteration.
 ```go
-// Begin a transaction
 txn := db.Begin()
-
-// Create an iterator from a given start key (or nil to begin from the start)
 iter := txn.NewIterator(nil, nil)
 
-// Forward iteration
-fmt.Println("Forward scan:")
 for {
     key, val, ts, ok := iter.Next()
     if !ok {
@@ -116,8 +113,6 @@ for {
     fmt.Printf("Key=%s Value=%s Timestamp=%d\n", key, val, ts)
 }
 
-// Reverse iteration
-fmt.Println("Reverse scan:")
 for {
     key, val, ts, ok := iter.Prev()
     if !ok {
@@ -127,31 +122,23 @@ for {
 }
 ```
 
-OR
+Or using a transaction block.
 
 ```go
-err := db.Update(func(txn *wildcat.Txn) error {
-    iter := txn.NewIterator(nil, nil) // Full forward scan
-
-    fmt.Println("Keys in snapshot:")
+db.Update(func(txn *wildcat.Txn) error {
+    iter := txn.NewIterator(nil, nil)
     for {
-        key, value, ts, ok := iter.Next()
+        key, val, ts, ok := iter.Next()
         if !ok {
             break
         }
-        fmt.Printf("Key=%s Value=%s Timestamp=%d\n", key, value, ts)
+        fmt.Printf("Key=%s Value=%s Timestamp=%d\n", key, val, ts)
     }
-
     return nil
 })
-if err != nil {
-    log.Fatalf("Iteration failed: %v", err)
-}
 ```
 
 ## Read-Only Transactions with View
-Wildcat provides a `View` method specifically designed for read-only operations. This is more efficient than using `Update` when you only need to read data.
-
 ```go
 // Read a value with View
 var result []byte
@@ -160,32 +147,23 @@ err = db.View(func(txn *wildcat.Txn) error {
     result, err = txn.Get([]byte("hello"))
     return err
 })
-
-if err != nil {
-    log.Fatalf("Failed to read: %v", err)
-} else {
-    fmt.Println("Value:", string(result)) // Outputs: Value: world
-}
 ```
 
-### Iterate through keys in read-only mode
+### Prefix Iteration with Snapshot Isolation
 ```go
-err := db.View(func(txn *wildcat.Txn) error {
-    iter := txn.NewIterator(nil, nil)
+db.View(func(txn *wildcat.Txn) error {
+    iter := txn.NewIterator(nil, []byte("user:"))
 
     for {
-        key, value, ts, ok := iter.Next()
+        key, val, ts, ok := iter.Next()
         if !ok {
             break
         }
-        fmt.Printf("Key=%s Value=%s Timestamp=%d\n", key, value, ts)
+        fmt.Printf("Key=%s Value=%s Timestamp=%d\n", key, val, ts)
     }
 
     return nil
 })
-if err != nil {
-    log.Fatalf("Iteration failed: %v", err)
-}
 ```
 
 ## Advanced Configuration
@@ -234,9 +212,6 @@ err := db.Update(func(txn *wildcat.Txn) error {
     }
     return nil
 })
-if err != nil {
-    log.Fatalf("Failed to write batch: %v", err)
-}
 ```
 
 ## Log Channel
@@ -282,49 +257,78 @@ wg.Wait() // Wait for the goroutine to finish
 defer db.Close()
 ```
 
-## Implementation Details
-### Data Storage Architecture
-Wildcat uses a multi-level Log-Structured Merge (LSM) tree architecture.
-
-- **Memtable** In-memory skiplist for recent writes (L0)
-- **Immutable Memtables** Memtables awaiting flush to disk
-- **SSTables** On-disk sorted string tables organized into levels
-- **Write-Ahead Log (WAL)** Ensures durability of in-memory data
-
-### Compaction Strategy
-Wildcat employs a hybrid compaction strategy:
-- **Size-Tiered Compaction (L1–L2)** Merges similarly sized SSTables to reduce write amplification and flush pressure. This strategy groups SSTables of comparable size and merges them into the next level. Ideal for absorbing high write throughput efficiently.
-- **Leveled Compaction (L3 and above)** Maintains disjoint key ranges within each level to optimize lookup performance. Overlapping SSTables from the lower level are merged into the appropriate ranges in the higher level, minimizing read amplification and ensuring predictable query cost.
-
-**Compaction is triggered when**
-1. A level size exceeds capacity
-2. Number of sstables exceeds threshold (CompactionSizeThreshold)
-3. Compaction score exceeds 1.0 `score = sizeScore * WeightSize + countScore * WeightCount` default:
-    - CompactionScoreSizeWeight = 0.7
-    - CompactionScoreCountWeight = 0.3
-4. Cooldown period passed (CompactionCooldownPeriod)
-
-
-### MVCC and Transactions
-Wildcat uses a snapshot-isolated MVCC (Multi-Version Concurrency Control) model to provide full ACID-compliant transactions with zero reader/writer blocking and high concurrency.
-
-Each transaction is assigned a unique, monotonic timestamp at creation time. This timestamp determines the visibility window of data for the entire duration of the transaction.
+## Architecture Overview
 
 ### MVCC Model
-- Each key stores a chain of timestamped versions (latest → oldest).
-- Reads only see the latest version ≤ transaction timestamp.
-- Writes are buffered in a per-transaction WriteSet and flushed atomically on commit.
-- Deletions are tracked via timestamped tombstones in a DeleteSet.
+- Each key stores a timestamped version chain.
+- Transactions read the latest version ≤ their timestamp.
+- Writes are buffered and atomically committed.
+- Delete operations are recorded as tombstones.
 
-### Snapshot Isolation
-- All reads during a transaction reflect a consistent snapshot of the database as of the transaction's start time.
-- Writers can proceed concurrently without locking; they do not overwrite but create a new version.
+### WAL and Durability
+- Shared WAL per memtable; transactions append full state.
+- WAL replay restores all committed and in-flight transactions.
+- WALs rotate when memtables flush.
 
-### WAL Durability
-- Transactions are logged to a write-ahead log (WAL) before commit, capturing the full WriteSet, DeleteSet, and ReadSet.
-- WALs are replayed on crash to restore in-flight or recently committed transactions.
+### Memtable Lifecycle
+- Active memtable is swapped atomically when full.
+- Immutable memtables are flushed in background.
 
-### Conflict Handling
-Wildcat uses an optimistic concurrency model.
-- Write-write conflicts are resolved by timestamp ordering - later transactions take precedence.
-- No explicit read/write conflict detection.
+### SSTables and Compaction
+- Immutable SSTables are organized into levels.
+- L1–L2 use size-tiered compaction.
+- L3+ use leveled compaction by key range.
+- Compaction score is calculated using a hybrid formula `score = (levelSize / capacity) * 0.7 + (sstableCount / threshold) * 0.3` compaction is triggered when score > 1.0
+- Cooldown period enforced between compactions to prevent resource thrashing.
+- Compaction filters out redundant tombstones based on timestamp and overlapping range.
+- A tombstone is dropped if it's older than the oldest active read and no longer needed in higher levels.
+
+### SSTable Metadata
+Each SSTable tracks the following main met
+- Min and Max keys for fast range filtering
+- EntryCount (total number of valid records) used for recreating filters if need be
+- Size (approximate byte size) used for when reopening levels
+- Optional BloomFilter for accelerated key lookups
+
+We only list the main meta data but there is more for internal use.
+
+### SSTable Format
+SSTables are append-only and composed of
+- **Block 0** BSON-encoded metadata block containing structural fields (Min, Max, EntryCount, etc.)
+- **Block 1..N** Serialized BlockSet entries containing sorted key/value pairs
+
+During lookups
+- The Bloom filter is consulted first (if enabled)
+- Then Min/Max key range is checked
+- If eligible, the scan proceeds over BlockSet entries until the key is found
+- Actual values are retrieved from the VLog by offset
+
+### Concurrency Model
+- Wildcat uses lock-free structures where possible (e.g., atomic value swaps for memtables, atomic lru, queues, and more)
+- Read and write operations are designed to be non-blocking.
+- WAL appends are retried with backoff and allow concurrent writes.
+- Flusher and Compactor run as independent goroutines, handling flushing and compaction in the background.
+- Block manager uses per-file concurrency-safe(multi writer-reader) access and is integrated with LRU for lifecycle management. It leverages direct system calls (pread/pwrite) for efficient, non-blocking disk I/O.
+- Writers never block; readers always see consistent, committed snapshots.
+- No uncommitted state ever surfaces due to internal synchronization and timestamp-based visibility guarantees.
+
+
+### Isolation Levels
+Wildcat supports the following transactional isolation levels:
+- **Snapshot Isolation** Transactions see a consistent snapshot of the database as of their start timestamp.
+- **Read Committed (implicit)** Readers only observe committed versions but do not see intermediate uncommitted writes.
+
+### Recoverability Guarantee Order
+- **WAL** All writes are first recorded to WAL atomically with full transaction details, including the transaction ID, ReadSet, WriteSet, and DeleteSet.
+- **Memtable** Writes are reflected in the in-memory memtable immediately upon commit.
+- **SSTables** Memtables are flushed to SSTables asynchronously via the flusher.
+
+On crash
+- Wildcat rehydrates all transactions from the WAL, including active but uncommitted transactions, and reinstates their state in memory.
+- Recovered transactions can be accessed via `GetTxn(id)` for inspection, conflict resolution, or auditing.
+- The WAL is replayed in timestamp order, ensuring that the in-memory structures reflect a correct, consistent view of the last known good state.
+- Only transactions with durable WAL entries are considered recoverable.
+
+This design guarantees durability, atomicity, and the ability to inspect past transactional state under failure recovery conditions.
+- WAL is replayed fully before memtable/SSTables are accessed.
+- Guarantees durability and atomicity for all committed transactions.
