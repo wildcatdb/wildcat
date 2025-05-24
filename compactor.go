@@ -71,7 +71,7 @@ type compactionEntry struct {
 // newCompactor creates a new compactor
 func newCompactor(db *DB, maxConcurrency int) *Compactor {
 	if maxConcurrency <= 0 {
-		maxConcurrency = MaxCompactionConcurrency
+		maxConcurrency = db.opts.MaxCompactionConcurrency
 	}
 
 	return &Compactor{
@@ -85,7 +85,7 @@ func newCompactor(db *DB, maxConcurrency int) *Compactor {
 // backgroundProcess runs the compaction process in the background
 func (compactor *Compactor) backgroundProcess() {
 	defer compactor.db.wg.Done()
-	ticker := time.NewTicker(CompactorTickerInterval)
+	ticker := time.NewTicker(compactor.db.opts.CompactorTickerInterval)
 	defer ticker.Stop()
 
 	for {
@@ -109,7 +109,7 @@ func (compactor *Compactor) checkAndScheduleCompactions() {
 	defer compactor.scoreLock.Unlock()
 
 	// Only check for new compactions after cooldown period
-	if time.Since(compactor.lastCompaction) < CompactionCooldownPeriod {
+	if time.Since(compactor.lastCompaction) < compactor.db.opts.CompactionCooldownPeriod {
 		return
 	}
 
@@ -132,10 +132,10 @@ func (compactor *Compactor) checkAndScheduleCompactions() {
 
 		// Calculate compaction score
 		sizeScore := float64(atomic.LoadInt64(&level.currentSize)) / float64(level.capacity)
-		countScore := float64(len(*sstables)) / float64(CompactionSizeThreshold)
+		countScore := float64(len(*sstables)) / float64(compactor.db.opts.CompactionSizeThreshold)
 
 		// Weight the scores
-		score := sizeScore*CompactionScoreSizeWeight + countScore*CompactionScoreCountWeight
+		score := sizeScore*compactor.db.opts.CompactionScoreSizeWeight + countScore*compactor.db.opts.CompactionScoreCountWeight
 
 		// Schedule compaction if score exceeds threshold
 		if score > 1.0 {
@@ -160,7 +160,7 @@ func (compactor *Compactor) checkAndScheduleCompactions() {
 // scheduleSizeTieredCompaction schedules a size-tiered compaction
 func (compactor *Compactor) scheduleSizeTieredCompaction(level *Level, levelNum int, score float64) {
 	sstables := level.sstables.Load()
-	if len(*sstables) < CompactionSizeThreshold {
+	if len(*sstables) < compactor.db.opts.CompactionSizeThreshold {
 		return
 	}
 
@@ -181,7 +181,7 @@ func (compactor *Compactor) scheduleSizeTieredCompaction(level *Level, levelNum 
 		similarSized := []*SSTable{sortedTables[i]}
 
 		j := i + 1
-		for j < len(sortedTables) && float64(sortedTables[j].Size)/float64(size) <= 1.5 && len(similarSized) < CompactionBatchSize {
+		for j < len(sortedTables) && float64(sortedTables[j].Size)/float64(size) <= 1.5 && len(similarSized) < compactor.db.opts.CompactionBatchSize {
 			similarSized = append(similarSized, sortedTables[j])
 			j++
 		}
@@ -197,7 +197,7 @@ func (compactor *Compactor) scheduleSizeTieredCompaction(level *Level, levelNum 
 
 	// If we couldn't find similar-sized tables, just take the smallest ones
 	if len(selectedTables) < 2 && len(sortedTables) >= 2 {
-		selectedTables = sortedTables[:min(CompactionBatchSize, len(sortedTables))]
+		selectedTables = sortedTables[:min(compactor.db.opts.CompactionBatchSize, len(sortedTables))]
 	}
 
 	if len(selectedTables) >= 2 {
@@ -529,7 +529,7 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 			estimatedUniqueKeys += table.EntryCount
 		}
 		// Use a more conservative estimate to avoid underprovision
-		bloomFilter, err = bloomfilter.New(uint(estimatedUniqueKeys), BloomFilterFalsePositiveRate)
+		bloomFilter, err = bloomfilter.New(uint(estimatedUniqueKeys), compactor.db.opts.BloomFilterFPR)
 		if err != nil {
 			return fmt.Errorf("failed to create bloom filter: %w", err)
 
@@ -931,12 +931,12 @@ func (compactor *Compactor) shouldCompact() bool {
 		}
 
 		// Size-based criteria - if level is above capacity * ratio
-		if atomic.LoadInt64(&level.currentSize) > int64(float64(level.capacity)*CompactionSizeRatio) {
+		if atomic.LoadInt64(&level.currentSize) > int64(float64(level.capacity)*compactor.db.opts.CompactionSizeRatio) {
 			return true
 		}
 
 		// Count-based criteria - if level has too many files
-		if len(*sstables) >= CompactionSizeThreshold {
+		if len(*sstables) >= compactor.db.opts.CompactionSizeThreshold {
 			return true
 		}
 	}

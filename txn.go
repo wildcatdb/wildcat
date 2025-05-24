@@ -337,7 +337,7 @@ func (txn *Txn) appendWal() error {
 	}
 
 	var lastErr error
-	for attempt := 0; attempt <= WALAppendRetry; attempt++ {
+	for attempt := 0; attempt <= txn.db.opts.WalAppendRetry; attempt++ {
 
 		walPath := txn.db.memtable.Load().(*Memtable).wal.path
 		wal, ok := txn.db.lru.Get(walPath)
@@ -347,10 +347,10 @@ func (txn *Txn) appendWal() error {
 				txn.db.opts.Permission, blockmanager.SyncOption(txn.db.opts.SyncOption))
 			if err != nil {
 				lastErr = fmt.Errorf("failed to open WAL block manager: %w", err)
-				if attempt == WALAppendRetry {
+				if attempt == txn.db.opts.WalAppendRetry {
 					return lastErr
 				}
-				time.Sleep(WALAppendBackoff)
+				time.Sleep(txn.db.opts.WalAppendBackoff)
 				continue
 			}
 
@@ -387,10 +387,10 @@ func (txn *Txn) appendWal() error {
 				txn.db.opts.Permission, blockmanager.SyncOption(txn.db.opts.SyncOption))
 			if err != nil {
 				lastErr = fmt.Errorf("failed to reopen WAL block manager: %w", err)
-				if attempt == WALAppendRetry {
+				if attempt == txn.db.opts.WalAppendRetry {
 					return lastErr
 				}
-				time.Sleep(WALAppendBackoff)
+				time.Sleep(txn.db.opts.WalAppendBackoff)
 				continue
 			}
 
@@ -414,12 +414,12 @@ func (txn *Txn) appendWal() error {
 		}
 
 		// Check if we've used all our retries
-		if attempt == WALAppendRetry {
+		if attempt == txn.db.opts.WalAppendRetry {
 			return lastErr
 		}
 
 		// Wait before next retry
-		time.Sleep(WALAppendBackoff)
+		time.Sleep(txn.db.opts.WalAppendBackoff)
 	}
 
 	return lastErr

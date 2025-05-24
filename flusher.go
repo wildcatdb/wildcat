@@ -87,7 +87,7 @@ func (flusher *Flusher) queueMemtable() error {
 // backgroundProcess starts the background process for flushing memtables
 func (flusher *Flusher) backgroundProcess() {
 	defer flusher.db.wg.Done()
-	ticker := time.NewTicker(FlusherTickerInterval)
+	ticker := time.NewTicker(flusher.db.opts.FlusherTickerInterval)
 	defer ticker.Stop()
 
 	for {
