@@ -76,9 +76,9 @@ type BlockManager struct {
 // Iterator is used to traverse the blocks in the file
 type Iterator struct {
 	blockManager *BlockManager // Reference to the BlockManager
-	blockID      uint32        // Current block ID in the iteration
-	lastBlockID  uint32        // Last block ID in the file
-	history      []uint32      // History of block IDs visited during iteration
+	prevBlockID  uint64        // Previous block ID in the iteration
+	blockID      uint64        // Current block ID in the iteration
+	lastBlockID  uint64        // Last block ID in the file
 }
 
 // Open opens a file and initializes the BlockManager.
@@ -822,53 +822,227 @@ func (bm *BlockManager) Iterator() *Iterator {
 
 	// Calculate how many blocks we have
 	dataSize := fileSize - int64(headerSize)
-	blockCount := uint32(dataSize) / BlockSize
+	blockCount := uint64(dataSize) / uint64(BlockSize)
 
 	return &Iterator{
 		blockManager: bm,
 		blockID:      1,
+		prevBlockID:  1,
 		lastBlockID:  blockCount,
-		history:      []uint32{},
 	}
 }
 
 // Next moves the iterator to the next block
 func (it *Iterator) Next() ([]byte, int64, error) {
-	if it.blockID > it.lastBlockID {
-		return nil, -1, errors.New("no more blocks to iterate")
+	// Start from the current blockID and find the next block with data
+	for it.blockID <= it.lastBlockID {
+		currentBlockID := it.blockID
+
+		// Try to read the current block
+		data, returnedBlockID, err := it.blockManager.Read(int64(currentBlockID))
+		if err != nil {
+			// If this block has an error, skip to the next block
+			it.blockID++
+			continue
+		}
+
+		// Successfully read data from this block
+		it.prevBlockID = currentBlockID
+
+		// For multi-block data, the returnedBlockID is the last block in the chain
+		// So the next block to check would be returnedBlockID + 1
+		it.blockID = uint64(returnedBlockID) + 1
+
+		return data, returnedBlockID, nil
 	}
 
-	if it.blockID == 0 {
-		return nil, -1, errors.New("no more blocks to iterate")
-	}
-
-	data, blockID, err := it.blockManager.Read(int64(it.blockID))
-	if err != nil {
-		return nil, -1, err
-	}
-
-	it.history = append(it.history, it.blockID)
-	it.blockID = uint32(blockID) + 1
-
-	return data, blockID, nil
+	// No more blocks with data found
+	return nil, -1, errors.New("no more blocks to iterate")
 }
 
 // Prev moves the iterator to the previous block
 func (it *Iterator) Prev() ([]byte, int64, error) {
-	if len(it.history) == 0 {
+	// If we're at block 1 or less, we can't go back further
+	if it.prevBlockID <= 1 {
 		return nil, -1, errors.New("no previous blocks to iterate")
 	}
 
-	// Pop the last block ID from the history
-	it.blockID = it.history[len(it.history)-1]
-	it.history = it.history[:len(it.history)-1]
+	// Start searching backwards from the previous block
+	searchBlockID := it.prevBlockID - 1
 
-	data, blockID, err := it.blockManager.Read(int64(it.blockID))
-	if err != nil {
-		return nil, -1, err
+	// Search backwards for the previous block that contains data
+	for searchBlockID >= 1 {
+		// First, check if this block has valid data
+		if !it.isValidBlock(searchBlockID) {
+			searchBlockID--
+			continue
+		}
+
+		// Find the head of the chain for this block
+		headBlockID, err := it.findChainHead(searchBlockID)
+		if err != nil {
+			searchBlockID--
+			continue
+		}
+
+		// Try to read from the head block
+		data, returnedBlockID, err := it.blockManager.Read(int64(headBlockID))
+		if err != nil {
+			searchBlockID--
+			continue
+		}
+
+		// Successfully found previous block with data
+		// Update iterator state
+		it.blockID = it.prevBlockID
+		it.prevBlockID = headBlockID
+
+		return data, returnedBlockID, nil
 	}
 
-	return data, blockID, nil
+	// No previous blocks with data found
+	return nil, -1, errors.New("no previous blocks to iterate")
+}
+
+// isValidBlock checks if a block exists and has valid data
+func (it *Iterator) isValidBlock(blockID uint64) bool {
+	if blockID == 0 || blockID > it.lastBlockID {
+		return false
+	}
+
+	headerSize := binary.Size(Header{})
+	if headerSize < 0 {
+		return false
+	}
+
+	blockHeaderSize := binary.Size(BlockHeader{})
+	if blockHeaderSize < 0 {
+		return false
+	}
+
+	// Calculate position for this block
+	position := int64(headerSize) + int64(blockID)*int64(BlockSize)
+
+	// Read block header
+	headerBuf := make([]byte, blockHeaderSize)
+	_, err := pread(it.blockManager.fd, headerBuf, position)
+	if err != nil {
+		return false
+	}
+
+	// Decode the header
+	var blockHeader BlockHeader
+	if err := binary.Read(bytes.NewReader(headerBuf), binary.LittleEndian, &blockHeader); err != nil {
+		return false
+	}
+
+	// Verify the CRC
+	expectedCRC := blockHeader.CRC
+	blockHeader.CRC = 0
+	headerBuf2 := new(bytes.Buffer)
+	if err := binary.Write(headerBuf2, binary.LittleEndian, &blockHeader); err != nil {
+		return false
+	}
+	calculatedCRC := crc32.ChecksumIEEE(headerBuf2.Bytes())
+
+	if expectedCRC != calculatedCRC {
+		return false
+	}
+
+	// Block is valid if it has data
+	return blockHeader.DataSize > 0
+}
+
+// findChainHead finds the head block of a chain that the given block belongs to
+func (it *Iterator) findChainHead(blockID uint64) (uint64, error) {
+	// Check if any block points to our target block
+	// We need to scan backwards to find a block that chains to our target
+
+	headerSize := binary.Size(Header{})
+	if headerSize < 0 {
+		return 0, errors.New("failed to calculate header size")
+	}
+
+	blockHeaderSize := binary.Size(BlockHeader{})
+	if blockHeaderSize < 0 {
+		return 0, errors.New("failed to calculate block header size")
+	}
+
+	// Start from block 1 and scan forward to find if any block chains to our target
+	for candidateHead := uint64(1); candidateHead < blockID; candidateHead++ {
+		if !it.isValidBlock(candidateHead) {
+			continue
+		}
+
+		// Check if this candidate block chains to our target block
+		if it.chainsToTarget(candidateHead, blockID) {
+			return candidateHead, nil
+		}
+	}
+
+	// If no block chains to our target, then our target is itself a head
+	return blockID, nil
+}
+
+// chainsToTarget checks if startBlock eventually chains to targetBlock
+func (it *Iterator) chainsToTarget(startBlock, targetBlock uint64) bool {
+	headerSize := binary.Size(Header{})
+	if headerSize < 0 {
+		return false
+	}
+
+	blockHeaderSize := binary.Size(BlockHeader{})
+	if blockHeaderSize < 0 {
+		return false
+	}
+
+	currentBlock := startBlock
+	visited := make(map[uint64]bool) // Prevent infinite loops**
+
+	// Follow the chain from startBlock
+	for currentBlock != EndOfChain && currentBlock != 0 {
+		// Prevent infinite loops
+		if visited[currentBlock] {
+			return false
+		}
+		visited[currentBlock] = true
+
+		// If we've reached our target, we found it
+		if currentBlock == targetBlock {
+			return true
+		}
+
+		// Read the current block header to get the next block
+		position := int64(headerSize) + int64(currentBlock)*int64(BlockSize)
+		headerBuf := make([]byte, blockHeaderSize)
+		_, err := pread(it.blockManager.fd, headerBuf, position)
+		if err != nil {
+			return false
+		}
+
+		var blockHeader BlockHeader
+		if err := binary.Read(bytes.NewReader(headerBuf), binary.LittleEndian, &blockHeader); err != nil {
+			return false
+		}
+
+		// Verify CRC
+		expectedCRC := blockHeader.CRC
+		blockHeader.CRC = 0
+		headerBuf2 := new(bytes.Buffer)
+		if err := binary.Write(headerBuf2, binary.LittleEndian, &blockHeader); err != nil {
+			return false
+		}
+		calculatedCRC := crc32.ChecksumIEEE(headerBuf2.Bytes())
+
+		if expectedCRC != calculatedCRC {
+			return false
+		}
+
+		// Move to next block in chain
+		currentBlock = blockHeader.NextBlock
+	}
+
+	return false
 }
 
 // BlockManager returns the block manager pointer from iterator
