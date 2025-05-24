@@ -103,6 +103,18 @@ opts := &wildcat.Options{
 8. **BlockSetSize** Size of SSTable klog block sets
 9. **LogChannel** Channel for real-time logging, useful for debugging and monitoring
 10. **BloomFilter** Enable or disable bloom filters for SSTables to speed up key lookups
+11. **MaxCompactionConcurrency** Maximum number of concurrent compactions
+12. **CompactionCooldownPeriod** Cooldown period for compaction
+13. **CompactionBatchSize** Max number of SSTables to compact at once
+14. **CompactionSizeRatio** Level size ratio that triggers compaction
+15. **CompactionSizeThreshold** Number of files to trigger size-tiered compaction
+16. **CompactionScoreSizeWeight** Weight for size-based score
+17. **CompactionScoreCountWeight** Weight for count-based score
+18. **FlusherTickerInterval** Interval for flusher ticker
+19. **CompactorTickerInterval** Interval for compactor ticker
+20. **BloomFilterFPR** False positive rate for Bloom filter
+21. **WalAppendRetry** Number of retries for WAL append
+22. **WalAppendBackoff** Backoff duration for WAL append
 
 ### Simple Key-Value Operations
 The easiest way to interact with Wildcat is through the Update method, which handles transactions automatically.

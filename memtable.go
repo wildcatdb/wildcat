@@ -50,7 +50,7 @@ func (memtable *Memtable) replay(activeTxns *[]*Txn) error {
 	if !ok {
 		memtable.db.log(fmt.Sprintf("WAL file not in LRU cache, opening: %s", memtable.wal.path))
 		// Open the WAL file
-		walBm, err = blockmanager.Open(memtable.wal.path, os.O_RDWR|os.O_CREATE, 0666, blockmanager.SyncOption(memtable.db.opts.SyncOption))
+		walBm, err = blockmanager.Open(memtable.wal.path, os.O_RDWR|os.O_CREATE, memtable.db.opts.Permission, blockmanager.SyncOption(memtable.db.opts.SyncOption))
 		if err != nil {
 			return fmt.Errorf("failed to open WAL block manager: %w", err)
 		}
@@ -161,7 +161,7 @@ func (memtable *Memtable) createBloomFilter(entries int64) (*bloomfilter.BloomFi
 	maxPossibleTs := time.Now().UnixNano() + 10000000000 // Far in the future
 	iter := memtable.skiplist.NewIterator(nil, maxPossibleTs)
 
-	bf, err := bloomfilter.New(uint(entries), BloomFilterFalsePositiveRate)
+	bf, err := bloomfilter.New(uint(entries), memtable.db.opts.BloomFilterFPR)
 	if err != nil {
 		return nil, err
 	}

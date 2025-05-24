@@ -242,7 +242,7 @@ func TestCompactor_LeveledCompaction(t *testing.T) {
 
 			// Manually trigger compaction scoring
 			db.compactor.scoreLock.Lock()
-			db.compactor.lastCompaction = time.Now().Add(-2 * CompactionCooldownPeriod)
+			db.compactor.lastCompaction = time.Now().Add(-2 * db.opts.CompactionCooldownPeriod)
 			db.compactor.scoreLock.Unlock()
 
 			// Check and schedule compactions
@@ -313,7 +313,7 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 
 	// Create multiple SSTables with similar sizes in L1
 	// Size-tiered compaction looks for similarly sized tables
-	for j := 0; j < CompactionSizeThreshold+1; j++ {
+	for j := 0; j < db.opts.CompactionSizeThreshold+1; j++ {
 		// Each iteration creates one SSTable
 		valueSize := 50 // Keep values similar in size
 
@@ -346,7 +346,7 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// Log current state
-		t.Logf("Created SSTable %d/%d", j+1, CompactionSizeThreshold+1)
+		t.Logf("Created SSTable %d/%d", j+1, db.opts.CompactionSizeThreshold+1)
 	}
 
 	// Wait for background operations
@@ -366,16 +366,16 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 
 	}
 
-	if len(*sstables) < CompactionSizeThreshold {
+	if len(*sstables) < db.opts.CompactionSizeThreshold {
 		t.Fatalf("Expected at least %d SSTables in level 1, found %d",
-			CompactionSizeThreshold, len(*sstables))
+			db.opts.CompactionSizeThreshold, len(*sstables))
 	}
 
 	t.Logf("Found %d SSTables in level 1, threshold is %d",
-		len(*sstables), CompactionSizeThreshold)
+		len(*sstables), db.opts.CompactionSizeThreshold)
 
 	// Force a size-tiered compaction by manually scheduling it
-	if len(*sstables) >= CompactionSizeThreshold {
+	if len(*sstables) >= db.opts.CompactionSizeThreshold {
 		// Sort tables by size to simulate size-tiered selection
 		sortedTables := make([]*SSTable, len(*sstables))
 		copy(sortedTables, *sstables)
@@ -385,7 +385,7 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 		})
 
 		// Select tables for compaction (at least 2)
-		numToCompact := min(CompactionBatchSize, len(sortedTables))
+		numToCompact := min(db.opts.CompactionBatchSize, len(sortedTables))
 
 		// Take the smallest tables for compaction
 		tablesToCompact := sortedTables[:numToCompact]
@@ -413,7 +413,7 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 	}
 
 	// Verify all keys are still readable (sample a few)
-	for j := 0; j < CompactionSizeThreshold+1; j += 2 {
+	for j := 0; j < db.opts.CompactionSizeThreshold+1; j += 2 {
 		for i := 0; i < 50; i += 10 {
 			key := fmt.Sprintf("st_batch%d_key%03d", j, i)
 

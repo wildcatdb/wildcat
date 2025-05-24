@@ -30,21 +30,12 @@ import (
 	"time"
 )
 
-// Constants for compaction policy
-const (
-	CompactionCooldownPeriod   = 1 * time.Second
-	CompactionBatchSize        = 4   // Max number of SSTables to compact at once
-	CompactionSizeRatio        = 1.2 // Level size ratio that triggers compaction
-	CompactionSizeThreshold    = 4   // Number of files to trigger size-tiered compaction
-	CompactionScoreSizeWeight  = 0.7 // Weight for size-based score
-	CompactionScoreCountWeight = 0.3 // Weight for count-based score
-	MaxCompactionConcurrency   = 2   // Maximum concurrent compactions
-)
+type SyncOption int
 
-// Constants for background operations
 const (
-	FlusherTickerInterval   = 64 * time.Microsecond // Interval for flusher ticker
-	CompactorTickerInterval = 64 * time.Millisecond // Interval for compactor ticker
+	SyncNone SyncOption = iota
+	SyncFull
+	SyncPartial
 )
 
 // Prefixes, filenames, extensions constants
@@ -57,50 +48,57 @@ const (
 	IDGSTFileName    = "idgstate" // Filename for ID generator state
 )
 
-// Bloom filter constants
-const (
-	BloomFilterFalsePositiveRate = 0.01 // False positive rate for Bloom filter
-)
-
-// Txn constants
-const (
-	WALAppendRetry   = 10 // Because a WAL is flushed atomically we want to be sure if a txn append operations is caught in the middle it can retry to append to fresh WAL and not an immutable one.
-	WALAppendBackoff = 128 * time.Microsecond
-)
-
-type SyncOption int
-
-const (
-	SyncNone SyncOption = iota
-	SyncFull
-	SyncPartial
-)
-
 // Defaults
 const (
-	DefaultWriteBufferSize     = 128 * 1024 * 1024
-	DefaultSyncOption          = SyncNone
-	DefaultSyncInterval        = 16 * time.Nanosecond
-	DefaultLevelCount          = 7
-	DefaultLevelMultiplier     = 4
-	DefaultBlockManagerLRUSize = 1024            // Size of the LRU cache for block managers
-	DefaultBlockSetSize        = 8 * 1024 * 1024 // Size of the block set
-	DefaultPermission          = 0750
+	DefaultWriteBufferSize            = 128 * 1024 * 1024    // Default write buffer size
+	DefaultSyncOption                 = SyncNone             // Default sync option for write operations
+	DefaultSyncInterval               = 16 * time.Nanosecond // Default sync interval for write operations
+	DefaultLevelCount                 = 7                    // Default number of levels in the LSM tree
+	DefaultLevelMultiplier            = 4                    // Multiplier for the number of levels
+	DefaultBlockManagerLRUSize        = 1024                 // Size of the LRU cache for block managers
+	DefaultBlockSetSize               = 8 * 1024 * 1024      // Size of the block set
+	DefaultPermission                 = 0750                 // Default permission for created files
+	DefaultBloomFilter                = false                // Default Bloom filter option
+	DefaultMaxCompactionConcurrency   = 2                    // Default max compaction concurrency
+	DefaultCompactionCooldownPeriod   = 1 * time.Second
+	DefaultCompactionBatchSize        = 4   // Default max number of SSTables to compact at once
+	DefaultCompactionSizeRatio        = 1.2 // Default level size ratio that triggers compaction
+	DefaultCompactionSizeThreshold    = 4   // Default number of files to trigger size-tiered compaction
+	DefaultCompactionScoreSizeWeight  = 0.7 // Default weight for size-based score
+	DefaultCompactionScoreCountWeight = 0.3 // Default weight for count-based score
+	DefaultFlusherTickerInterval      = 64 * time.Microsecond
+	DefaultCompactorTickerInterval    = 64 * time.Millisecond  // Default interval for compactor ticker
+	DefaultBloomFilterProbability     = 0.01                   // Default probability for Bloom filter
+	DefaultWALAppendRetry             = 10                     // Default number of retries for WAL append
+	DefaultWALAppendBackoff           = 128 * time.Microsecond // Default backoff duration for WAL append
+
 )
 
 // Options represents the configuration options for Wildcat
 type Options struct {
-	Directory           string        // Directory for Wildcat
-	WriteBufferSize     int64         // Size of the write buffer
-	SyncOption          SyncOption    // Sync option for write operations
-	SyncInterval        time.Duration // Interval for syncing the write buffer
-	LevelCount          int           // Number of levels in the LSM tree
-	LevelMultiplier     int           // Multiplier for the number of levels
-	BlockManagerLRUSize int           // Size of the LRU cache for block managers
-	BlockSetSize        int64         // Amount of entries per klog block (in bytes)
-	Permission          os.FileMode   // Permission for created files
-	LogChannel          chan string   // Channel for logging
-	BloomFilter         bool          // Enable Bloom filter for SSTables
+	Directory                  string        // Directory for Wildcat
+	WriteBufferSize            int64         // Size of the write buffer
+	SyncOption                 SyncOption    // Sync option for write operations
+	SyncInterval               time.Duration // Interval for syncing the write buffer
+	LevelCount                 int           // Number of levels in the LSM tree
+	LevelMultiplier            int           // Multiplier for the number of levels
+	BlockManagerLRUSize        int           // Size of the LRU cache for block managers
+	BlockSetSize               int64         // Amount of entries per klog block (in bytes)
+	Permission                 os.FileMode   // Permission for created files
+	LogChannel                 chan string   // Channel for logging
+	BloomFilter                bool          // Enable Bloom filter for SSTables
+	MaxCompactionConcurrency   int           // Maximum number of concurrent compactions
+	CompactionCooldownPeriod   time.Duration // Cooldown period for compaction
+	CompactionBatchSize        int           // Max number of SSTables to compact at once
+	CompactionSizeRatio        float64       // Level size ratio that triggers compaction
+	CompactionSizeThreshold    int           // Number of files to trigger size-tiered compaction
+	CompactionScoreSizeWeight  float64       // Weight for size-based score
+	CompactionScoreCountWeight float64       // Weight for count-based score
+	FlusherTickerInterval      time.Duration // Interval for flusher ticker
+	CompactorTickerInterval    time.Duration // Interval for compactor ticker
+	BloomFilterFPR             float64       // False positive rate for Bloom filter
+	WalAppendRetry             int           // Number of retries for WAL append
+	WalAppendBackoff           time.Duration // Backoff duration for WAL append
 }
 
 // DB represents the main Wildcat structure
@@ -141,37 +139,8 @@ func Open(opts *Options) (*DB, error) {
 		return nil, errors.New("directory cannot be empty")
 	}
 
-	if opts.WriteBufferSize <= 0 {
-		opts.WriteBufferSize = DefaultWriteBufferSize
-	}
-
-	if opts.SyncOption < SyncNone || opts.SyncOption > SyncPartial {
-		opts.SyncOption = DefaultSyncOption
-	}
-
-	if opts.SyncInterval <= 0 {
-		opts.SyncInterval = DefaultSyncInterval
-	}
-
-	if opts.LevelCount <= 0 {
-		opts.LevelCount = DefaultLevelCount
-	}
-
-	if opts.LevelMultiplier <= 0 {
-		opts.LevelMultiplier = DefaultLevelMultiplier
-	}
-
-	if opts.BlockManagerLRUSize <= 0 {
-		opts.BlockManagerLRUSize = DefaultBlockManagerLRUSize
-	}
-
-	if opts.BlockSetSize <= 0 {
-		opts.BlockSetSize = DefaultBlockSetSize
-	}
-
-	if opts.Permission == 0 {
-		opts.Permission = DefaultPermission
-	}
+	// Set default values for options
+	opts.setDefaults()
 
 	db := &DB{
 		lru:     lru.New(int64(opts.BlockManagerLRUSize), 0.25, 0.7),
@@ -189,7 +158,7 @@ func Open(opts *Options) (*DB, error) {
 	}
 
 	db.flusher = newFlusher(db)
-	db.compactor = newCompactor(db, MaxCompactionConcurrency)
+	db.compactor = newCompactor(db, db.opts.MaxCompactionConcurrency)
 
 	if !strings.HasSuffix(db.opts.Directory, string(os.PathSeparator)) {
 		db.opts.Directory += string(os.PathSeparator)
@@ -273,6 +242,94 @@ func Open(opts *Options) (*DB, error) {
 	go db.compactor.backgroundProcess()
 
 	return db, nil
+
+}
+
+// setDefaults checks and sets default values for db options
+func (opts *Options) setDefaults() {
+	if opts.WriteBufferSize <= 0 {
+		opts.WriteBufferSize = DefaultWriteBufferSize
+	}
+
+	if opts.SyncOption < SyncNone || opts.SyncOption > SyncPartial {
+		opts.SyncOption = DefaultSyncOption
+	}
+
+	if opts.SyncInterval <= 0 {
+		opts.SyncInterval = DefaultSyncInterval
+	}
+
+	if opts.LevelCount <= 0 {
+		opts.LevelCount = DefaultLevelCount
+	}
+
+	if opts.LevelMultiplier <= 0 {
+		opts.LevelMultiplier = DefaultLevelMultiplier
+	}
+
+	if opts.BlockManagerLRUSize <= 0 {
+		opts.BlockManagerLRUSize = DefaultBlockManagerLRUSize
+	}
+
+	if opts.BlockSetSize <= 0 {
+		opts.BlockSetSize = DefaultBlockSetSize
+	}
+
+	if opts.Permission == 0 {
+		opts.Permission = DefaultPermission
+	}
+
+	if opts.BloomFilter {
+		opts.BloomFilter = DefaultBloomFilter
+	}
+
+	if opts.MaxCompactionConcurrency <= 0 {
+		opts.MaxCompactionConcurrency = DefaultMaxCompactionConcurrency
+	}
+
+	if opts.CompactionCooldownPeriod <= 0 {
+		opts.CompactionCooldownPeriod = DefaultCompactionCooldownPeriod
+	}
+
+	if opts.CompactionBatchSize <= 0 {
+		opts.CompactionBatchSize = DefaultCompactionBatchSize
+	}
+
+	if opts.CompactionSizeRatio <= 0 {
+		opts.CompactionSizeRatio = DefaultCompactionSizeRatio
+	}
+
+	if opts.CompactionSizeThreshold <= 0 {
+		opts.CompactionSizeThreshold = DefaultCompactionSizeThreshold
+	}
+
+	if opts.CompactionScoreSizeWeight <= 0 {
+		opts.CompactionScoreSizeWeight = DefaultCompactionScoreSizeWeight
+	}
+
+	if opts.CompactionScoreCountWeight <= 0 {
+		opts.CompactionScoreCountWeight = DefaultCompactionScoreCountWeight
+	}
+
+	if opts.FlusherTickerInterval <= 0 {
+		opts.FlusherTickerInterval = DefaultFlusherTickerInterval
+	}
+
+	if opts.CompactorTickerInterval <= 0 {
+		opts.CompactorTickerInterval = DefaultCompactorTickerInterval
+	}
+
+	if opts.BloomFilterFPR <= 0 {
+		opts.BloomFilterFPR = DefaultBloomFilterProbability
+	}
+
+	if opts.WalAppendRetry <= 0 {
+		opts.WalAppendRetry = DefaultWALAppendRetry
+	}
+
+	if opts.WalAppendBackoff <= 0 {
+		opts.WalAppendBackoff = DefaultWALAppendBackoff
+	}
 
 }
 
