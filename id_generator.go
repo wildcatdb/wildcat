@@ -18,6 +18,7 @@ package wildcat
 import (
 	"math"
 	"sync/atomic"
+	"time"
 )
 
 // The IDGenerator is a thread-safe utility for generating unique, monotonic IDs.
@@ -31,6 +32,13 @@ type IDGenerator struct {
 func newIDGenerator() *IDGenerator {
 	return &IDGenerator{
 		lastID: 0,
+	}
+}
+
+// newIDGeneratorWithTimestamp creates a new ID generator starting from current nanosecond
+func newIDGeneratorWithTimestamp() *IDGenerator {
+	return &IDGenerator{
+		lastID: time.Now().UnixNano(),
 	}
 }
 

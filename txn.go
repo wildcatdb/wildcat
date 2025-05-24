@@ -48,7 +48,7 @@ func (db *DB) Begin() *Txn {
 		ReadSet:   make(map[string]int64),
 		WriteSet:  make(map[string][]byte),
 		DeleteSet: make(map[string]bool),
-		Timestamp: time.Now().UnixNano(),
+		Timestamp: db.txnTSGenerator.nextID(), // Monotonic ordering and no timestamp collisions even under extreme load
 		Committed: false,
 		mutex:     sync.Mutex{},
 	}
