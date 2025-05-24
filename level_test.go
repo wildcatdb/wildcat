@@ -359,8 +359,10 @@ func TestLevel_SizeMethods(t *testing.T) {
 		t.Fatalf("Failed to insert large value: %v", err)
 	}
 
-	// Give time for background operations
-	time.Sleep(500 * time.Millisecond)
+	err = db.ForceFlush()
+	if err != nil {
+		return
+	}
 
 	// After data insertion and flush, size should have increased
 	currentSize := level1.getSize()
