@@ -832,6 +832,38 @@ func (bm *BlockManager) Iterator() *Iterator {
 	}
 }
 
+// IteratorFromBlock returns an iterator that starts at the specified block ID
+func (bm *BlockManager) IteratorFromBlock(startBlockID uint64) *Iterator {
+
+	// Get current last block based on file size
+	fileInfo, err := bm.file.Stat()
+	if err != nil {
+		return nil
+	}
+
+	fileSize := fileInfo.Size()
+	headerSize := binary.Size(Header{})
+	if headerSize < 0 {
+		return nil
+	}
+
+	// Calculate how many blocks we have
+	dataSize := fileSize - int64(headerSize)
+	blockCount := uint64(dataSize) / uint64(BlockSize)
+
+	// Validate the starting block ID
+	if startBlockID < 1 || startBlockID > blockCount {
+		return nil // Invalid starting block ID
+	}
+
+	return &Iterator{
+		blockManager: bm,
+		blockID:      startBlockID,
+		prevBlockID:  startBlockID,
+		lastBlockID:  blockCount,
+	}
+}
+
 // Next moves the iterator to the next block
 func (it *Iterator) Next() ([]byte, int64, error) {
 	// Start from the current blockID and find the next block with data
@@ -1048,4 +1080,286 @@ func (it *Iterator) chainsToTarget(startBlock, targetBlock uint64) bool {
 // BlockManager returns the block manager pointer from iterator
 func (it *Iterator) BlockManager() *BlockManager {
 	return it.blockManager
+}
+
+// Update modifies the data at the specified block ID in place.
+// If the new data is larger than the existing data, it will extend the chain.
+// If the new data is smaller, it will free unused blocks.
+// Returns the ID of the first block or an error.
+func (bm *BlockManager) Update(blockID int64, newData []byte) (int64, error) {
+	if blockID <= 0 {
+		return -1, errors.New("invalid block ID")
+	}
+
+	if len(newData) == 0 {
+		return -1, errors.New("no data to update")
+	}
+
+	// First, verify the block exists and is readable
+	_, _, err := bm.Read(blockID)
+	if err != nil {
+		return -1, err
+	}
+
+	// Calculate space requirements
+	blockHeaderSize := binary.Size(BlockHeader{})
+	if blockHeaderSize < 0 {
+		return -1, errors.New("failed to calculate block header size")
+	}
+
+	dataSpacePerBlock := int(BlockSize) - blockHeaderSize
+
+	// Calculate blocks needed for new data
+	newBlocksNeeded := (len(newData) + dataSpacePerBlock - 1) / dataSpacePerBlock
+
+	// Find existing chain length and collect existing block IDs
+	existingBlocks, err := bm.getBlockChain(uint64(blockID))
+	if err != nil {
+		return -1, err
+	}
+
+	existingBlocksCount := len(existingBlocks)
+
+	headerSize := binary.Size(Header{})
+	if headerSize < 0 {
+		return -1, errors.New("failed to calculate header size")
+	}
+
+	// Case 1: New data fits in existing blocks (same size or smaller)
+	if newBlocksNeeded <= existingBlocksCount {
+		err := bm.updateExistingBlocks(existingBlocks, newData, newBlocksNeeded)
+		if err != nil {
+			return -1, err
+		}
+
+		// If we're using fewer blocks, free the unused ones
+		if newBlocksNeeded < existingBlocksCount {
+			err := bm.freeUnusedBlocks(existingBlocks[newBlocksNeeded:])
+			if err != nil {
+				return -1, err
+			}
+		}
+
+		return blockID, nil
+	}
+
+	// Case 2: New data requires more blocks (extension)
+	additionalBlocksNeeded := newBlocksNeeded - existingBlocksCount
+
+	// Allocate additional blocks
+	additionalBlocks := make([]uint64, additionalBlocksNeeded)
+	for i := 0; i < additionalBlocksNeeded; i++ {
+		newBlockID, err := bm.allocateBlock()
+		if err != nil {
+
+			// If allocation fails, free any blocks we've already allocated
+			for j := 0; j < i; j++ {
+				bm.allocationTable.Enqueue(additionalBlocks[j])
+			}
+			return -1, err
+		}
+		additionalBlocks[i] = newBlockID
+	}
+
+	// Combine existing and new blocks
+	allBlocks := append(existingBlocks, additionalBlocks...)
+
+	// Update all blocks with new data
+	err = bm.updateExistingBlocks(allBlocks, newData, newBlocksNeeded)
+	if err != nil {
+
+		// If update fails, free the additional blocks we allocated
+		for _, bid := range additionalBlocks {
+			bm.allocationTable.Enqueue(bid)
+		}
+		return -1, err
+	}
+
+	return blockID, nil
+}
+
+// getBlockChain returns all block IDs in the chain starting from the given block
+func (bm *BlockManager) getBlockChain(startBlockID uint64) ([]uint64, error) {
+	var chainBlocks []uint64
+	currentBlockID := startBlockID
+
+	headerSize := binary.Size(Header{})
+	blockHeaderSize := binary.Size(BlockHeader{})
+
+	visited := make(map[uint64]bool) // Prevent infinite loops
+
+	for currentBlockID != EndOfChain {
+
+		// Prevent infinite loops
+		if visited[currentBlockID] {
+			return nil, errors.New("circular reference detected in block chain")
+		}
+		visited[currentBlockID] = true
+
+		chainBlocks = append(chainBlocks, currentBlockID)
+
+		// Read block header to get next block
+		position := int64(headerSize) + int64(currentBlockID)*int64(BlockSize)
+		headerBuf := make([]byte, blockHeaderSize)
+
+		_, err := pread(bm.fd, headerBuf, position)
+		if err != nil {
+			return nil, err
+		}
+
+		var blockHeader BlockHeader
+		if err := binary.Read(bytes.NewReader(headerBuf), binary.LittleEndian, &blockHeader); err != nil {
+			return nil, err
+		}
+
+		// Verify CRC
+		expectedCRC := blockHeader.CRC
+		blockHeader.CRC = 0
+		headerBuf2 := new(bytes.Buffer)
+		if err := binary.Write(headerBuf2, binary.LittleEndian, &blockHeader); err != nil {
+			return nil, err
+		}
+		calculatedCRC := crc32.ChecksumIEEE(headerBuf2.Bytes())
+
+		if expectedCRC != calculatedCRC {
+			return nil, errors.New("block header CRC mismatch")
+		}
+
+		currentBlockID = blockHeader.NextBlock
+	}
+
+	return chainBlocks, nil
+}
+
+// updateExistingBlocks writes new data to the specified blocks
+func (bm *BlockManager) updateExistingBlocks(blockIDs []uint64, data []byte, blocksToUse int) error {
+
+	blockHeaderSize := binary.Size(BlockHeader{})
+	dataSpacePerBlock := int(BlockSize) - blockHeaderSize
+	headerSize := binary.Size(Header{})
+
+	remainingData := data
+
+	for i := 0; i < blocksToUse; i++ {
+		currentBlockID := blockIDs[i]
+		position := int64(headerSize) + int64(currentBlockID)*int64(BlockSize)
+
+		// Determine data for this block
+		var dataToWrite []byte
+		var nextBlockID uint64 = EndOfChain
+
+		if len(remainingData) > dataSpacePerBlock {
+			dataToWrite = remainingData[:dataSpacePerBlock]
+			remainingData = remainingData[dataSpacePerBlock:]
+
+			// Set next block if we have more blocks to write
+			if i < blocksToUse-1 {
+				nextBlockID = blockIDs[i+1]
+			}
+		} else {
+			dataToWrite = remainingData
+			remainingData = nil
+		}
+
+		// Create block header
+		blockHeader := BlockHeader{
+			BlockID:   currentBlockID,
+			DataSize:  uint64(len(dataToWrite)),
+			NextBlock: nextBlockID,
+		}
+
+		// Calculate CRC
+		headerBuf := new(bytes.Buffer)
+		blockHeader.CRC = 0
+		if err := binary.Write(headerBuf, binary.LittleEndian, &blockHeader); err != nil {
+			return err
+		}
+		blockHeader.CRC = crc32.ChecksumIEEE(headerBuf.Bytes())
+
+		// Create block buffer
+		blockBuffer := make([]byte, BlockSize)
+
+		// Write header with CRC
+		headerBuf.Reset()
+		if err := binary.Write(headerBuf, binary.LittleEndian, &blockHeader); err != nil {
+			return err
+		}
+
+		copy(blockBuffer, headerBuf.Bytes())
+		copy(blockBuffer[blockHeaderSize:], dataToWrite)
+
+		// Zero out remaining space
+		for j := blockHeaderSize + len(dataToWrite); j < len(blockBuffer); j++ {
+			blockBuffer[j] = 0
+		}
+
+		// Write block to file
+		_, err := pwrite(bm.fd, blockBuffer, position)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Sync if needed
+	if bm.syncOption == SyncFull {
+		_ = syscall.Fdatasync(int(bm.fd))
+	}
+
+	return nil
+}
+
+// freeUnusedBlocks marks the specified blocks as free and adds them back to allocation table
+func (bm *BlockManager) freeUnusedBlocks(blockIDs []uint64) error {
+	headerSize := binary.Size(Header{})
+
+	for _, blockID := range blockIDs {
+
+		// Create a free block header
+		blockHeader := BlockHeader{
+			BlockID:   blockID,
+			DataSize:  0,          // No data for free blocks
+			NextBlock: EndOfChain, // End of chain for free blocks
+		}
+
+		// Calculate CRC
+		headerBuf := new(bytes.Buffer)
+		blockHeader.CRC = 0
+		if err := binary.Write(headerBuf, binary.LittleEndian, &blockHeader); err != nil {
+			return err
+		}
+		blockHeader.CRC = crc32.ChecksumIEEE(headerBuf.Bytes())
+
+		// Create block buffer
+		blockBuffer := make([]byte, BlockSize)
+
+		// Write header with CRC
+		headerBuf.Reset()
+		if err := binary.Write(headerBuf, binary.LittleEndian, &blockHeader); err != nil {
+			return err
+		}
+
+		copy(blockBuffer, headerBuf.Bytes())
+
+		// Zero out the rest
+		for j := len(headerBuf.Bytes()); j < len(blockBuffer); j++ {
+			blockBuffer[j] = 0
+		}
+
+		// Write to file
+		position := int64(headerSize) + int64(blockID)*int64(BlockSize)
+		_, err := pwrite(bm.fd, blockBuffer, position)
+		if err != nil {
+			return err
+		}
+
+		// Add back to allocation table
+		bm.allocationTable.Enqueue(blockID)
+	}
+
+	// Sync if needed
+	if bm.syncOption == SyncFull {
+		_ = syscall.Fdatasync(int(bm.fd))
+	}
+
+	return nil
 }

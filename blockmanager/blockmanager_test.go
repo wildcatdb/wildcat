@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"github.com/guycipher/wildcat/queue"
 	"hash/crc32"
-	"io/ioutil"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -31,11 +30,7 @@ import (
 
 func TestWriteHeader(t *testing.T) {
 	// Create a temporary directory for test files
-	tmpDir, err := ioutil.TempDir("", "blockmanager-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := os.TempDir()
 
 	// Create a test file path
 	testFilePath := filepath.Join(tmpDir, "test-write-header.db")
@@ -45,7 +40,9 @@ func TestWriteHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
-	defer file.Close()
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
 
 	// Create a BlockManager with the file
 	bm := &BlockManager{
@@ -117,11 +114,7 @@ func TestWriteHeader(t *testing.T) {
 
 func TestReadHeader(t *testing.T) {
 	// Create a temporary directory for test files
-	tmpDir, err := ioutil.TempDir("", "blockmanager-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := os.TempDir()
 
 	// Create a test file path
 	testFilePath := filepath.Join(tmpDir, "test-read-header.db")
@@ -131,7 +124,9 @@ func TestReadHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
-	defer file.Close()
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
 
 	// Create a BlockManager with the file
 	bm := &BlockManager{
@@ -157,7 +152,9 @@ func TestReadHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create invalid test file: %v", err)
 	}
-	defer invalidF.Close()
+	defer func(invalidF *os.File) {
+		_ = invalidF.Close()
+	}(invalidF)
 
 	// Create an invalid header
 	invalidHeader := Header{
@@ -205,7 +202,9 @@ func TestReadHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create invalid CRC test file: %v", err)
 	}
-	defer invalidCRCF.Close()
+	defer func(invalidCRCF *os.File) {
+		_ = invalidCRCF.Close()
+	}(invalidCRCF)
 
 	// Create a valid header
 	validHeader := Header{
@@ -256,7 +255,9 @@ func TestReadHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create invalid version test file: %v", err)
 	}
-	defer invalidVersionF.Close()
+	defer func(invalidVersionF *os.File) {
+		_ = invalidVersionF.Close()
+	}(invalidVersionF)
 
 	// Create a header with invalid version
 	invalidVersionHeader := Header{
@@ -301,11 +302,7 @@ func TestReadHeader(t *testing.T) {
 
 func TestHeaderRoundTrip(t *testing.T) {
 	// Create a temporary directory for test files
-	tmpDir, err := ioutil.TempDir("", "blockmanager-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := os.TempDir()
 
 	// Create a test file path
 	testFilePath := filepath.Join(tmpDir, "test-round-trip.db")
@@ -315,7 +312,9 @@ func TestHeaderRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
-	defer file.Close()
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
 
 	// Create a BlockManager with the file
 	bm := &BlockManager{
@@ -340,7 +339,9 @@ func TestHeaderRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to reopen test file: %v", err)
 	}
-	defer reopenedFile.Close()
+	defer func(reopenedFile *os.File) {
+		_ = reopenedFile.Close()
+	}(reopenedFile)
 
 	// Create a new BlockManager with the reopened file
 	reopenedBM := &BlockManager{
@@ -361,14 +362,15 @@ func TestHeaderRoundTrip(t *testing.T) {
 func TestOpenNewFile(t *testing.T) {
 	// Create a path for a new file
 	tempFilePath := os.TempDir() + "/blockmanager_open_test"
-	defer os.Remove(tempFilePath) // Clean up after test
 
 	// Open a new file (should create it)
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
 	if err != nil {
 		t.Fatalf("Failed to open new file: %v", err)
 	}
-	defer bm.Close()
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
 
 	// Check if the allocation table has the expected initial blocks
 	if bm.allocationTable.IsEmpty() {
@@ -391,14 +393,16 @@ func TestOpenNewFile(t *testing.T) {
 func TestAppendSmallData(t *testing.T) {
 	// Create a path for a new file
 	tempFilePath := os.TempDir() + "/blockmanager_append_small_test"
-	defer os.Remove(tempFilePath) // Clean up after test
+	// Clean up after test
 
 	// Open a new file
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)
 	}
-	defer bm.Close()
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
 
 	// Small data (less than one block)
 	data := []byte("This is a test data for small append")
@@ -426,14 +430,17 @@ func TestAppendSmallData(t *testing.T) {
 func TestAppendLargeData(t *testing.T) {
 	// Create a path for a new file
 	tempFilePath := os.TempDir() + "/blockmanager_append_large_test"
-	defer os.Remove(tempFilePath) // Clean up after test
+	// Clean up after test
 
 	// Open a new file
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 066, SyncPartial, time.Millisecond*24)
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)
 	}
-	defer bm.Close()
+
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
 
 	// Calculate size for data larger than one block
 	blockHeaderSize := 16 // Size of BlockHeader struct (4 uint32 fields)
@@ -467,14 +474,17 @@ func TestAppendLargeData(t *testing.T) {
 func TestMultipleAppendsAndReads(t *testing.T) {
 	// Create a path for a new file
 	tempFilePath := os.TempDir() + "/blockmanager_multiple_test"
-	defer os.Remove(tempFilePath) // Clean up after test
+	// Clean up after test
 
 	// Open a new file
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)
 	}
-	defer bm.Close()
+
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
 
 	// Test with multiple appends of different sizes
 	testData := [][]byte{
@@ -515,7 +525,7 @@ func TestMultipleAppendsAndReads(t *testing.T) {
 func TestReopenFile(t *testing.T) {
 	// Create a path for a new file
 	tempFilePath := os.TempDir() + "/blockmanager_reopen_test"
-	defer os.Remove(tempFilePath) // Clean up after test
+	// Clean up after test
 
 	// Data to write
 	data := []byte("Test data for reopening file")
@@ -544,7 +554,10 @@ func TestReopenFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to reopen file: %v", err)
 		}
-		defer bm.Close()
+
+		defer func(bm *BlockManager) {
+			_ = bm.Close()
+		}(bm)
 
 		readData, _, err := bm.Read(blockID)
 		if err != nil {
@@ -561,14 +574,17 @@ func TestReopenFile(t *testing.T) {
 func TestAllotmentExhaustion(t *testing.T) {
 	// Create a path for a new file
 	tempFilePath := os.TempDir() + "/blockmanager_allotment_test"
-	defer os.Remove(tempFilePath) // Clean up after test
+	// Clean up after test
 
 	// Open a new file
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncPartial, time.Millisecond*24)
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)
 	}
-	defer bm.Close()
+
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
 
 	// Small data to append
 	data := []byte("Small test data")
@@ -603,14 +619,17 @@ func TestAllotmentExhaustion(t *testing.T) {
 func TestInvalidBlockRead(t *testing.T) {
 	// Create a path for a new file
 	tempFilePath := os.TempDir() + "/blockmanager_invalid_read_test"
-	defer os.Remove(tempFilePath) // Clean up after test
+	// Clean up after test
 
 	// Open a new file
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncPartial, time.Millisecond*24)
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)
 	}
-	defer bm.Close()
+
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
 
 	// Try to read from an invalid block ID
 	_, _, err = bm.Read(-1)
@@ -628,14 +647,16 @@ func TestInvalidBlockRead(t *testing.T) {
 func TestEmptyAppend(t *testing.T) {
 	// Create a path for a new file
 	tempFilePath := os.TempDir() + "/blockmanager_empty_append_test"
-	defer os.Remove(tempFilePath) // Clean up after test
+	// Clean up after test
 
 	// Open a new file
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)
 	}
-	defer bm.Close()
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
 
 	// Try to append empty data
 	_, err = bm.Append([]byte{})
@@ -647,14 +668,17 @@ func TestEmptyAppend(t *testing.T) {
 func TestGetInitialBlockID(t *testing.T) {
 	// Create a temporary file for testing
 	tempFilePath := os.TempDir() + "/blockmanager_initial_block_test"
-	defer os.Remove(tempFilePath) // Clean up after test
+	// Clean up after test
 
 	// Open a new file
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)
 	}
-	defer bm.Close()
+
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
 
 	// Write a single block to the file
 	data := []byte("Test data for initial block")
@@ -675,14 +699,16 @@ func TestIterator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
-	defer os.Remove(tempFile.Name())
 
 	// Open the BlockManager
 	bm, err := Open(tempFile.Name(), os.O_RDWR|os.O_CREATE, 0644, SyncPartial, time.Millisecond*24)
 	if err != nil {
 		t.Fatalf("Failed to open BlockManager: %v", err)
 	}
-	defer bm.Close()
+
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
 
 	// Append some data to the BlockManager
 	data1 := []byte("Block 1 data")
@@ -771,10 +797,70 @@ func TestIterator(t *testing.T) {
 	}
 }
 
+func TestIteratorFromBlock(t *testing.T) {
+	tempFile, err := os.CreateTemp("", "blockmanager_iterator_from_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+
+	// Open the BlockManager
+	bm, err := Open(tempFile.Name(), os.O_RDWR|os.O_CREATE, 0644, SyncNone)
+	if err != nil {
+		t.Fatalf("Failed to open BlockManager: %v", err)
+	}
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
+
+	// Append several blocks of data
+	testData := [][]byte{
+		[]byte("Block 1 data"),
+		[]byte("Block 2 data"),
+		[]byte("Block 3 data"),
+		[]byte("Block 4 data"),
+		[]byte("Block 5 data"),
+	}
+
+	blockIDs := make([]int64, len(testData))
+	for i, data := range testData {
+		blockID, err := bm.Append(data)
+		if err != nil {
+			t.Fatalf("Failed to append data %d: %v", i, err)
+		}
+		blockIDs[i] = blockID
+	}
+
+	// Test iterator starting from block 3
+	iterator := bm.IteratorFromBlock(3)
+	if iterator == nil {
+		t.Fatalf("IteratorFromBlock returned nil")
+	}
+
+	// Should start reading from block 3
+	expectedStartData := []string{"Block 3 data", "Block 4 data", "Block 5 data"}
+
+	got := make([]string, 0)
+
+	for {
+		data, _, err := iterator.Next()
+		if err != nil {
+			break
+		}
+		got = append(got, string(data))
+
+	}
+
+	if len(got) != len(expectedStartData) {
+		t.Fatalf("Expected %d blocks, got %d", len(expectedStartData), len(got))
+
+	}
+
+}
+
 func TestScanForFreeBlocks(t *testing.T) {
 	// Create a temporary file for testing
 	tempFilePath := os.TempDir() + "/blockmanager_scan_free_test"
-	defer os.Remove(tempFilePath) // Clean up after test
+	// Clean up after test
 
 	// Open a new file
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
@@ -815,7 +901,10 @@ func TestScanForFreeBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to reopen file: %v", err)
 	}
-	defer bm.Close()
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+
+	}(bm)
 
 	// Count free blocks after reopening
 	freeBlocksAfterReopen := 0
@@ -859,7 +948,10 @@ func TestScanForFreeBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to reopen file again: %v", err)
 	}
-	defer bm.Close()
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+
+	}(bm)
 
 	scanDuration := time.Since(scanStart)
 
@@ -888,7 +980,6 @@ func TestScanForFreeBlocks(t *testing.T) {
 
 	// Create a new file for this specific test
 	edgeFilePath := os.TempDir() + "/blockmanager_scan_edge_test"
-	defer os.Remove(edgeFilePath)
 
 	edgeBm, err := Open(edgeFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
 	if err != nil {
@@ -931,7 +1022,10 @@ func TestScanForFreeBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to reopen edge case file: %v", err)
 	}
-	defer edgeBm.Close()
+
+	defer func(edgeBm *BlockManager) {
+		_ = edgeBm.Close()
+	}(edgeBm)
 
 	// Verify we have free blocks in the allocation table
 	if edgeBm.allocationTable.IsEmpty() {
@@ -958,7 +1052,6 @@ func TestScanForFreeBlocks(t *testing.T) {
 
 func TestPartialBlockWriteRecovery(t *testing.T) {
 	tempFilePath := os.TempDir() + "/bm_partial_block_test"
-	defer os.Remove(tempFilePath)
 
 	// Write a broken block manually
 	f, err := os.OpenFile(tempFilePath, os.O_RDWR|os.O_CREATE, 0666)
@@ -988,7 +1081,7 @@ func TestPartialBlockWriteRecovery(t *testing.T) {
 	copy(incompleteBlockHeader, []byte{0x00, 0x00, 0x00, 0x00})
 	_, _ = f.WriteAt(incompleteBlockHeader, int64(binary.Size(Header{})+int(BlockSize)))
 
-	f.Close()
+	_ = f.Close()
 
 	// Now open with blockmanager (should not panic or fail)
 	bm, err := Open(tempFilePath, os.O_RDWR, 0666, SyncNone)
@@ -996,7 +1089,9 @@ func TestPartialBlockWriteRecovery(t *testing.T) {
 		t.Fatalf("Open failed on partial block recovery: %v", err)
 	}
 
-	defer bm.Close()
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
 
 	// Append some data to trigger recovery
 	data := []byte("Test data after partial block write")
@@ -1023,7 +1118,6 @@ func TestPartialBlockWriteRecovery(t *testing.T) {
 
 func TestPowerOutageDuringHeaderWrite(t *testing.T) {
 	tempFilePath := os.TempDir() + "/blockmanager_power_outage_test"
-	defer os.Remove(tempFilePath)
 
 	// Simulate writing only half the header
 	file, err := os.Create(tempFilePath)
@@ -1046,7 +1140,8 @@ func TestPowerOutageDuringHeaderWrite(t *testing.T) {
 	if _, err := file.Write(corruptedBytes); err != nil {
 		t.Fatalf("Failed to write corrupted header: %v", err)
 	}
-	file.Close()
+
+	_ = file.Close()
 
 	// Try to open the block manager — it should fail
 	_, err = Open(tempFilePath, os.O_RDWR, 0666, SyncNone)
@@ -1057,15 +1152,349 @@ func TestPowerOutageDuringHeaderWrite(t *testing.T) {
 	t.Logf("Power outage test passed. Error: %v", err)
 }
 
+func TestUpdateSameSize(t *testing.T) {
+	tempFilePath := os.TempDir() + "/blockmanager_update_same_test"
+
+	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
+	if err != nil {
+		t.Fatalf("Failed to open file: %v", err)
+	}
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
+
+	// Append initial data
+	originalData := []byte("This is the original data")
+	blockID, err := bm.Append(originalData)
+	if err != nil {
+		t.Fatalf("Failed to append original data: %v", err)
+	}
+
+	// Update with same size data
+	newData := []byte("This is the updated data!")
+	updatedBlockID, err := bm.Update(blockID, newData)
+	if err != nil {
+		t.Fatalf("Failed to update data: %v", err)
+	}
+
+	// Verify block ID remains the same
+	if updatedBlockID != blockID {
+		t.Errorf("Block ID changed after update. Expected: %d, Got: %d", blockID, updatedBlockID)
+	}
+
+	// Read and verify updated data
+	readData, _, err := bm.Read(blockID)
+	if err != nil {
+		t.Fatalf("Failed to read updated data: %v", err)
+	}
+
+	if !bytes.Equal(newData, readData) {
+		t.Errorf("Updated data mismatch. Expected: %s, Got: %s", string(newData), string(readData))
+	}
+}
+
+func TestUpdateSmallerData(t *testing.T) {
+	tempFilePath := os.TempDir() + "/blockmanager_update_smaller_test"
+
+	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
+	if err != nil {
+		t.Fatalf("Failed to open file: %v", err)
+	}
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+
+	}(bm)
+
+	// Append large data that spans multiple blocks
+	blockHeaderSize := 16 // Size of BlockHeader struct
+	dataPerBlock := int(BlockSize) - blockHeaderSize
+	largeData := make([]byte, dataPerBlock*3) // 3 blocks worth
+	for i := range largeData {
+		largeData[i] = byte(i % 256)
+	}
+
+	blockID, err := bm.Append(largeData)
+	if err != nil {
+		t.Fatalf("Failed to append large data: %v", err)
+	}
+
+	// Update with much smaller data
+	smallData := []byte("Small update")
+	updatedBlockID, err := bm.Update(blockID, smallData)
+	if err != nil {
+		t.Fatalf("Failed to update with smaller data: %v", err)
+	}
+
+	// Verify block ID remains the same
+	if updatedBlockID != blockID {
+		t.Errorf("Block ID changed after update. Expected: %d, Got: %d", blockID, updatedBlockID)
+	}
+
+	// Read and verify updated data
+	readData, _, err := bm.Read(blockID)
+	if err != nil {
+		t.Fatalf("Failed to read updated data: %v", err)
+	}
+
+	if !bytes.Equal(smallData, readData) {
+		t.Errorf("Updated data mismatch. Expected: %s, Got: %s", string(smallData), string(readData))
+	}
+}
+
+func TestUpdateLargerData(t *testing.T) {
+	tempFilePath := os.TempDir() + "/blockmanager_update_larger_test"
+
+	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
+	if err != nil {
+		t.Fatalf("Failed to open file: %v", err)
+	}
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
+
+	// Append small initial data
+	smallData := []byte("Small data")
+	blockID, err := bm.Append(smallData)
+	if err != nil {
+		t.Fatalf("Failed to append small data: %v", err)
+	}
+
+	// Update with much larger data that spans multiple blocks
+	blockHeaderSize := 16 // Size of BlockHeader struct
+	dataPerBlock := int(BlockSize) - blockHeaderSize
+	largeData := make([]byte, dataPerBlock*3) // 3 blocks worth
+	for i := range largeData {
+		largeData[i] = byte(i % 256)
+	}
+
+	updatedBlockID, err := bm.Update(blockID, largeData)
+	if err != nil {
+		t.Fatalf("Failed to update with larger data: %v", err)
+	}
+
+	// Verify block ID remains the same
+	if updatedBlockID != blockID {
+		t.Errorf("Block ID changed after update. Expected: %d, Got: %d", blockID, updatedBlockID)
+	}
+
+	// Read and verify updated data
+	readData, _, err := bm.Read(blockID)
+	if err != nil {
+		t.Fatalf("Failed to read updated data: %v", err)
+	}
+
+	if !bytes.Equal(largeData, readData) {
+		t.Errorf("Updated data length mismatch. Expected: %d, Got: %d", len(largeData), len(readData))
+	}
+}
+
+func TestUpdateMultipleBlocks(t *testing.T) {
+	tempFilePath := os.TempDir() + "/blockmanager_update_multiple_test"
+
+	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
+	if err != nil {
+		t.Fatalf("Failed to open file: %v", err)
+	}
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
+
+	// Create several blocks with different data
+	data1 := []byte("First block data")
+	data2 := []byte("Second block data")
+	data3 := []byte("Third block data")
+
+	blockID1, err := bm.Append(data1)
+	if err != nil {
+		t.Fatalf("Failed to append data1: %v", err)
+	}
+
+	blockID2, err := bm.Append(data2)
+	if err != nil {
+		t.Fatalf("Failed to append data2: %v", err)
+	}
+
+	blockID3, err := bm.Append(data3)
+	if err != nil {
+		t.Fatalf("Failed to append data3: %v", err)
+	}
+
+	// Update middle block
+	newData2 := []byte("Updated second block")
+	updatedBlockID, err := bm.Update(blockID2, newData2)
+	if err != nil {
+		t.Fatalf("Failed to update middle block: %v", err)
+	}
+
+	if updatedBlockID != blockID2 {
+		t.Errorf("Block ID changed after update. Expected: %d, Got: %d", blockID2, updatedBlockID)
+	}
+
+	// Verify all blocks still readable and correct
+	readData1, _, err := bm.Read(blockID1)
+	if err != nil || !bytes.Equal(data1, readData1) {
+		t.Errorf("First block corrupted after middle block update")
+	}
+
+	readData2, _, err := bm.Read(blockID2)
+	if err != nil || !bytes.Equal(newData2, readData2) {
+		t.Errorf("Updated middle block incorrect")
+	}
+
+	readData3, _, err := bm.Read(blockID3)
+	if err != nil || !bytes.Equal(data3, readData3) {
+		t.Errorf("Third block corrupted after middle block update")
+	}
+}
+
+func TestUpdateInvalidBlockID(t *testing.T) {
+	tempFilePath := os.TempDir() + "/blockmanager_update_invalid_test"
+
+	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
+	if err != nil {
+		t.Fatalf("Failed to open file: %v", err)
+	}
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
+
+	// Try to update non-existent block
+	newData := []byte("Update data")
+	_, err = bm.Update(999, newData)
+	if err == nil {
+		t.Fatalf("Expected error when updating non-existent block")
+	}
+
+	// Try to update with invalid block ID
+	_, err = bm.Update(-1, newData)
+	if err == nil {
+		t.Fatalf("Expected error when updating with invalid block ID")
+	}
+
+	// Try to update with empty data
+	_, err = bm.Update(1, []byte{})
+	if err == nil {
+		t.Fatalf("Expected error when updating with empty data")
+	}
+}
+
+func TestUpdatePreservesOtherData(t *testing.T) {
+	tempFilePath := os.TempDir() + "/blockmanager_update_preserve_test"
+
+	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
+	if err != nil {
+		t.Fatalf("Failed to open file: %v", err)
+	}
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
+
+	// Create multiple entries
+	testEntries := [][]byte{
+		[]byte("Entry 1: Some data here"),
+		[]byte("Entry 2: Different data"),
+		[]byte("Entry 3: Yet another entry"),
+		make([]byte, 1000), // Large entry
+		[]byte("Entry 5: Final entry"),
+	}
+
+	// Fill large entry with pattern
+	for i := range testEntries[3] {
+		testEntries[3][i] = byte(i % 256)
+	}
+
+	// Store all entries
+	blockIDs := make([]int64, len(testEntries))
+	for i, data := range testEntries {
+		blockID, err := bm.Append(data)
+		if err != nil {
+			t.Fatalf("Failed to append entry %d: %v", i, err)
+		}
+		blockIDs[i] = blockID
+	}
+
+	// Update middle entry with different sized data
+	newMiddleData := []byte("Updated middle entry with completely different data that's longer")
+	_, err = bm.Update(blockIDs[2], newMiddleData)
+	if err != nil {
+		t.Fatalf("Failed to update middle entry: %v", err)
+	}
+
+	// Verify all other entries are unchanged
+	for i, expectedData := range testEntries {
+		if i == 2 {
+			continue // Skip the updated entry
+		}
+
+		readData, _, err := bm.Read(blockIDs[i])
+		if err != nil {
+			t.Fatalf("Failed to read entry %d after update: %v", i, err)
+		}
+
+		if !bytes.Equal(expectedData, readData) {
+			t.Errorf("Entry %d was corrupted after updating different entry", i)
+		}
+	}
+
+	// Verify updated entry
+	readUpdatedData, _, err := bm.Read(blockIDs[2])
+	if err != nil {
+		t.Fatalf("Failed to read updated entry: %v", err)
+	}
+
+	if !bytes.Equal(newMiddleData, readUpdatedData) {
+		t.Errorf("Updated entry data mismatch")
+	}
+}
+
+func BenchmarkUpdate(b *testing.B) {
+	tempFilePath := os.TempDir() + "/blockmanager_update_bench"
+
+	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
+	if err != nil {
+		b.Fatalf("Failed to open file: %v", err)
+	}
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
+
+	// Prepare test data
+	originalData := make([]byte, 500)
+	updateData := make([]byte, 500)
+	for i := range originalData {
+		originalData[i] = byte(i % 256)
+		updateData[i] = byte((i + 100) % 256)
+	}
+
+	// Create initial blocks for benchmarking
+	blockIDs := make([]int64, b.N)
+	for i := 0; i < b.N; i++ {
+		blockID, err := bm.Append(originalData)
+		if err != nil {
+			b.Fatalf("Failed to append data: %v", err)
+		}
+		blockIDs[i] = blockID
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := bm.Update(blockIDs[i], updateData)
+		if err != nil {
+			b.Fatalf("Update failed: %v", err)
+		}
+	}
+}
+
 func BenchmarkBlockManagerWriteSmall(b *testing.B) {
 	tmpFile := os.TempDir() + "/bm_write_small_bench"
-	defer os.Remove(tmpFile)
 
 	bm, err := Open(tmpFile, os.O_CREATE|os.O_RDWR, 0666, SyncNone)
 	if err != nil {
 		b.Fatalf("failed to open: %v", err)
 	}
-	defer bm.Close()
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
 
 	data := []byte("This is a small benchmark write block")
 
@@ -1079,13 +1508,14 @@ func BenchmarkBlockManagerWriteSmall(b *testing.B) {
 
 func BenchmarkBlockManagerWriteLarge(b *testing.B) {
 	tmpFile := os.TempDir() + "/bm_write_large_bench"
-	defer os.Remove(tmpFile)
 
 	bm, err := Open(tmpFile, os.O_CREATE|os.O_RDWR, 0666, SyncNone)
 	if err != nil {
 		b.Fatalf("failed to open: %v", err)
 	}
-	defer bm.Close()
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
 
 	data := make([]byte, 4096*4) // 4 blocks worth
 	rand.Read(data)
@@ -1100,13 +1530,14 @@ func BenchmarkBlockManagerWriteLarge(b *testing.B) {
 
 func BenchmarkBlockManagerRead(b *testing.B) {
 	tmpFile := os.TempDir() + "/bm_read_bench"
-	defer os.Remove(tmpFile)
 
 	bm, err := Open(tmpFile, os.O_CREATE|os.O_RDWR, 0666, SyncNone)
 	if err != nil {
 		b.Fatalf("failed to open: %v", err)
 	}
-	defer bm.Close()
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
 
 	// Prepare dataset
 	data := make([]byte, 512)
@@ -1136,13 +1567,14 @@ func BenchmarkBlockManagerRead(b *testing.B) {
 
 func BenchmarkBlockManagerWriteSmallParallel(b *testing.B) {
 	tmpFile := os.TempDir() + "/bm_write_small_parallel_bench"
-	defer os.Remove(tmpFile)
 
 	bm, err := Open(tmpFile, os.O_CREATE|os.O_RDWR, 0666, SyncNone)
 	if err != nil {
 		b.Fatalf("failed to open: %v", err)
 	}
-	defer bm.Close()
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
 
 	data := []byte("Concurrent small write")
 
