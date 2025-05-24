@@ -75,6 +75,14 @@ func (sst *SSTable) get(key []byte, timestamp int64) ([]byte, int64) {
 		return nil, 0
 	}
 
+	if sst.db.opts.BloomFilter {
+		// Check if the key is in the bloom filter
+		if !sst.BloomFilter.Contains(key) {
+			return nil, 0 // Key not in SSTable
+		}
+
+	}
+
 	// Get the KLog block manager
 	klogPath := sst.kLogPath()
 	var klogBm *blockmanager.BlockManager
@@ -96,14 +104,6 @@ func (sst *SSTable) get(key []byte, timestamp int64) ([]byte, int64) {
 				_ = bm.Close()
 			}
 		})
-	}
-
-	if sst.db.opts.BloomFilter {
-		// Check if the key is in the bloom filter
-		if !sst.BloomFilter.Contains(key) {
-			return nil, 0 // Key not in SSTable
-		}
-
 	}
 
 	// Variables to track the latest valid version

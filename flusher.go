@@ -21,15 +21,14 @@ import (
 	"github.com/guycipher/wildcat/queue"
 	"github.com/guycipher/wildcat/skiplist"
 	"os"
-	"sync"
 	"sync/atomic"
 	"time"
 )
 
 // Flusher is responsible for queuing and flushing memtables to disk
 type Flusher struct {
-	db        *DB          // The db instance
-	lock      *sync.Mutex  // Mutex for thread safety
+	db *DB // The db instance
+
 	immutable *queue.Queue // Immutable queue for memtables
 	swapping  int32        // Atomic flag indicating if the flusher is swapping
 }
@@ -38,7 +37,6 @@ type Flusher struct {
 func newFlusher(db *DB) *Flusher {
 	return &Flusher{
 		db:        db,
-		lock:      &sync.Mutex{},
 		immutable: queue.New(),
 	}
 }
@@ -315,8 +313,6 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 
 // enqueueMemtable enqueues an immutable memtable for flushing
 func (flusher *Flusher) enqueueMemtable(memt *Memtable) {
-	flusher.lock.Lock()
-	defer flusher.lock.Unlock()
 
 	// Add the immutable memtable to the queue
 	flusher.immutable.Enqueue(memt)
