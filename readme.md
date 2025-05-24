@@ -115,6 +115,8 @@ opts := &wildcat.Options{
 20. **BloomFilterFPR** False positive rate for Bloom filter
 21. **WalAppendRetry** Number of retries for WAL append
 22. **WalAppendBackoff** Backoff duration for WAL append
+23. **BlockManagerLRUEvictRatio** Ratio for LRU eviction. Determines what percentage of the cache to evict when cleanup is needed.
+24. **BlockManagerLRUAccesWeight** Weight for LRU access eviction. Balances how much to prioritize access frequency vs. age when deciding what to evict.
 
 ### Simple Key-Value Operations
 The easiest way to interact with Wildcat is through the Update method, which handles transactions automatically.
