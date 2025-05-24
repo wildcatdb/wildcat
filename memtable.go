@@ -167,9 +167,13 @@ func (memtable *Memtable) createBloomFilter(entries int64) (*bloomfilter.BloomFi
 	}
 
 	for {
-		key, _, _, ok := iter.Next()
+		key, val, _, ok := iter.Next()
 		if !ok {
 			break
+		}
+
+		if val == nil {
+			continue // Skip deletion markers
 		}
 
 		err = bf.Add(key)
