@@ -736,6 +736,8 @@ func TestIterator(t *testing.T) {
 			t.Fatalf("Unexpected data: %s", string(data))
 		}
 
+		//log.Println(string(data))
+
 		expect[string(data)] = true
 	}
 
