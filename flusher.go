@@ -27,8 +27,7 @@ import (
 
 // Flusher is responsible for queuing and flushing memtables to disk
 type Flusher struct {
-	db *DB // The db instance
-
+	db        *DB          // The db instance
 	immutable *queue.Queue // Immutable queue for memtables
 	swapping  int32        // Atomic flag indicating if the flusher is swapping
 }

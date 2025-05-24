@@ -119,6 +119,7 @@ type DB struct {
 	sstIdGenerator   *IDGenerator             // ID generator for SSTables
 	walIdGenerator   *IDGenerator             // ID generator for WAL files
 	txnIdGenerator   *IDGenerator             // ID generator for transactions
+	txnTSGenerator   *IDGenerator             // Generator for transaction timestamps
 	logChannel       chan string              // Log channel, instead of log file or standard output we log to a channel
 	idgs             *IDGeneratorState        // ID generator state
 	oldestActiveRead int64                    // Oldest active read timestamp
@@ -153,6 +154,7 @@ func Open(opts *Options) (*DB, error) {
 		opts:    opts,
 		txns:    atomic.Pointer[[]*Txn]{},
 		closeCh: make(chan struct{}),
+		txnTSGenerator: newIDGeneratorWithTimestamp(),
 	}
 
 	db.idgs = &IDGeneratorState{
