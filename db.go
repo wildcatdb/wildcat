@@ -303,11 +303,11 @@ func (opts *Options) setDefaults() {
 		opts.CompactionSizeThreshold = DefaultCompactionSizeThreshold
 	}
 
-	if opts.CompactionScoreSizeWeight < 0 {
+	if opts.CompactionScoreSizeWeight <= 0 {
 		opts.CompactionScoreSizeWeight = DefaultCompactionScoreSizeWeight
 	}
 
-	if opts.CompactionScoreCountWeight < 0 {
+	if opts.CompactionScoreCountWeight <= 0 {
 		opts.CompactionScoreCountWeight = DefaultCompactionScoreCountWeight
 	}
 
