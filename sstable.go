@@ -75,6 +75,9 @@ func (sst *SSTable) get(key []byte, timestamp int64) ([]byte, int64) {
 		return nil, 0
 	}
 
+	// If bloom filters are configured
+	// we check if the key is in the bloom filter
+	// if so we continue on if not we skip
 	if sst.db.opts.BloomFilter {
 		// Check if the key is in the bloom filter
 		if !sst.BloomFilter.Contains(key) {
