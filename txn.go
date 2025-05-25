@@ -16,7 +16,6 @@
 package wildcat
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"github.com/guycipher/wildcat/blockmanager"
@@ -70,7 +69,8 @@ func (db *DB) Begin() *Txn {
 	return txn
 }
 
-// GetTxn retrieves a transaction by ID
+// GetTxn retrieves a transaction by ID.
+// Can be used on system recovery.  You can recover an incomplete transaction.
 func (db *DB) GetTxn(id int64) (*Txn, error) {
 	// Find the transaction by ID
 	txns := db.txns.Load()
@@ -240,13 +240,12 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 		}
 
 		for _, sstable := range *sstables {
-			// Check if the key might be in this SSTable's range
-			if bytes.Compare(key, sstable.Min) < 0 || bytes.Compare(key, sstable.Max) > 0 {
-				continue // Key outside SSTable range
-			}
 
 			// Try to get the value from this SSTable
 			val, ts = sstable.get(key, txn.Timestamp)
+			if val == nil && ts == 0 {
+				continue // Key not found in this SSTable
+			}
 
 			// If we found a value and it's newer than what we have so far
 			// but still not newer than our read timestamp
