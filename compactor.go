@@ -246,11 +246,12 @@ func (compactor *Compactor) scheduleLeveledCompaction(level *Level, levelNum int
 
 	// Find overlapping SSTables in the next level
 	nextLevelNum := levelNum + 1
-	if nextLevelNum >= len(*compactor.db.levels.Load()) {
+	if nextLevelNum > len(*compactor.db.levels.Load()) {
 		return
 	}
 
-	nextLevel := (*compactor.db.levels.Load())[nextLevelNum]
+	nextLevel := (*compactor.db.levels.Load())[nextLevelNum-1]
+
 	nextLevelTables := nextLevel.sstables.Load()
 	if nextLevelTables == nil {
 		// No tables in next level, just move the table down
@@ -392,7 +393,7 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 	}
 
 	// Add the new SSTable to the target level
-	targetLevelPtr := (*compactor.db.levels.Load())[targetLevel]
+	targetLevelPtr := (*compactor.db.levels.Load())[targetLevel-1]
 	currSSTables := targetLevelPtr.sstables.Load()
 
 	var newSSTables []*SSTable
@@ -411,7 +412,7 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 
 	// Remove the original SSTables from the source level
 	if sourceLevel != targetLevel {
-		sourceLevelPtr := (*compactor.db.levels.Load())[sourceLevel]
+		sourceLevelPtr := (*compactor.db.levels.Load())[sourceLevel-1]
 		currentSSTables := sourceLevelPtr.sstables.Load()
 
 		if currentSSTables != nil {

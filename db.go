@@ -50,26 +50,27 @@ const (
 
 // Defaults
 const (
-	DefaultWriteBufferSize             = 128 * 1024 * 1024    // Default write buffer size
-	DefaultSyncOption                  = SyncNone             // Default sync option for write operations
-	DefaultSyncInterval                = 16 * time.Nanosecond // Default sync interval for write operations
-	DefaultLevelCount                  = 7                    // Default number of levels in the LSM tree
-	DefaultLevelMultiplier             = 4                    // Multiplier for the number of levels
-	DefaultBlockManagerLRUSize         = 1024                 // Size of the LRU cache for block managers
-	DefaultBlockManagerLRUEvictRatio   = 0.25                 // Eviction ratio for the LRU cache
-	DefaultBlockManagerLRUAccessWeight = 0.7                  // Access weight for the LRU cache
-	DefaultBlockSetSize                = 8 * 1024 * 1024      // Size of the block set
-	DefaultPermission                  = 0750                 // Default permission for created files
-	DefaultBloomFilter                 = false                // Default Bloom filter option
-	DefaultMaxCompactionConcurrency    = 2                    // Default max compaction concurrency
-	DefaultCompactionCooldownPeriod    = 1 * time.Second      // Default cooldown period for compaction
-	DefaultCompactionBatchSize         = 4                    // Default max number of SSTables to compact at once
-	DefaultCompactionSizeRatio         = 1.2                  // Default level size ratio that triggers compaction
-	DefaultCompactionSizeThreshold     = 4                    // Default number of files to trigger size-tiered compaction
-	DefaultCompactionScoreSizeWeight   = 0.7                  // Default weight for size-based score
-	DefaultCompactionScoreCountWeight  = 0.3                  // Default weight for count-based score
-	DefaultFlusherTickerInterval       = 64 * time.Microsecond
-	DefaultCompactorTickerInterval     = 64 * time.Millisecond  // Default interval for compactor ticker
+	DefaultWriteBufferSize = 64 * 1024 * 1024     // Default write buffer size
+	DefaultSyncOption      = SyncNone             // Default sync option for write operations
+	DefaultSyncInterval    = 16 * time.Nanosecond // Default sync interval for write operations
+	DefaultLevelCount      = 6                    // Default number of levels in the LSM tree
+	DefaultLevelMultiplier = 10                   // Multiplier for the number of levels
+	// 64MB -> 640MB -> 6.4GB ->  64GB -> 640GB ->  6.4TB
+	DefaultBlockManagerLRUSize         = 1024            // Size of the LRU cache for block managers
+	DefaultBlockManagerLRUEvictRatio   = 0.20            // Eviction ratio for the LRU cache
+	DefaultBlockManagerLRUAccessWeight = 0.8             // Access weight for the LRU cache
+	DefaultBlockSetSize                = 4 * 1024 * 1024 // Size of the block set
+	DefaultPermission                  = 0750            // Default permission for created files
+	DefaultBloomFilter                 = false           // Default Bloom filter option
+	DefaultMaxCompactionConcurrency    = 4               // Default max compaction concurrency
+	DefaultCompactionCooldownPeriod    = 5 * time.Second // Default cooldown period for compaction
+	DefaultCompactionBatchSize         = 8               // Default max number of SSTables to compact at once
+	DefaultCompactionSizeRatio         = 1.1             // Default level size ratio that triggers compaction
+	DefaultCompactionSizeThreshold     = 8               // Default number of files to trigger size-tiered compaction
+	DefaultCompactionScoreSizeWeight   = 0.8             // Default weight for size-based score
+	DefaultCompactionScoreCountWeight  = 0.2             // Default weight for count-based score
+	DefaultFlusherTickerInterval       = 1 * time.Millisecond
+	DefaultCompactorTickerInterval     = 250 * time.Millisecond // Default interval for compactor ticker
 	DefaultBloomFilterProbability      = 0.01                   // Default probability for Bloom filter
 	DefaultWALAppendRetry              = 10                     // Default number of retries for WAL append
 	DefaultWALAppendBackoff            = 128 * time.Microsecond // Default backoff duration for WAL append
@@ -149,11 +150,11 @@ func Open(opts *Options) (*DB, error) {
 	opts.setDefaults()
 
 	db := &DB{
-		lru:     lru.New(int64(opts.BlockManagerLRUSize), opts.BlockManagerLRUEvictRatio, opts.BlockManagerLRUAccesWeight),
-		wg:      &sync.WaitGroup{},
-		opts:    opts,
-		txns:    atomic.Pointer[[]*Txn]{},
-		closeCh: make(chan struct{}),
+		lru:            lru.New(int64(opts.BlockManagerLRUSize), opts.BlockManagerLRUEvictRatio, opts.BlockManagerLRUAccesWeight),
+		wg:             &sync.WaitGroup{},
+		opts:           opts,
+		txns:           atomic.Pointer[[]*Txn]{},
+		closeCh:        make(chan struct{}),
 		txnTSGenerator: newIDGeneratorWithTimestamp(),
 	}
 
