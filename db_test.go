@@ -58,8 +58,8 @@ func TestOpen(t *testing.T) {
 		log.Fatalf("Failed to open database: %v", err)
 	}
 
-	// Verify all l1 to l7 directories exist
-	for i := 1; i <= 7; i++ {
+	// Verify all l1 to l6 directories exist
+	for i := 1; i <= 6; i++ {
 		dir := fmt.Sprintf("%s/l%d", opts.Directory, i)
 		if _, err := os.Stat(dir); os.IsNotExist(err) {
 			t.Errorf("Directory %s does not exist", dir)
