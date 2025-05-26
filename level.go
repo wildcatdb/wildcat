@@ -34,11 +34,11 @@ type Level struct {
 	sstables    atomic.Pointer[[]*SSTable] // Atomic pointer to the list of SSTables
 	capacity    int                        // The capacity of the level
 	currentSize int64                      // Atomic size of the level
-	db          *DB                        // Reference to the database\
+	db          *DB                        // Reference to the database
 }
 
 // reopen opens an existing level directories sstables
-// sstables are loaded and sorted by last modified time
+// sstables are loaded and sorted by id
 func (l *Level) reopen() error {
 	// Read the level directory
 	files, err := os.ReadDir(l.path)
@@ -121,6 +121,7 @@ func (l *Level) reopen() error {
 		})
 
 		// Try to open the B-tree to get metadata
+		// An immutable btree in wildcat can store extra metadata for the tree itself.
 		t, err := tree.Open(klogBm, l.db.opts.SSTableBTreeOrder, nil)
 		if err != nil {
 			l.db.log(fmt.Sprintf("Warning: Failed to open B-tree for SSTable %d: %v - using file system metadata only", id, err))
@@ -195,7 +196,7 @@ func (l *Level) reopen() error {
 	return nil
 }
 
-// Helper method to extract SSTable metadata from BSON primitive.D
+// extractSSTableFromBSON a helper method to extract SSTable metadata from BSON primitive.D
 func (l *Level) extractSSTableFromBSON(sstable *SSTable, doc primitive.D) {
 	for _, elem := range doc {
 		switch elem.Key {
@@ -235,7 +236,7 @@ func (l *Level) extractSSTableFromBSON(sstable *SSTable, doc primitive.D) {
 	}
 }
 
-// Helper method to extract SSTable metadata from map[string]interface{}
+// extractSSTableFromMap a helper method to extract SSTable metadata from map[string]interface{}
 func (l *Level) extractSSTableFromMap(sstable *SSTable, meta map[string]interface{}) {
 	if id, ok := meta["id"].(int64); ok {
 		sstable.Id = id

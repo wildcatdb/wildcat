@@ -150,29 +150,27 @@ func Open(opts *Options) (*DB, error) {
 	// Set default values for what options are not set
 	opts.setDefaults()
 
+	// We create a db instance with the provided options
 	db := &DB{
-		lru:            lru.New(int64(opts.BlockManagerLRUSize), opts.BlockManagerLRUEvictRatio, opts.BlockManagerLRUAccesWeight),
-		wg:             &sync.WaitGroup{},
-		opts:           opts,
-		txns:           atomic.Pointer[[]*Txn]{},
-		closeCh:        make(chan struct{}),
-		txnTSGenerator: newIDGeneratorWithTimestamp(),
+		lru:            lru.New(int64(opts.BlockManagerLRUSize), opts.BlockManagerLRUEvictRatio, opts.BlockManagerLRUAccesWeight), // New block manager LRU cache
+		wg:             &sync.WaitGroup{},                                                                                         // Wait group for background operations
+		opts:           opts,                                                                                                      // Set the options
+		txns:           atomic.Pointer[[]*Txn]{},                                                                                  // Atomic pointer to transactions
+		closeCh:        make(chan struct{}),                                                                                       // Channel for closing the database
+		txnTSGenerator: newIDGeneratorWithTimestamp(),                                                                             // ID generator for monotonic generation
 	}
 
-	db.idgs = &IDGeneratorState{
-		lastSstID: 0,
-		lastWalID: 0,
-		lastTxnID: 0,
-		db:        db,
-	}
-
+	// Initialize flusher and compactor
 	db.flusher = newFlusher(db)
 	db.compactor = newCompactor(db, db.opts.MaxCompactionConcurrency)
 
+	// Check if the DB path does not end with i.e an /
+	// We add one if not
 	if !strings.HasSuffix(db.opts.Directory, string(os.PathSeparator)) {
 		db.opts.Directory += string(os.PathSeparator)
 	}
 
+	// We check if the directory exists, if not we create it
 	if _, err := os.Stat(db.opts.Directory); os.IsNotExist(err) {
 		db.log(fmt.Sprintf("Directory %s does not exist, creating it...", db.opts.Directory))
 
@@ -180,12 +178,20 @@ func Open(opts *Options) (*DB, error) {
 		if err := os.MkdirAll(db.opts.Directory, db.opts.Permission); err != nil {
 			return nil, fmt.Errorf("failed to create directory: %w", err)
 		}
+	}
 
+	// Initialize default state
+	db.idgs = &IDGeneratorState{
+		lastSstID: 0,
+		lastWalID: 0,
+		lastTxnID: 0,
+		db:        db,
 	}
 
 	// Check if the ID generator state file exists
 	idgsFilePath := fmt.Sprintf("%s%s", db.opts.Directory, IDGSTFileName)
 	if _, err := os.Stat(idgsFilePath); os.IsNotExist(err) {
+		// Initialize new id generator
 		db.idgs = &IDGeneratorState{
 			lastSstID: 0,
 			lastWalID: 0,
@@ -197,7 +203,7 @@ func Open(opts *Options) (*DB, error) {
 		db.walIdGenerator = newIDGenerator()
 		db.sstIdGenerator = newIDGenerator()
 	} else {
-		// Directory exists, load the ID generator state
+		// Directory exists, load persisted ID generator state
 		if err := db.idgs.loadState(); err != nil {
 			return nil, fmt.Errorf("failed to load ID generator state: %w", err)
 		}
@@ -208,14 +214,15 @@ func Open(opts *Options) (*DB, error) {
 	levels := make([]*Level, db.opts.LevelCount)
 	for i := 0; i < db.opts.LevelCount; i++ {
 		level := &Level{
-			id:       i + 1,
+			id:       i + 1, // We start at level 1
 			capacity: int(float64(db.opts.WriteBufferSize) * math.Pow(float64(db.opts.LevelMultiplier), float64(i))),
 			db:       db,
 		}
 
-		level.sstables = atomic.Pointer[[]*SSTable]{}
-		level.path = fmt.Sprintf("%s%s%d%s", db.opts.Directory, LevelPrefix, i+1, string(os.PathSeparator))
+		level.sstables = atomic.Pointer[[]*SSTable]{}                                                       // Atomic pointer to SSTables in this level
+		level.path = fmt.Sprintf("%s%s%d%s", db.opts.Directory, LevelPrefix, i+1, string(os.PathSeparator)) // Path for the level directory
 
+		// Set level
 		levels[i] = level
 
 		db.log(fmt.Sprintf("Creating level %d with capacity %d bytes at path %s", level.id, level.capacity, level.path))
@@ -225,7 +232,7 @@ func Open(opts *Options) (*DB, error) {
 			return nil, fmt.Errorf("failed to create level directory: %v", err)
 		}
 
-		// Reopen the level to load existing SSTable information
+		// Reopen the level to load existing SSTables
 		if err := level.reopen(); err != nil {
 			return nil, fmt.Errorf("failed to reopen level: %v", err)
 		}
@@ -400,6 +407,8 @@ func (db *DB) reinstate() error {
 	}
 
 	var walFiles []string
+
+	// Because we can have many immutable WAL files we will read all WAL files in the directory
 	for _, file := range walDir {
 		if file.IsDir() || !strings.HasSuffix(file.Name(), WALFileExtension) {
 			continue
@@ -414,6 +423,7 @@ func (db *DB) reinstate() error {
 		return tsI < tsJ
 	})
 
+	// If no WAL files found, we create a new memtable and WAL
 	if len(walFiles) == 0 {
 		db.log("No WAL files found, creating new memtable and WAL...")
 		// No WAL files found, create a new memtable and WAL
@@ -570,6 +580,7 @@ func (db *DB) reinstate() error {
 
 			// Process reads - always keep the latest read timestamp
 			for key, timestamp := range entry.ReadSet {
+
 				// Only update if this read is newer
 				if ts, exists := finalTxn.ReadSet[key]; !exists || timestamp > ts {
 					finalTxn.ReadSet[key] = timestamp
@@ -689,7 +700,7 @@ func (db *DB) reinstate() error {
 	return nil
 }
 
-// Helper function to populate a memtable from a transaction map
+// populateMemtableFromTxns helper function to populate a memtable from a transaction map
 func populateMemtableFromTxns(memt *Memtable, txnMap map[int64]*Txn, includeUncommitted bool) {
 	var committedCount, uncommittedCount int
 	var totalBytes int64
@@ -741,6 +752,7 @@ func populateMemtableFromTxns(memt *Memtable, txnMap map[int64]*Txn, includeUnco
 		// Process all keys in this transaction
 		// Writes first
 		for key, value := range txn.WriteSet {
+
 			// Only update if this key wasn't deleted by this same transaction
 			if !txn.DeleteSet[key] {
 				keyFinalStates[key] = struct {
