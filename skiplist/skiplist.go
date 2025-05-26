@@ -16,6 +16,8 @@
 package skiplist
 
 import (
+	"bytes"
+	"errors"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -69,6 +71,23 @@ type Iterator struct {
 	SkipList      *SkipList // Reference to the skip list
 	current       *Node     // Current node in the iteration
 	readTimestamp int64     // Timestamp for snapshot isolation
+}
+
+// PrefixIterator provides a bidirectional iterator for keys with a specific prefix
+type PrefixIterator struct {
+	SkipList      *SkipList // Reference to the skip list
+	current       *Node     // Current node in the iteration
+	readTimestamp int64     // Timestamp for snapshot isolation
+	prefix        []byte    // Prefix to match
+}
+
+// RangeIterator provides a bidirectional iterator for keys within a specific range
+type RangeIterator struct {
+	SkipList      *SkipList // Reference to the skip list
+	current       *Node     // Current node in the iteration
+	readTimestamp int64     // Timestamp for snapshot isolation
+	startKey      []byte    // Start of the range (inclusive)
+	endKey        []byte    // End of the range (exclusive)
 }
 
 // DefaultComparator is the default key comparison function
@@ -447,7 +466,7 @@ func (sl *SkipList) Delete(searchKey []byte, deleteTimestamp int64) bool {
 
 // NewIterator creates a new iterator starting at the given key
 // If startKey is nil, the iterator starts at the beginning of the list
-func (sl *SkipList) NewIterator(startKey []byte, readTimestamp int64) *Iterator {
+func (sl *SkipList) NewIterator(startKey []byte, readTimestamp int64) (*Iterator, error) {
 	// Start at the header node
 	curr := sl.header
 
@@ -471,7 +490,46 @@ func (sl *SkipList) NewIterator(startKey []byte, readTimestamp int64) *Iterator 
 		SkipList:      sl,
 		current:       curr,
 		readTimestamp: readTimestamp,
+	}, nil
+}
+
+func (it *Iterator) ToLast() {
+	// Move to the last node
+	for {
+		currPtr := atomic.LoadPointer(&it.current.forward[0])
+		next := (*Node)(currPtr)
+		if next == nil {
+			break
+		}
+		it.current = next
 	}
+}
+
+func (it *Iterator) Valid() bool {
+	return it.current != nil
+}
+
+// Key returns the current key
+func (it *Iterator) Key() []byte {
+	if it.current == nil {
+		return nil
+	}
+	return it.current.key
+}
+
+// Value returns the current value and timestamp
+func (it *Iterator) Value() ([]byte, int64, bool) {
+	if it.current == nil {
+		return nil, 0, false
+	}
+
+	// Find the visible version at the read timestamp
+	version := it.current.findVisibleVersion(it.readTimestamp)
+	if version != nil && version.Type != Delete {
+		return version.Data, version.Timestamp, true
+	}
+
+	return nil, 0, false
 }
 
 // Next moves the iterator to the next node and returns the key and visible version
@@ -529,7 +587,23 @@ func (it *Iterator) Peek() ([]byte, []byte, int64, bool) {
 		return nil, nil, 0, false
 	}
 
-	// Return the key and visible version at the read timestamp
+	// If we're at the header, advance to first valid node
+	if it.current == it.SkipList.header {
+		currPtr := atomic.LoadPointer(&it.current.forward[0])
+		next := (*Node)(currPtr)
+
+		for next != nil {
+			version := next.findVisibleVersion(it.readTimestamp)
+			if version != nil && version.Type != Delete {
+				return next.key, version.Data, version.Timestamp, true
+			}
+			currPtr = atomic.LoadPointer(&next.forward[0])
+			next = (*Node)(currPtr)
+		}
+		return nil, nil, 0, false
+	}
+
+	// Return current node's data if visible
 	version := it.current.findVisibleVersion(it.readTimestamp)
 	if version != nil && version.Type != Delete {
 		return it.current.key, version.Data, version.Timestamp, true
@@ -653,4 +727,435 @@ func (sl *SkipList) DeleteCount(readTimestamp int64) int {
 	}
 
 	return count
+}
+
+// hasPrefix checks if the key has the specified prefix
+func hasPrefix(key, prefix []byte) bool {
+	if len(key) < len(prefix) {
+		return false
+	}
+	return bytes.Equal(key[:len(prefix)], prefix)
+}
+
+// isInRange checks if the key is within the specified range [startKey, endKey)
+func (sl *SkipList) isInRange(key, startKey, endKey []byte) bool {
+	// Check if key >= startKey
+	if startKey != nil && sl.comparator(key, startKey) < 0 {
+		return false
+	}
+	// Check if key < endKey
+	if endKey != nil && sl.comparator(key, endKey) >= 0 {
+		return false
+	}
+	return true
+}
+
+// NewPrefixIterator creates a new prefix iterator starting at the first key with the given prefix
+func (sl *SkipList) NewPrefixIterator(prefix []byte, readTimestamp int64) (*PrefixIterator, error) {
+	if prefix == nil || len(prefix) == 0 {
+		return nil, errors.New("prefix cannot be nil or empty")
+	}
+
+	// Start at the header node
+	curr := sl.header
+
+	// Traverse to find the first node with the prefix or the position where it would be
+	for i := sl.getLevel() - 1; i >= 0; i-- {
+		for {
+			currPtr := atomic.LoadPointer(&curr.forward[i])
+			next := (*Node)(currPtr)
+			if next == nil || sl.comparator(next.key, prefix) >= 0 {
+				break
+			}
+			curr = next
+		}
+	}
+
+	// Return the iterator positioned before the first matching node
+	return &PrefixIterator{
+		SkipList:      sl,
+		current:       curr,
+		readTimestamp: readTimestamp,
+		prefix:        append([]byte(nil), prefix...), // Copy the prefix
+	}, nil
+}
+
+// NewRangeIterator creates a new range iterator for keys in [startKey, endKey)
+// If startKey is nil, iteration starts from the beginning
+// If endKey is nil, iteration continues to the end
+func (sl *SkipList) NewRangeIterator(startKey, endKey []byte, readTimestamp int64) (*RangeIterator, error) {
+	// Very defensive range validation - only panic on clearly invalid ranges
+	// Allow edge cases like empty ranges or boundary conditions for testing
+	if startKey != nil && endKey != nil &&
+		len(startKey) > 0 && len(endKey) > 0 {
+		cmp := sl.comparator(startKey, endKey)
+		if cmp > 0 {
+			return nil, errors.New("startKey must be less than endKey")
+		}
+	}
+
+	// Start at the header node
+	curr := sl.header
+
+	if startKey != nil && len(startKey) > 0 {
+		// Traverse to find the node right before the start key
+		for i := sl.getLevel() - 1; i >= 0; i-- {
+			for {
+				currPtr := atomic.LoadPointer(&curr.forward[i])
+				next := (*Node)(currPtr)
+				if next == nil || sl.comparator(next.key, startKey) >= 0 {
+					break
+				}
+				curr = next
+			}
+		}
+	}
+
+	return &RangeIterator{
+		SkipList:      sl,
+		current:       curr,
+		readTimestamp: readTimestamp,
+		startKey:      append([]byte(nil), startKey...), // Copy startKey
+		endKey:        append([]byte(nil), endKey...),   // Copy endKey
+	}, nil
+}
+
+func (it *PrefixIterator) Key() []byte {
+	if it.current == nil {
+		return nil
+	}
+	return it.current.key
+}
+
+func (it *PrefixIterator) ToLast() {
+	// Move to the last node with the prefix
+	for {
+		currPtr := atomic.LoadPointer(&it.current.forward[0])
+		next := (*Node)(currPtr)
+		if next == nil || !hasPrefix(next.key, it.prefix) {
+			break
+		}
+		it.current = next
+	}
+}
+
+func (it *PrefixIterator) Value() ([]byte, int64, bool) {
+	if it.current == nil {
+		return nil, 0, false
+	}
+
+	// Find the visible version at the read timestamp
+	version := it.current.findVisibleVersion(it.readTimestamp)
+	if version != nil && version.Type != Delete {
+		return version.Data, version.Timestamp, true
+	}
+
+	return nil, 0, false
+
+}
+
+func (it *PrefixIterator) Valid() bool {
+	return it.current != nil
+}
+
+// Next moves the prefix iterator to the next node with the matching prefix
+// Returns key, value, timestamp, and success flag
+func (it *PrefixIterator) Next() ([]byte, []byte, int64, bool) {
+	if it.current == nil {
+		return nil, nil, 0, false
+	}
+
+	// Move to the next node
+	currPtr := atomic.LoadPointer(&it.current.forward[0])
+	it.current = (*Node)(currPtr)
+
+	// Check if we have a valid node and it matches the prefix
+	if it.current != nil {
+		// Check if the key has the required prefix
+		if !hasPrefix(it.current.key, it.prefix) {
+			// No more keys with this prefix
+			it.current = nil
+			return nil, nil, 0, false
+		}
+
+		// Find visible version at the read timestamp
+		version := it.current.findVisibleVersion(it.readTimestamp)
+		if version != nil && version.Type != Delete {
+			return it.current.key, version.Data, version.Timestamp, true
+		}
+
+		// If the current node doesn't have a visible version, try the next node
+		return it.Next()
+	}
+
+	return nil, nil, 0, false
+}
+
+// Prev moves the prefix iterator to the previous node with the matching prefix
+// Returns key, value, timestamp, and success flag
+func (it *PrefixIterator) Prev() ([]byte, []byte, int64, bool) {
+	if it.current == nil {
+		// If current is nil, we need to find the last node with the prefix
+		curr := it.SkipList.header
+		var lastValidNode *Node
+
+		// Traverse to find the last node with the prefix
+		currPtr := atomic.LoadPointer(&curr.forward[0])
+		curr = (*Node)(currPtr)
+
+		for curr != nil {
+			if hasPrefix(curr.key, it.prefix) {
+				version := curr.findVisibleVersion(it.readTimestamp)
+				if version != nil && version.Type != Delete {
+					lastValidNode = curr
+				}
+			} else if it.SkipList.comparator(curr.key, it.prefix) > 0 {
+				// We've gone past all keys with this prefix
+				break
+			}
+
+			currPtr = atomic.LoadPointer(&curr.forward[0])
+			curr = (*Node)(currPtr)
+		}
+
+		if lastValidNode != nil {
+			it.current = lastValidNode
+			version := it.current.findVisibleVersion(it.readTimestamp)
+			return it.current.key, version.Data, version.Timestamp, true
+		}
+		return nil, nil, 0, false
+	}
+
+	// Move to the previous node
+	currPtr := atomic.LoadPointer(&it.current.backward)
+	it.current = (*Node)(currPtr)
+
+	// Check if we have a valid node and it's not the header
+	if it.current != nil && it.current != it.SkipList.header {
+		// Check if the key has the required prefix
+		if !hasPrefix(it.current.key, it.prefix) {
+			// No more keys with this prefix in the backward direction
+			it.current = nil
+			return nil, nil, 0, false
+		}
+
+		// Find visible version at the read timestamp
+		version := it.current.findVisibleVersion(it.readTimestamp)
+		if version != nil && version.Type != Delete {
+			return it.current.key, version.Data, version.Timestamp, true
+		}
+
+		// If the current node doesn't have a visible version, try the previous node
+		return it.Prev()
+	}
+
+	return nil, nil, 0, false
+}
+
+// Peek returns the current key-value pair without moving the iterator
+func (it *PrefixIterator) Peek() ([]byte, []byte, int64, bool) {
+	if it.current == nil {
+		return nil, nil, 0, false
+	}
+
+	// If we're at the header, find first valid node with prefix
+	if it.current == it.SkipList.header {
+		currPtr := atomic.LoadPointer(&it.current.forward[0])
+		next := (*Node)(currPtr)
+
+		for next != nil {
+			if hasPrefix(next.key, it.prefix) {
+				version := next.findVisibleVersion(it.readTimestamp)
+				if version != nil && version.Type != Delete {
+					return next.key, version.Data, version.Timestamp, true
+				}
+			} else if it.SkipList.comparator(next.key, it.prefix) > 0 {
+				// Gone past prefix range
+				break
+			}
+			currPtr = atomic.LoadPointer(&next.forward[0])
+			next = (*Node)(currPtr)
+		}
+		return nil, nil, 0, false
+	}
+
+	// Check if current node has the prefix and is visible
+	if hasPrefix(it.current.key, it.prefix) {
+		version := it.current.findVisibleVersion(it.readTimestamp)
+		if version != nil && version.Type != Delete {
+			return it.current.key, version.Data, version.Timestamp, true
+		}
+	}
+
+	return nil, nil, 0, false
+}
+
+func (it *RangeIterator) Key() []byte {
+	if it.current == nil {
+		return nil
+	}
+	return it.current.key
+}
+
+func (it *RangeIterator) ToLast() {
+	// Move to the last node within the range
+	for {
+		currPtr := atomic.LoadPointer(&it.current.forward[0])
+		next := (*Node)(currPtr)
+		if next == nil || !it.SkipList.isInRange(next.key, it.startKey, it.endKey) {
+			break
+		}
+		it.current = next
+	}
+}
+
+func (it *RangeIterator) Valid() bool {
+	return it.current != nil
+}
+
+func (it *RangeIterator) Value() ([]byte, int64, bool) {
+	if it.current == nil {
+		return nil, 0, false
+	}
+
+	// Find the visible version at the read timestamp
+	version := it.current.findVisibleVersion(it.readTimestamp)
+	if version != nil && version.Type != Delete {
+		return version.Data, version.Timestamp, true
+	}
+
+	return nil, 0, false
+
+}
+
+// Next moves the range iterator to the next node within the range
+// Returns key, value, timestamp, and success flag
+func (it *RangeIterator) Next() ([]byte, []byte, int64, bool) {
+	if it.current == nil {
+		return nil, nil, 0, false
+	}
+
+	// Move to the next node
+	currPtr := atomic.LoadPointer(&it.current.forward[0])
+	it.current = (*Node)(currPtr)
+
+	// Check if we have a valid node and it's within the range
+	if it.current != nil {
+		// Check if the key is within the range
+		if !it.SkipList.isInRange(it.current.key, it.startKey, it.endKey) {
+			// We've moved outside the range
+			it.current = nil
+			return nil, nil, 0, false
+		}
+
+		// Find visible version at the read timestamp
+		version := it.current.findVisibleVersion(it.readTimestamp)
+		if version != nil && version.Type != Delete {
+			return it.current.key, version.Data, version.Timestamp, true
+		}
+
+		// If the current node doesn't have a visible version, try the next node
+		return it.Next()
+	}
+
+	return nil, nil, 0, false
+}
+
+// Prev moves the range iterator to the previous node within the range
+// Returns key, value, timestamp, and success flag
+func (it *RangeIterator) Prev() ([]byte, []byte, int64, bool) {
+	if it.current == nil {
+		// If current is nil, we need to find the last node in the range
+		curr := it.SkipList.header
+		var lastValidNode *Node
+
+		// Traverse to find the last node in the range
+		currPtr := atomic.LoadPointer(&curr.forward[0])
+		curr = (*Node)(currPtr)
+
+		for curr != nil {
+			if it.SkipList.isInRange(curr.key, it.startKey, it.endKey) {
+				version := curr.findVisibleVersion(it.readTimestamp)
+				if version != nil && version.Type != Delete {
+					lastValidNode = curr
+				}
+			} else if it.endKey != nil && it.SkipList.comparator(curr.key, it.endKey) >= 0 {
+				// We've gone past the end of the range
+				break
+			}
+
+			currPtr = atomic.LoadPointer(&curr.forward[0])
+			curr = (*Node)(currPtr)
+		}
+
+		if lastValidNode != nil {
+			it.current = lastValidNode
+			version := it.current.findVisibleVersion(it.readTimestamp)
+			return it.current.key, version.Data, version.Timestamp, true
+		}
+		return nil, nil, 0, false
+	}
+
+	// Move to the previous node
+	currPtr := atomic.LoadPointer(&it.current.backward)
+	it.current = (*Node)(currPtr)
+
+	// Check if we have a valid node and it's not the header
+	if it.current != nil && it.current != it.SkipList.header {
+		// Check if the key is within the range
+		if !it.SkipList.isInRange(it.current.key, it.startKey, it.endKey) {
+			// We've moved outside the range
+			it.current = nil
+			return nil, nil, 0, false
+		}
+
+		// Find visible version at the read timestamp
+		version := it.current.findVisibleVersion(it.readTimestamp)
+		if version != nil && version.Type != Delete {
+			return it.current.key, version.Data, version.Timestamp, true
+		}
+
+		// If the current node doesn't have a visible version, try the previous node
+		return it.Prev()
+	}
+
+	return nil, nil, 0, false
+}
+
+// Peek returns the current key-value pair without moving the iterator
+func (it *RangeIterator) Peek() ([]byte, []byte, int64, bool) {
+	if it.current == nil {
+		return nil, nil, 0, false
+	}
+
+	// If we're at the header, find first valid node in range
+	if it.current == it.SkipList.header {
+		currPtr := atomic.LoadPointer(&it.current.forward[0])
+		next := (*Node)(currPtr)
+
+		for next != nil {
+			if it.SkipList.isInRange(next.key, it.startKey, it.endKey) {
+				version := next.findVisibleVersion(it.readTimestamp)
+				if version != nil && version.Type != Delete {
+					return next.key, version.Data, version.Timestamp, true
+				}
+			} else if it.endKey != nil && it.SkipList.comparator(next.key, it.endKey) >= 0 {
+				// Gone past end of range
+				break
+			}
+			currPtr = atomic.LoadPointer(&next.forward[0])
+			next = (*Node)(currPtr)
+		}
+		return nil, nil, 0, false
+	}
+
+	// Check if current node is in range and visible
+	if it.SkipList.isInRange(it.current.key, it.startKey, it.endKey) {
+		version := it.current.findVisibleVersion(it.readTimestamp)
+		if version != nil && version.Type != Delete {
+			return it.current.key, version.Data, version.Timestamp, true
+		}
+	}
+
+	return nil, nil, 0, false
 }

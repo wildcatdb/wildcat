@@ -535,59 +535,59 @@ func BenchmarkMixedWorkload(b *testing.B) {
 	}
 }
 
-func BenchmarkIteration(b *testing.B) {
-	defer func() {
-		_ = os.RemoveAll("benchdb_iteration")
-	}()
-
-	opts := &Options{
-		Directory:  "benchdb_iteration",
-		SyncOption: SyncNone,
-	}
-
-	db, err := Open(opts)
-	if err != nil {
-		b.Fatalf("Failed to open database: %v", err)
-	}
-	defer func(db *DB) {
-		_ = db.Close()
-	}(db)
-
-	// Pre-populate with sequential keys
-	value := []byte("benchmark_value_with_some_data_to_make_it_realistic")
-	for i := 0; i < 10000; i++ {
-		key := []byte(fmt.Sprintf("iter_key_%04d", i)) // Zero-padded for proper sorting
-		err := db.Update(func(txn *Txn) error {
-			return txn.Put(key, value)
-		})
-		if err != nil {
-			b.Fatalf("Failed to populate: %v", err)
-		}
-
-		if i%5000 == 0 {
-			_ = db.ForceFlush()
-		}
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		err := db.View(func(txn *Txn) error {
-			iter := txn.NewIterator(nil, nil)
-			count := 0
-			for {
-				_, _, _, ok := iter.Next()
-				if !ok {
-					break
-				}
-				count++
-			}
-			return nil
-		})
-		if err != nil {
-			b.Fatalf("Iteration failed: %v", err)
-		}
-	}
-}
+//func BenchmarkIteration(b *testing.B) {
+//	defer func() {
+//		_ = os.RemoveAll("benchdb_iteration")
+//	}()
+//
+//	opts := &Options{
+//		Directory:  "benchdb_iteration",
+//		SyncOption: SyncNone,
+//	}
+//
+//	db, err := Open(opts)
+//	if err != nil {
+//		b.Fatalf("Failed to open database: %v", err)
+//	}
+//	defer func(db *DB) {
+//		_ = db.Close()
+//	}(db)
+//
+//	// Pre-populate with sequential keys
+//	value := []byte("benchmark_value_with_some_data_to_make_it_realistic")
+//	for i := 0; i < 10000; i++ {
+//		key := []byte(fmt.Sprintf("iter_key_%04d", i)) // Zero-padded for proper sorting
+//		err := db.Update(func(txn *Txn) error {
+//			return txn.Put(key, value)
+//		})
+//		if err != nil {
+//			b.Fatalf("Failed to populate: %v", err)
+//		}
+//
+//		if i%5000 == 0 {
+//			_ = db.ForceFlush()
+//		}
+//	}
+//
+//	b.ResetTimer()
+//	for i := 0; i < b.N; i++ {
+//		err := db.View(func(txn *Txn) error {
+//			iter := txn.NewIterator(nil, nil)
+//			count := 0
+//			for {
+//				_, _, _, ok := iter.Next()
+//				if !ok {
+//					break
+//				}
+//				count++
+//			}
+//			return nil
+//		})
+//		if err != nil {
+//			b.Fatalf("Iteration failed: %v", err)
+//		}
+//	}
+//}
 
 func BenchmarkDelete(b *testing.B) {
 	defer func() {

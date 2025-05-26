@@ -25,17 +25,10 @@ import (
 )
 
 func TestMemtable_BasicOperations(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_memtable_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-		if err != nil {
-
-		}
-	}(dir)
 
 	// Create a log channel that won't be closed in this test
 	logChan := make(chan string, 100)
@@ -126,14 +119,10 @@ func TestMemtable_BasicOperations(t *testing.T) {
 }
 
 func TestMemtable_ConcurrentOperations(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_memtable_concurrent_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -226,7 +215,6 @@ func TestMemtable_ConcurrentOperations(t *testing.T) {
 }
 
 func TestMemtable_MVCC(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_memtable_mvcc_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
@@ -338,14 +326,10 @@ func TestMemtable_MVCC(t *testing.T) {
 }
 
 func TestMemtable_LargeValues(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_memtable_large_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -410,14 +394,10 @@ func TestMemtable_LargeValues(t *testing.T) {
 }
 
 func TestMemtable_Replay(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_memtable_replay_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -571,14 +551,10 @@ func TestMemtable_Replay(t *testing.T) {
 }
 
 func TestMemtable_UncommittedTransactions(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_memtable_txn_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)

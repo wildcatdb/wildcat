@@ -25,14 +25,12 @@ import (
 )
 
 func TestTxn_BasicOperations(t *testing.T) {
+
 	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_txn_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -139,9 +137,6 @@ func TestTxn_Rollback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -218,9 +213,6 @@ func TestTxn_Isolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -305,9 +297,6 @@ func TestTxn_Update(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -387,9 +376,6 @@ func TestTxn_ConcurrentOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -492,9 +478,6 @@ func TestTxn_WALRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -611,10 +594,6 @@ func TestTxn_DeleteTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)

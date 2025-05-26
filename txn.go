@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/guycipher/wildcat/blockmanager"
+	"github.com/guycipher/wildcat/tree"
 	"os"
 	"strings"
 	"sync"
@@ -133,6 +134,7 @@ func (txn *Txn) Commit() error {
 	// Apply writes
 	for key, value := range txn.WriteSet {
 		txn.db.memtable.Load().(*Memtable).skiplist.Put([]byte(key), value, txn.Timestamp)
+
 		// Increment the size of the memtable
 		atomic.AddInt64(&txn.db.memtable.Load().(*Memtable).size, int64(len(key)+len(value)))
 	}
@@ -140,6 +142,7 @@ func (txn *Txn) Commit() error {
 	// Apply deletes
 	for key := range txn.DeleteSet {
 		txn.db.memtable.Load().(*Memtable).skiplist.Delete([]byte(key), txn.Timestamp)
+
 		// Decrement the size of the memtable
 		atomic.AddInt64(&txn.db.memtable.Load().(*Memtable).size, -int64(len(key)))
 	}
@@ -190,11 +193,12 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 	txn.mutex.Lock()
 	defer txn.mutex.Unlock()
 
-	// Check write set first
+	// Check write set first (transaction's own writes)
 	if val, exists := txn.WriteSet[string(key)]; exists {
 		return val, nil
 	}
 
+	// Check delete set (transaction's own deletes)
 	if txn.DeleteSet[string(key)] {
 		return nil, fmt.Errorf("key not found")
 	}
@@ -205,66 +209,64 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 
 	// Fetch from active memtable
 	val, ts, ok := txn.db.memtable.Load().(*Memtable).skiplist.Get(key, txn.Timestamp)
-	if ok && ts > bestTimestamp {
+	if ok && ts <= txn.Timestamp && ts > bestTimestamp {
 		bestValue = val
 		bestTimestamp = ts
+	}
+
+	// Check currently flushing memtable if any
+	fmem := txn.db.flusher.flushing.Load()
+	if fmem != nil {
+		val, ts, ok = fmem.skiplist.Get(key, txn.Timestamp)
+		if ok && ts <= txn.Timestamp && ts > bestTimestamp {
+			bestValue = val
+			bestTimestamp = ts
+		}
 	}
 
 	// Check immutable memtables
 	txn.db.flusher.immutable.ForEach(func(item interface{}) bool {
 		memt := item.(*Memtable)
-		val, ts, ok = memt.skiplist.Get(key, txn.Timestamp)
-		if ok && ts > bestTimestamp {
+		val, ts, ok := memt.skiplist.Get(key, txn.Timestamp)
+		if ok && ts <= txn.Timestamp && ts > bestTimestamp {
 			bestValue = val
 			bestTimestamp = ts
 		}
 		return true // Continue searching
 	})
 
-	if val != nil && ts <= txn.Timestamp {
-		if ts > bestTimestamp {
-			bestValue = val
-			bestTimestamp = ts
-			if ts == txn.Timestamp {
-				return bestValue, nil // Early return
-			}
-		}
-	}
-
 	// Check levels for SSTables
 	levels := txn.db.levels.Load()
-	for _, level := range *levels {
-		sstables := level.sstables.Load()
-		if sstables == nil {
-			continue
-		}
-
-		for _, sstable := range *sstables {
-
-			// Try to get the value from this SSTable
-			val, ts = sstable.get(key, txn.Timestamp)
-			if val == nil && ts == 0 {
-				continue // Key not found in this SSTable
+	if levels != nil {
+		for _, level := range *levels {
+			sstables := level.sstables.Load()
+			if sstables == nil {
+				continue
 			}
 
-			// If we found a value and it's newer than what we have so far
-			// but still not newer than our read timestamp
-			if val != nil && ts <= txn.Timestamp && ts > bestTimestamp {
-				bestValue = val
-				bestTimestamp = ts
+			// Check all SSTables in this level
+			for _, sstable := range *sstables {
+				val, ts := sstable.get(key, txn.Timestamp)
 
+				if ts == 0 {
+					continue // Key not found in this SSTable or timestamp not visible
+				}
+
+				// Only update if we found a better (more recent) version
+				// that's still visible to our read timestamp
+				if ts <= txn.Timestamp && ts > bestTimestamp {
+					bestValue = val // This could be nil for deletions
+					bestTimestamp = ts
+				}
 			}
-
-			// If we found a value that is exactly the same as our read timestamp
-			// we can return it immediately
-			if ts == txn.Timestamp {
-				return bestValue, nil // Early return
-			}
-
 		}
 	}
 
-	if bestValue != nil { // Checks if we found a value, can be tombstone
+	// Check if we found a value
+	if bestTimestamp > 0 {
+		if bestValue == nil {
+			return nil, fmt.Errorf("key not found") // This was a deletion
+		}
 		return bestValue, nil
 	}
 
@@ -299,9 +301,292 @@ func (db *DB) View(fn func(txn *Txn) error) error {
 	return nil
 }
 
-// NewIterator you can provide a startKey or a prefix to iterate over
-func (txn *Txn) NewIterator(startKey []byte, prefix []byte) *MergeIterator {
-	return NewMergeIterator(txn, startKey, prefix)
+// NewIterator creates a new bidirectional iterator
+func (txn *Txn) NewIterator(asc bool) (*MergeIterator, error) {
+	var items []*iterator
+
+	// Active memtable
+	active := txn.db.memtable.Load().(*Memtable)
+	iter, err := active.skiplist.NewIterator(nil, txn.Timestamp)
+	if err != nil {
+		return nil, err
+	}
+	if !asc {
+		iter.ToLast()
+	}
+
+	items = append(items, &iterator{
+		underlyingIterator: iter,
+	})
+
+	// Currently flushing memtable if any
+	fmem := txn.db.flusher.flushing.Load()
+	if fmem != nil {
+		it, err := fmem.skiplist.NewIterator(nil, txn.Timestamp)
+		if err == nil {
+			if !asc {
+				it.ToLast()
+			}
+			items = append(items, &iterator{
+				underlyingIterator: it,
+			})
+		}
+	}
+
+	// Immutable memtables
+	txn.db.flusher.immutable.ForEach(func(item interface{}) bool {
+		memt := item.(*Memtable)
+		it, err := memt.skiplist.NewIterator(nil, txn.Timestamp)
+		if err != nil {
+			return false // Error occurred, stop iteration
+		}
+		if !asc {
+			it.ToLast()
+		}
+
+		items = append(items, &iterator{
+			underlyingIterator: it,
+		})
+		return true
+	})
+
+	// SSTables from each level
+	levels := txn.db.levels.Load()
+	if levels != nil {
+		for _, level := range *levels {
+			sstables := level.sstables.Load()
+			if sstables == nil {
+				continue
+			}
+			for _, sst := range *sstables {
+				klogPath := sst.kLogPath()
+				klogBm, ok := txn.db.lru.Get(klogPath)
+				if !ok {
+					var err error
+					klogBm, err = blockmanager.Open(klogPath, os.O_RDONLY,
+						txn.db.opts.Permission, blockmanager.SyncOption(txn.db.opts.SyncOption))
+					if err != nil {
+						continue
+					}
+					txn.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
+						if bm, ok := value.(*blockmanager.BlockManager); ok {
+							_ = bm.Close()
+						}
+					})
+				} else if v, ok := klogBm.(*blockmanager.BlockManager); !ok || v == nil {
+					continue
+				}
+
+				t, err := tree.Open(klogBm.(*blockmanager.BlockManager), sst.db.opts.SSTableBTreeOrder, sst)
+				if err != nil {
+					continue
+				}
+				treeIter, err := t.Iterator(asc)
+				if err != nil {
+					continue
+				}
+				items = append(items, &iterator{
+					underlyingIterator: treeIter,
+					sst:                sst,
+				})
+			}
+		}
+	}
+
+	// Pass the ascending parameter to NewMergeIterator
+	return NewMergeIterator(items, txn.Timestamp, asc)
+}
+
+// NewRangeIterator creates a new range bidirectional iterator
+func (txn *Txn) NewRangeIterator(startKey []byte, endKey []byte, asc bool) (*MergeIterator, error) {
+	var items []*iterator
+
+	// Active memtable
+	active := txn.db.memtable.Load().(*Memtable)
+	iter, err := active.skiplist.NewIterator(nil, txn.Timestamp)
+	if err != nil {
+		return nil, err
+	}
+	if !asc {
+		iter.ToLast()
+	}
+
+	items = append(items, &iterator{
+		underlyingIterator: iter,
+	})
+
+	// Currently flushing memtable if any
+	fmem := txn.db.flusher.flushing.Load()
+	if fmem != nil {
+		it, err := fmem.skiplist.NewRangeIterator(startKey, endKey, txn.Timestamp)
+		if err == nil {
+			if !asc {
+				it.ToLast()
+			}
+			items = append(items, &iterator{
+				underlyingIterator: it,
+			})
+		}
+	}
+
+	// Immutable memtables
+	txn.db.flusher.immutable.ForEach(func(item interface{}) bool {
+		memt := item.(*Memtable)
+		it, err := memt.skiplist.NewRangeIterator(startKey, endKey, txn.Timestamp)
+		if err != nil {
+			return false // Error occurred, stop iteration
+		}
+		if !asc {
+			it.ToLast()
+		}
+
+		items = append(items, &iterator{
+			underlyingIterator: it,
+		})
+		return true
+	})
+
+	// SSTables from each level
+	levels := txn.db.levels.Load()
+	if levels != nil {
+		for _, level := range *levels {
+			sstables := level.sstables.Load()
+			if sstables == nil {
+				continue
+			}
+			for _, sst := range *sstables {
+				klogPath := sst.kLogPath()
+				klogBm, ok := txn.db.lru.Get(klogPath)
+				if !ok {
+					var err error
+					klogBm, err = blockmanager.Open(klogPath, os.O_RDONLY,
+						txn.db.opts.Permission, blockmanager.SyncOption(txn.db.opts.SyncOption))
+					if err != nil {
+						continue
+					}
+					txn.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
+						if bm, ok := value.(*blockmanager.BlockManager); ok {
+							_ = bm.Close()
+						}
+					})
+				} else if v, ok := klogBm.(*blockmanager.BlockManager); !ok || v == nil {
+					continue
+				}
+
+				t, err := tree.Open(klogBm.(*blockmanager.BlockManager), sst.db.opts.SSTableBTreeOrder, sst)
+				if err != nil {
+					continue
+				}
+				treeIter, err := t.RangeIterator(startKey, endKey, asc)
+				if err != nil {
+					continue
+				}
+				items = append(items, &iterator{
+					underlyingIterator: treeIter,
+					sst:                sst,
+				})
+			}
+		}
+	}
+
+	// Pass the ascending parameter to NewMergeIterator
+	return NewMergeIterator(items, txn.Timestamp, asc)
+}
+
+// NewPrefixIterator creates a new prefix bidirectional iterator
+func (txn *Txn) NewPrefixIterator(prefix []byte, asc bool) (*MergeIterator, error) {
+	var items []*iterator
+
+	// Active memtable
+	active := txn.db.memtable.Load().(*Memtable)
+	iter, err := active.skiplist.NewIterator(nil, txn.Timestamp)
+	if err != nil {
+		return nil, err
+	}
+	if !asc {
+		iter.ToLast()
+	}
+
+	items = append(items, &iterator{
+		underlyingIterator: iter,
+	})
+
+	// Currently flushing memtable if any
+	fmem := txn.db.flusher.flushing.Load()
+	if fmem != nil {
+		it, err := fmem.skiplist.NewPrefixIterator(prefix, txn.Timestamp)
+		if err == nil {
+			if !asc {
+				it.ToLast()
+			}
+			items = append(items, &iterator{
+				underlyingIterator: it,
+			})
+		}
+	}
+
+	// Immutable memtables
+	txn.db.flusher.immutable.ForEach(func(item interface{}) bool {
+		memt := item.(*Memtable)
+		it, err := memt.skiplist.NewPrefixIterator(prefix, txn.Timestamp)
+		if err != nil {
+			return false // Error occurred, stop iteration
+		}
+		if !asc {
+			it.ToLast()
+		}
+
+		items = append(items, &iterator{
+			underlyingIterator: it,
+		})
+		return true
+	})
+
+	// SSTables from each level
+	levels := txn.db.levels.Load()
+	if levels != nil {
+		for _, level := range *levels {
+			sstables := level.sstables.Load()
+			if sstables == nil {
+				continue
+			}
+			for _, sst := range *sstables {
+				klogPath := sst.kLogPath()
+				klogBm, ok := txn.db.lru.Get(klogPath)
+				if !ok {
+					var err error
+					klogBm, err = blockmanager.Open(klogPath, os.O_RDONLY,
+						txn.db.opts.Permission, blockmanager.SyncOption(txn.db.opts.SyncOption))
+					if err != nil {
+						continue
+					}
+					txn.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
+						if bm, ok := value.(*blockmanager.BlockManager); ok {
+							_ = bm.Close()
+						}
+					})
+				} else if v, ok := klogBm.(*blockmanager.BlockManager); !ok || v == nil {
+					continue
+				}
+
+				t, err := tree.Open(klogBm.(*blockmanager.BlockManager), sst.db.opts.SSTableBTreeOrder, sst)
+				if err != nil {
+					continue
+				}
+				treeIter, err := t.PrefixIterator(prefix, asc)
+				if err != nil {
+					continue
+				}
+				items = append(items, &iterator{
+					underlyingIterator: treeIter,
+					sst:                sst,
+				})
+			}
+		}
+	}
+
+	// Pass the ascending parameter to NewMergeIterator
+	return NewMergeIterator(items, txn.Timestamp, asc)
 }
 
 // remove removes the transaction from the database

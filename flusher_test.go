@@ -29,15 +29,10 @@ import (
 func TestFlusher_QueueMemtable(t *testing.T) {
 	logChannel := make(chan string, 100) // Buffer size of 100 messages
 
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_flusher_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-
-	}(dir)
 
 	// Create a test DB
 	opts := &Options{
@@ -126,14 +121,10 @@ func TestFlusher_QueueMemtable(t *testing.T) {
 }
 
 func TestFlusher_MVCCWithMultipleVersions(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_flusher_mvcc_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel with debug logging
 	logChan := make(chan string, 1000)
@@ -198,6 +189,8 @@ func TestFlusher_MVCCWithMultipleVersions(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
+	db.ForceFlush()
+
 	// Now verify that we can read each version using the corresponding timestamp
 	for i := 0; i < 5; i++ {
 		// Create a transaction with the recorded timestamp
@@ -254,14 +247,10 @@ func TestFlusher_MVCCWithMultipleVersions(t *testing.T) {
 }
 
 func TestFlusher_ErrorHandling(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_flusher_error_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -378,14 +367,10 @@ func TestFlusher_ErrorHandling(t *testing.T) {
 }
 
 func TestFlusher_MultipleFlushesWithUpdates(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_flusher_updates_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -484,14 +469,11 @@ func TestFlusher_MultipleFlushesWithUpdates(t *testing.T) {
 }
 
 func TestFlusher_ConcurrentReadsWithFlush(t *testing.T) {
-	// Create a temporary directory for the test
+
 	dir, err := os.MkdirTemp("", "db_flusher_concurrent_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -648,14 +630,10 @@ func TestFlusher_ConcurrentReadsWithFlush(t *testing.T) {
 }
 
 func TestFlusher_VariousKeySizes(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_flusher_key_sizes_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -774,14 +752,10 @@ func TestFlusher_VariousKeySizes(t *testing.T) {
 }
 
 func TestFlusher_RecoveryAfterCrash(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_flusher_crash_recovery_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -832,7 +806,7 @@ func TestFlusher_RecoveryAfterCrash(t *testing.T) {
 		}
 
 		// Wait enough time for WAL to be written but not necessarily for the flush to complete
-		time.Sleep(100 * time.Millisecond)
+		//time.Sleep(100 * time.Millisecond)
 
 		// Check that data exists before "crash"
 		var verificationSuccessCount int
@@ -923,14 +897,10 @@ func TestFlusher_RecoveryAfterCrash(t *testing.T) {
 }
 
 func TestFlusher_EmptyFlush(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_flusher_empty_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)

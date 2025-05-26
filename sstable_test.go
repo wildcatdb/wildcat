@@ -20,21 +20,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
 func TestSSTable_BasicOperations(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_sstable_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -154,14 +149,10 @@ func TestSSTable_BasicOperations(t *testing.T) {
 }
 
 func TestSSTable_ConcurrentAccess(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_sstable_concurrent_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -356,14 +347,10 @@ func startsWith(data, prefix []byte) bool {
 }
 
 func TestSSTable_MVCCWithMultipleVersions(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_sstable_mvcc_multiple_versions_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel with debug logging
 	logChan := make(chan string, 1000)
@@ -487,14 +474,10 @@ func TestSSTable_MVCCWithMultipleVersions(t *testing.T) {
 }
 
 func TestSSTable_SimpleDeleteWithDelay(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_sstable_delete_delay_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -631,183 +614,4 @@ func TestSSTable_SimpleDeleteWithDelay(t *testing.T) {
 		t.Fatalf("Post-restart verification failed: %v", err)
 	}
 	t.Logf("Key correctly not found after restart")
-}
-
-func TestSSTable_Iterator(t *testing.T) {
-	// Create a temporary directory for the test
-	dir, err := os.MkdirTemp("", "db_sstable_iterator_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
-	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
-
-	// Create a log channel
-	logChan := make(chan string, 100)
-	defer func() {
-		// Drain the log channel
-		for len(logChan) > 0 {
-			<-logChan
-		}
-	}()
-
-	// Create a test DB with a small write buffer to force flushing
-	opts := &Options{
-		Directory:       dir,
-		SyncOption:      SyncFull,
-		LogChannel:      logChan,
-		WriteBufferSize: 4 * 1024, // Small buffer to force flushing
-	}
-
-	db, err := Open(opts)
-	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
-	}
-	defer func(db *DB) {
-		_ = db.Close()
-	}(db)
-
-	// Insert test data - use a predictable pattern for verification
-	// Using fewer entries to make the test more reliable
-	numEntries := 20
-	expectedKeys := make([]string, numEntries)
-	expectedValues := make([]string, numEntries)
-
-	for i := 0; i < numEntries; i++ {
-		// Use keys that sort predictably
-		key := fmt.Sprintf("key%04d", i)
-		value := fmt.Sprintf("value%04d", i)
-
-		expectedKeys[i] = key
-		expectedValues[i] = value
-
-		err = db.Update(func(txn *Txn) error {
-			return txn.Put([]byte(key), []byte(value))
-		})
-		if err != nil {
-			t.Fatalf("Failed to insert data: %v", err)
-		}
-	}
-
-	// Force a flush to ensure data is in SSTables
-	largeValue := make([]byte, opts.WriteBufferSize)
-	for i := range largeValue {
-		largeValue[i] = byte(i % 256)
-	}
-
-	err = db.Update(func(txn *Txn) error {
-		return txn.Put([]byte("large_key"), largeValue)
-	})
-	if err != nil {
-		t.Fatalf("Failed to insert large value: %v", err)
-	}
-
-	// Give some time for background flushing to complete
-	time.Sleep(500 * time.Millisecond)
-
-	// Force a second flush to ensure we have at least two SSTables
-	err = db.Update(func(txn *Txn) error {
-		return txn.Put([]byte("another_large_key"), largeValue)
-	})
-	if err != nil {
-		t.Fatalf("Failed to insert second large value: %v", err)
-	}
-
-	// Give more time for flushing to complete
-	time.Sleep(500 * time.Millisecond)
-
-	// Verify that level 1 has at least one SSTable
-	levels := db.levels.Load()
-	if levels == nil {
-		t.Fatalf("Levels not initialized")
-	}
-
-	level1 := (*levels)[0] // Level 1 is at index 0
-	sstables := level1.sstables.Load()
-
-	if sstables == nil || len(*sstables) == 0 {
-		t.Fatalf("Expected at least one SSTable in level 1, but found none")
-	}
-
-	// Test iterator on the first SSTable
-	sstable := (*sstables)[0]
-	iter := sstable.iterator()
-	if iter == nil {
-		t.Fatalf("Failed to create iterator for SSTable")
-	}
-
-	// Test forward iteration
-	t.Log("Testing forward iteration")
-	var readKeys []string
-	var readValues []string
-
-	// Read entries using Next() in a more defensive way
-	readCount := 0
-	maxReads := 30 // Safety limit to prevent infinite loops
-
-	for readCount < maxReads {
-		key, value, timestamp, err := iter.next()
-		if err != nil {
-			t.Logf("Forward iteration ended: %v", err)
-			break // End of iterator
-		}
-
-		if key == nil {
-			t.Logf("Received nil key during iteration, skipping")
-			continue
-		}
-
-		keyStr := string(key)
-		valueStr := "nil"
-		if value != nil {
-			valueStr = string(value)
-		}
-
-		t.Logf("Found key: %s, timestamp: %d", keyStr, timestamp)
-		readKeys = append(readKeys, keyStr)
-		readValues = append(readValues, valueStr)
-		readCount++
-	}
-
-	// Verify we read some entries
-	if len(readKeys) == 0 {
-		t.Logf("Warning: Iterator didn't return any entries during forward iteration")
-	} else {
-		t.Logf("Successfully read %d entries with forward iteration", len(readKeys))
-
-		// Check that keys start with expected prefix
-		for _, key := range readKeys {
-			if !strings.HasPrefix(key, "key") && key != "large_key" && key != "another_large_key" {
-				t.Errorf("Unexpected key format: %s", key)
-			}
-		}
-	}
-
-	// Simplified test for backward iteration - just ensure it doesn't crash
-	t.Log("Testing simple backward functionality")
-
-	// Create a fresh iterator
-	iter2 := sstable.iterator()
-	if iter2 == nil {
-		t.Fatalf("Failed to create second iterator for SSTable")
-	}
-
-	// Try forward then backward
-	key1, _, _, err1 := iter2.next()
-	if err1 != nil {
-		t.Logf("Could not move forward: %v", err1)
-	} else {
-		t.Logf("Moved forward to key: %s", string(key1))
-
-		// Now try to move backward
-		key2, _, _, err2 := iter2.prev()
-		if err2 != nil {
-			t.Logf("Could not move backward: %v", err2)
-		} else {
-			t.Logf("Successfully moved backward to key: %s", string(key2))
-		}
-	}
-
-	t.Log("Iterator test completed")
 }

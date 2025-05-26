@@ -168,7 +168,7 @@ func TestIteratorForwardTraversal(t *testing.T) {
 	sl.Put([]byte("key3"), []byte("value3"), ts+20)
 
 	// Create an iterator starting at the first key
-	it := sl.NewIterator(nil, ts+20)
+	it, _ := sl.NewIterator(nil, ts+20)
 
 	// Traverse forward
 	expectedKeys := []string{"key0", "key2", "key3"}
@@ -207,7 +207,7 @@ func TestIteratorBackwardTraversal(t *testing.T) {
 	sl.Put([]byte("key3"), []byte("value3"), ts+20)
 
 	// Create an iterator starting at the first key
-	it := sl.NewIterator([]byte("key1"), ts+20)
+	it, _ := sl.NewIterator([]byte("key1"), ts+20)
 
 	// Traverse forward to the end first
 	expectedKeys := []string{"key1", "key2", "key3"}
@@ -270,7 +270,7 @@ func TestIteratorSnapshotIsolation(t *testing.T) {
 	sl.Put(key, []byte("v3"), ts3)
 
 	// Create an iterator with a snapshot at ts2
-	it := sl.NewIterator(key, ts2)
+	it, _ := sl.NewIterator(key, ts2)
 
 	// Ensure the iterator sees the correct version
 	k, v, _, exists := it.Next()
@@ -387,7 +387,7 @@ func TestSkipListConcurrentIterators(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			it := sl.NewIterator([]byte("key-0"), ts+1000)
+			it, _ := sl.NewIterator([]byte("key-0"), ts+1000)
 			var k, v []byte
 			var exists bool
 			for {
@@ -512,6 +512,667 @@ func TestSkipListGetMinMax(t *testing.T) {
 	if exists {
 		t.Errorf("GetMax after all deletions should return exists=false, got true with key=%v, val=%v",
 			maxKey, maxVal)
+	}
+}
+
+// Tests for PrefixIterator and RangeIterator
+
+func TestPrefixIteratorForwardTraversal(t *testing.T) {
+	sl := New()
+
+	// Insert keys with different prefixes
+	ts := time.Now().UnixNano()
+	sl.Put([]byte("user:1"), []byte("alice"), ts)
+	sl.Put([]byte("user:2"), []byte("bob"), ts+10)
+	sl.Put([]byte("user:3"), []byte("charlie"), ts+20)
+	sl.Put([]byte("admin:1"), []byte("root"), ts+30)
+	sl.Put([]byte("guest:1"), []byte("visitor"), ts+40)
+	sl.Put([]byte("user:4"), []byte("david"), ts+50)
+
+	// Create prefix iterator for "user:" prefix
+	it, _ := sl.NewPrefixIterator([]byte("user:"), ts+60)
+
+	// Expected keys and values for "user:" prefix
+	expectedKeys := []string{"user:1", "user:2", "user:3", "user:4"}
+	expectedValues := []string{"alice", "bob", "charlie", "david"}
+
+	for i := 0; i < len(expectedKeys); i++ {
+		key, value, _, exists := it.Next()
+		if !exists {
+			t.Errorf("PrefixIterator.Next() returned exists=false, expected true at position %d", i)
+			continue
+		}
+
+		if string(key) != expectedKeys[i] {
+			t.Errorf("Expected key %s at position %d, got %s", expectedKeys[i], i, string(key))
+		}
+
+		if string(value) != expectedValues[i] {
+			t.Errorf("Expected value %s at position %d, got %s", expectedValues[i], i, string(value))
+		}
+	}
+
+	// Ensure iterator reaches the end
+	_, _, _, exists := it.Next()
+	if exists {
+		t.Errorf("PrefixIterator.Next() should return exists=false at the end")
+	}
+}
+
+func TestPrefixIteratorBackwardTraversal(t *testing.T) {
+	sl := New()
+
+	// Insert keys with different prefixes
+	ts := time.Now().UnixNano()
+	sl.Put([]byte("user:1"), []byte("alice"), ts)
+	sl.Put([]byte("user:2"), []byte("bob"), ts+10)
+	sl.Put([]byte("user:3"), []byte("charlie"), ts+20)
+	sl.Put([]byte("admin:1"), []byte("root"), ts+30)
+	sl.Put([]byte("user:4"), []byte("david"), ts+40)
+
+	// Create prefix iterator for "user:" prefix
+	it, _ := sl.NewPrefixIterator([]byte("user:"), ts+50)
+
+	// Move to the end first
+	for {
+		_, _, _, exists := it.Next()
+		if !exists {
+			break
+		}
+	}
+
+	// Expected keys and values for "user:" prefix in reverse order
+	expectedKeysReverse := []string{"user:4", "user:3", "user:2", "user:1"}
+	expectedValuesReverse := []string{"david", "charlie", "bob", "alice"}
+
+	for i := 0; i < len(expectedKeysReverse); i++ {
+		key, value, _, exists := it.Prev()
+		if !exists {
+			t.Errorf("PrefixIterator.Prev() returned exists=false, expected true at position %d", i)
+			continue
+		}
+
+		if string(key) != expectedKeysReverse[i] {
+			t.Errorf("Expected key %s at position %d, got %s", expectedKeysReverse[i], i, string(key))
+		}
+
+		if string(value) != expectedValuesReverse[i] {
+			t.Errorf("Expected value %s at position %d, got %s", expectedValuesReverse[i], i, string(value))
+		}
+	}
+
+	// Ensure iterator reaches the beginning
+	_, _, _, exists := it.Prev()
+	if exists {
+		t.Errorf("PrefixIterator.Prev() should return exists=false at the beginning")
+	}
+}
+
+func TestPrefixIteratorSnapshotIsolation(t *testing.T) {
+	sl := New()
+
+	// Insert multiple versions of keys with the same prefix
+	ts1 := time.Now().UnixNano()
+	ts2 := ts1 + 100
+	ts3 := ts2 + 100
+
+	sl.Put([]byte("user:1"), []byte("alice_v1"), ts1)
+	sl.Put([]byte("user:2"), []byte("bob_v1"), ts1)
+	sl.Put([]byte("user:1"), []byte("alice_v2"), ts2)
+	sl.Put([]byte("user:3"), []byte("charlie_v1"), ts3)
+
+	// Create iterator with snapshot at ts2
+	it, _ := sl.NewPrefixIterator([]byte("user:"), ts2)
+
+	// Should see user:1 (v2) and user:2 (v1), but not user:3
+	expectedData := map[string]string{
+		"user:1": "alice_v2",
+		"user:2": "bob_v1",
+	}
+
+	count := 0
+	for {
+		key, value, _, exists := it.Next()
+		if !exists {
+			break
+		}
+		count++
+
+		keyStr := string(key)
+		expectedValue, ok := expectedData[keyStr]
+		if !ok {
+			t.Errorf("Unexpected key %s in iterator", keyStr)
+			continue
+		}
+
+		if string(value) != expectedValue {
+			t.Errorf("Expected value %s for key %s, got %s", expectedValue, keyStr, string(value))
+		}
+	}
+
+	if count != 2 {
+		t.Errorf("Expected 2 keys, got %d", count)
+	}
+}
+
+func TestPrefixIteratorWithDeletes(t *testing.T) {
+	sl := New()
+
+	ts1 := time.Now().UnixNano()
+	ts2 := ts1 + 100
+	ts3 := ts2 + 100
+
+	// Insert keys
+	sl.Put([]byte("user:1"), []byte("alice"), ts1)
+	sl.Put([]byte("user:2"), []byte("bob"), ts1)
+	sl.Put([]byte("user:3"), []byte("charlie"), ts1)
+
+	// Delete user:2 at ts2
+	sl.Delete([]byte("user:2"), ts2)
+
+	// Iterator at ts1 should see all three
+	it1, _ := sl.NewPrefixIterator([]byte("user:"), ts1)
+	count1 := 0
+	for {
+		_, _, _, exists := it1.Next()
+		if !exists {
+			break
+		}
+		count1++
+	}
+	if count1 != 3 {
+		t.Errorf("Iterator at ts1 expected 3 keys, got %d", count1)
+	}
+
+	// Iterator at ts3 should see only user:1 and user:3
+	it2, _ := sl.NewPrefixIterator([]byte("user:"), ts3)
+	expectedKeys := []string{"user:1", "user:3"}
+	i := 0
+	for {
+		key, _, _, exists := it2.Next()
+		if !exists {
+			break
+		}
+		if i >= len(expectedKeys) || string(key) != expectedKeys[i] {
+			t.Errorf("Unexpected key at position %d: %s", i, string(key))
+		}
+		i++
+	}
+	if i != 2 {
+		t.Errorf("Iterator at ts3 expected 2 keys, got %d", i)
+	}
+}
+
+func TestPrefixIteratorEmptyResult(t *testing.T) {
+	sl := New()
+
+	ts := time.Now().UnixNano()
+	sl.Put([]byte("admin:1"), []byte("root"), ts)
+	sl.Put([]byte("guest:1"), []byte("visitor"), ts)
+
+	// Search for non-existent prefix
+	it, _ := sl.NewPrefixIterator([]byte("user:"), ts)
+
+	_, _, _, exists := it.Next()
+	if exists {
+		t.Errorf("Expected no results for non-existent prefix")
+	}
+
+	_, _, _, exists = it.Prev()
+	if exists {
+		t.Errorf("Expected no results for Prev() on empty prefix iterator")
+	}
+}
+
+func TestRangeIteratorForwardTraversal(t *testing.T) {
+	sl := New()
+
+	// Insert keys across different ranges
+	ts := time.Now().UnixNano()
+	sl.Put([]byte("apple"), []byte("red"), ts)
+	sl.Put([]byte("banana"), []byte("yellow"), ts+10)
+	sl.Put([]byte("cherry"), []byte("red"), ts+20)
+	sl.Put([]byte("date"), []byte("brown"), ts+30)
+	sl.Put([]byte("elderberry"), []byte("purple"), ts+40)
+	sl.Put([]byte("fig"), []byte("purple"), ts+50)
+
+	// Create range iterator for [banana, elderberry)
+	it, _ := sl.NewRangeIterator([]byte("banana"), []byte("elderberry"), ts+60)
+
+	// Expected keys in range [banana, elderberry)
+	expectedKeys := []string{"banana", "cherry", "date"}
+	expectedValues := []string{"yellow", "red", "brown"}
+
+	for i := 0; i < len(expectedKeys); i++ {
+		key, value, _, exists := it.Next()
+		if !exists {
+			t.Errorf("RangeIterator.Next() returned exists=false, expected true at position %d", i)
+			continue
+		}
+
+		if string(key) != expectedKeys[i] {
+			t.Errorf("Expected key %s at position %d, got %s", expectedKeys[i], i, string(key))
+		}
+
+		if string(value) != expectedValues[i] {
+			t.Errorf("Expected value %s at position %d, got %s", expectedValues[i], i, string(value))
+		}
+	}
+
+	// Ensure iterator reaches the end
+	_, _, _, exists := it.Next()
+	if exists {
+		t.Errorf("RangeIterator.Next() should return exists=false at the end")
+	}
+}
+
+func TestRangeIteratorBackwardTraversal(t *testing.T) {
+	sl := New()
+
+	// Insert keys
+	ts := time.Now().UnixNano()
+	sl.Put([]byte("apple"), []byte("red"), ts)
+	sl.Put([]byte("banana"), []byte("yellow"), ts+10)
+	sl.Put([]byte("cherry"), []byte("red"), ts+20)
+	sl.Put([]byte("date"), []byte("brown"), ts+30)
+	sl.Put([]byte("elderberry"), []byte("purple"), ts+40)
+
+	// Create range iterator for [banana, elderberry)
+	it, _ := sl.NewRangeIterator([]byte("banana"), []byte("elderberry"), ts+50)
+
+	// Move to the end first
+	for {
+		_, _, _, exists := it.Next()
+		if !exists {
+			break
+		}
+	}
+
+	// Expected keys in range [banana, elderberry) in reverse order
+	expectedKeysReverse := []string{"date", "cherry", "banana"}
+	expectedValuesReverse := []string{"brown", "red", "yellow"}
+
+	for i := 0; i < len(expectedKeysReverse); i++ {
+		key, value, _, exists := it.Prev()
+		if !exists {
+			t.Errorf("RangeIterator.Prev() returned exists=false, expected true at position %d", i)
+			continue
+		}
+
+		if string(key) != expectedKeysReverse[i] {
+			t.Errorf("Expected key %s at position %d, got %s", expectedKeysReverse[i], i, string(key))
+		}
+
+		if string(value) != expectedValuesReverse[i] {
+			t.Errorf("Expected value %s at position %d, got %s", expectedValuesReverse[i], i, string(value))
+		}
+	}
+
+	// Ensure iterator reaches the beginning
+	_, _, _, exists := it.Prev()
+	if exists {
+		t.Errorf("RangeIterator.Prev() should return exists=false at the beginning")
+	}
+}
+
+func TestRangeIteratorOpenRange(t *testing.T) {
+	sl := New()
+
+	ts := time.Now().UnixNano()
+	sl.Put([]byte("apple"), []byte("red"), ts)
+	sl.Put([]byte("banana"), []byte("yellow"), ts+10)
+	sl.Put([]byte("cherry"), []byte("red"), ts+20)
+	sl.Put([]byte("date"), []byte("brown"), ts+30)
+
+	// Test range with nil start (from beginning)
+	it1, _ := sl.NewRangeIterator(nil, []byte("cherry"), ts+40)
+	expectedKeys1 := []string{"apple", "banana"}
+
+	for i := 0; i < len(expectedKeys1); i++ {
+		key, _, _, exists := it1.Next()
+		if !exists || string(key) != expectedKeys1[i] {
+			t.Errorf("Expected key %s at position %d, got %s (exists=%v)", expectedKeys1[i], i, string(key), exists)
+		}
+	}
+
+	// Test range with nil end (to the end)
+	it2, _ := sl.NewRangeIterator([]byte("banana"), nil, ts+40)
+	expectedKeys2 := []string{"banana", "cherry", "date"}
+
+	for i := 0; i < len(expectedKeys2); i++ {
+		key, _, _, exists := it2.Next()
+		if !exists || string(key) != expectedKeys2[i] {
+			t.Errorf("Expected key %s at position %d, got %s (exists=%v)", expectedKeys2[i], i, string(key), exists)
+		}
+	}
+
+	// Test range with both nil (entire list)
+	it3, _ := sl.NewRangeIterator(nil, nil, ts+40)
+	expectedKeys3 := []string{"apple", "banana", "cherry", "date"}
+
+	for i := 0; i < len(expectedKeys3); i++ {
+		key, _, _, exists := it3.Next()
+		if !exists || string(key) != expectedKeys3[i] {
+			t.Errorf("Expected key %s at position %d, got %s (exists=%v)", expectedKeys3[i], i, string(key), exists)
+		}
+	}
+}
+
+func TestRangeIteratorSnapshotIsolation(t *testing.T) {
+	sl := New()
+
+	ts1 := time.Now().UnixNano()
+	ts2 := ts1 + 100
+	ts3 := ts2 + 100
+
+	// Insert keys
+	sl.Put([]byte("banana"), []byte("yellow_v1"), ts1)
+	sl.Put([]byte("cherry"), []byte("red_v1"), ts1)
+	sl.Put([]byte("banana"), []byte("yellow_v2"), ts2)
+	sl.Put([]byte("date"), []byte("brown_v1"), ts3)
+
+	// Iterator at ts2 should see banana_v2, cherry_v1, but not date
+	it, _ := sl.NewRangeIterator([]byte("banana"), []byte("elderberry"), ts2)
+
+	expectedData := map[string]string{
+		"banana": "yellow_v2",
+		"cherry": "red_v1",
+	}
+
+	count := 0
+	for {
+		key, value, _, exists := it.Next()
+		if !exists {
+			break
+		}
+		count++
+
+		keyStr := string(key)
+		expectedValue, ok := expectedData[keyStr]
+		if !ok {
+			t.Errorf("Unexpected key %s in iterator", keyStr)
+			continue
+		}
+
+		if string(value) != expectedValue {
+			t.Errorf("Expected value %s for key %s, got %s", expectedValue, keyStr, string(value))
+		}
+	}
+
+	if count != 2 {
+		t.Errorf("Expected 2 keys, got %d", count)
+	}
+}
+
+func TestRangeIteratorWithDeletes(t *testing.T) {
+	sl := New()
+
+	ts1 := time.Now().UnixNano()
+	ts2 := ts1 + 100
+	ts3 := ts2 + 100
+
+	// Insert keys
+	sl.Put([]byte("banana"), []byte("yellow"), ts1)
+	sl.Put([]byte("cherry"), []byte("red"), ts1)
+	sl.Put([]byte("date"), []byte("brown"), ts1)
+
+	// Delete cherry at ts2
+	sl.Delete([]byte("cherry"), ts2)
+
+	// Iterator at ts1 should see all three in range
+	it1, _ := sl.NewRangeIterator([]byte("banana"), []byte("elderberry"), ts1)
+	count1 := 0
+	for {
+		_, _, _, exists := it1.Next()
+		if !exists {
+			break
+		}
+		count1++
+	}
+	if count1 != 3 {
+		t.Errorf("Iterator at ts1 expected 3 keys, got %d", count1)
+	}
+
+	// Iterator at ts3 should see only banana and date
+	it2, _ := sl.NewRangeIterator([]byte("banana"), []byte("elderberry"), ts3)
+	expectedKeys := []string{"banana", "date"}
+	i := 0
+	for {
+		key, _, _, exists := it2.Next()
+		if !exists {
+			break
+		}
+		if i >= len(expectedKeys) || string(key) != expectedKeys[i] {
+			t.Errorf("Unexpected key at position %d: %s", i, string(key))
+		}
+		i++
+	}
+	if i != 2 {
+		t.Errorf("Iterator at ts3 expected 2 keys, got %d", i)
+	}
+}
+
+func TestRangeIteratorEmptyResult(t *testing.T) {
+	sl := New()
+
+	ts := time.Now().UnixNano()
+	sl.Put([]byte("apple"), []byte("red"), ts)
+	sl.Put([]byte("banana"), []byte("yellow"), ts)
+
+	// Search for range with no matching keys
+	it, _ := sl.NewRangeIterator([]byte("cherry"), []byte("date"), ts)
+
+	_, _, _, exists := it.Next()
+	if exists {
+		t.Errorf("Expected no results for empty range")
+	}
+
+	_, _, _, exists = it.Prev()
+	if exists {
+		t.Errorf("Expected no results for Prev() on empty range iterator")
+	}
+}
+
+func TestIteratorPeekFunctionality(t *testing.T) {
+	sl := New()
+
+	ts := time.Now().UnixNano()
+	sl.Put([]byte("user:1"), []byte("alice"), ts)
+	sl.Put([]byte("user:2"), []byte("bob"), ts)
+	sl.Put([]byte("admin:1"), []byte("root"), ts)
+
+	// Test PrefixIterator Peek
+	prefixIt, _ := sl.NewPrefixIterator([]byte("user:"), ts)
+
+	// Move to first element
+	key1, val1, ts1, exists1 := prefixIt.Next()
+	if !exists1 {
+		t.Fatal("Expected first element to exist")
+	}
+
+	// Peek should return the same element
+	key2, val2, ts2, exists2 := prefixIt.Peek()
+	if !exists2 {
+		t.Fatal("Peek should return the current element")
+	}
+
+	if !bytes.Equal(key1, key2) || !bytes.Equal(val1, val2) || ts1 != ts2 {
+		t.Errorf("Peek should return same data as current position")
+	}
+
+	// Test RangeIterator Peek
+	rangeIt, _ := sl.NewRangeIterator([]byte("admin:"), []byte("user:"), ts)
+
+	// Move to first element
+	key3, val3, ts3, exists3 := rangeIt.Next()
+	if !exists3 {
+		t.Fatal("Expected first element to exist")
+	}
+
+	// Peek should return the same element
+	key4, val4, ts4, exists4 := rangeIt.Peek()
+	if !exists4 {
+		t.Fatal("Peek should return the current element")
+	}
+
+	if !bytes.Equal(key3, key4) || !bytes.Equal(val3, val4) || ts3 != ts4 {
+		t.Errorf("Peek should return same data as current position")
+	}
+}
+
+func TestPrefixIteratorConcurrency(t *testing.T) {
+	sl := New()
+	var wg sync.WaitGroup
+
+	// Insert keys with various prefixes
+	ts := time.Now().UnixNano()
+	for i := 0; i < 1000; i++ {
+		key := []byte(fmt.Sprintf("user:%d", i))
+		value := []byte(fmt.Sprintf("user_value_%d", i))
+		sl.Put(key, value, ts+int64(i))
+
+		key = []byte(fmt.Sprintf("admin:%d", i))
+		value = []byte(fmt.Sprintf("admin_value_%d", i))
+		sl.Put(key, value, ts+int64(i))
+	}
+
+	// Concurrent prefix iterators
+	numIterators := 10
+	for i := 0; i < numIterators; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			prefix := "user:"
+			if id%2 == 0 {
+				prefix = "admin:"
+			}
+
+			it, _ := sl.NewPrefixIterator([]byte(prefix), ts+1000)
+			count := 0
+			for {
+				_, _, _, exists := it.Next()
+				if !exists {
+					break
+				}
+				count++
+				// Simulate work
+				time.Sleep(time.Microsecond)
+			}
+
+			if count != 1000 {
+				t.Errorf("Expected 1000 keys for prefix %s, got %d", prefix, count)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+func TestRangeIteratorConcurrency(t *testing.T) {
+	sl := New()
+	var wg sync.WaitGroup
+
+	// Insert keys
+	ts := time.Now().UnixNano()
+	for i := 0; i < 1000; i++ {
+		key := []byte(fmt.Sprintf("key-%04d", i))
+		value := []byte(fmt.Sprintf("value-%d", i))
+		sl.Put(key, value, ts+int64(i))
+	}
+
+	// Concurrent range iterators with different ranges
+	numIterators := 10
+	for i := 0; i < numIterators; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+
+			// Different ranges for different goroutines
+			// Ensure ranges don't overlap and are valid
+			startNum := id * 90     // Non-overlapping ranges with gaps
+			endNum := startNum + 80 // Each range covers 80 keys
+
+			start := []byte(fmt.Sprintf("key-%04d", startNum))
+			end := []byte(fmt.Sprintf("key-%04d", endNum))
+
+			it, _ := sl.NewRangeIterator(start, end, ts+1000)
+			count := 0
+			for {
+				_, _, _, exists := it.Next()
+				if !exists {
+					break
+				}
+				count++
+				// Simulate work
+				time.Sleep(time.Microsecond)
+			}
+
+			// Expected count should be 80 for most ranges
+			// Last range might have fewer elements if it goes beyond our data
+			expectedCount := 80
+			if endNum > 1000 {
+				expectedCount = 1000 - startNum
+				if expectedCount < 0 {
+					expectedCount = 0
+				}
+			}
+
+			if count != expectedCount {
+				t.Errorf("Expected %d keys for range [%s, %s), got %d", expectedCount, start, end, count)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+func BenchmarkPrefixIterator(b *testing.B) {
+	sl := New()
+	now := time.Now().UnixNano()
+
+	// Prepopulate with various prefixes
+	for i := 0; i < 10000; i++ {
+		prefixes := []string{"user:", "admin:", "guest:", "system:"}
+		prefix := prefixes[i%len(prefixes)]
+		key := []byte(fmt.Sprintf("%s%d", prefix, i))
+		value := []byte(fmt.Sprintf("value-%d", i))
+		sl.Put(key, value, now+int64(i))
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		it, _ := sl.NewPrefixIterator([]byte("user:"), now+10000)
+		for {
+			_, _, _, exists := it.Next()
+			if !exists {
+				break
+			}
+		}
+	}
+}
+
+func BenchmarkRangeIterator(b *testing.B) {
+	sl := New()
+	now := time.Now().UnixNano()
+
+	// Prepopulate the skip list
+	for i := 0; i < 10000; i++ {
+		key := []byte(fmt.Sprintf("key-%05d", i))
+		value := []byte(fmt.Sprintf("value-%d", i))
+		sl.Put(key, value, now+int64(i))
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		start := []byte("key-02000")
+		end := []byte("key-08000")
+		it, _ := sl.NewRangeIterator(start, end, now+10000)
+		for {
+			_, _, _, exists := it.Next()
+			if !exists {
+				break
+			}
+		}
 	}
 }
 
