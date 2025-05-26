@@ -146,11 +146,14 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 		sstable.Max = maxKey
 	}
 
+	latestTs := memt.skiplist.GetLatestTimestamp() // For compactor awareness
+
 	// Calculate the approx size of the memtable
 	sstable.Size = atomic.LoadInt64(&memt.size)
 
 	// Use max timestamp to get a count of all entries regardless of version
 	sstable.EntryCount = memt.skiplist.Count(maxPossibleTs)
+	sstable.Timestamp = latestTs
 
 	// We create new sstable files (.klog and .vlog) here
 	klogPath := fmt.Sprintf("%s%s1%s%s%d%s", flusher.db.opts.Directory, LevelPrefix, string(os.PathSeparator), SSTablePrefix, sstable.Id, KLogExtension)

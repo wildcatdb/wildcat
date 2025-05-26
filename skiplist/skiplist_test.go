@@ -1126,6 +1126,82 @@ func TestRangeIteratorConcurrency(t *testing.T) {
 	wg.Wait()
 }
 
+func TestGetLatestTimestamp(t *testing.T) {
+	sl := New()
+
+	// Test with empty skip list
+	latestTS := sl.GetLatestTimestamp()
+	if latestTS != 0 {
+		t.Errorf("GetLatestTimestamp on empty list should return 0, got %d", latestTS)
+	}
+
+	// Insert some data with different timestamps
+	baseTS := time.Now().UnixNano()
+
+	// Insert first key
+	sl.Put([]byte("key1"), []byte("value1"), baseTS+100)
+	latestTS = sl.GetLatestTimestamp()
+	if latestTS != baseTS+100 {
+		t.Errorf("Expected latest timestamp %d, got %d", baseTS+100, latestTS)
+	}
+
+	// Insert key with older timestamp
+	sl.Put([]byte("key2"), []byte("value2"), baseTS+50)
+	latestTS = sl.GetLatestTimestamp()
+	if latestTS != baseTS+100 {
+		t.Errorf("Expected latest timestamp %d after inserting older timestamp, got %d", baseTS+100, latestTS)
+	}
+
+	// Insert key with newer timestamp
+	sl.Put([]byte("key3"), []byte("value3"), baseTS+200)
+	latestTS = sl.GetLatestTimestamp()
+	if latestTS != baseTS+200 {
+		t.Errorf("Expected latest timestamp %d after inserting newer timestamp, got %d", baseTS+200, latestTS)
+	}
+
+	// Update existing key with newer timestamp
+	sl.Put([]byte("key1"), []byte("value1_updated"), baseTS+300)
+	latestTS = sl.GetLatestTimestamp()
+	if latestTS != baseTS+300 {
+		t.Errorf("Expected latest timestamp %d after updating key, got %d", baseTS+300, latestTS)
+	}
+
+	// Update existing key with older timestamp (should not change latest)
+	sl.Put([]byte("key2"), []byte("value2_updated"), baseTS+150)
+	latestTS = sl.GetLatestTimestamp()
+	if latestTS != baseTS+300 {
+		t.Errorf("Expected latest timestamp %d after updating with older timestamp, got %d", baseTS+300, latestTS)
+	}
+
+	// Test with delete operations (deletes should also count as timestamps)
+	sl.Delete([]byte("key3"), baseTS+400)
+	latestTS = sl.GetLatestTimestamp()
+	if latestTS != baseTS+400 {
+		t.Errorf("Expected latest timestamp %d after delete operation, got %d", baseTS+400, latestTS)
+	}
+
+	// Delete with older timestamp should not change latest
+	sl.Delete([]byte("key2"), baseTS+250)
+	latestTS = sl.GetLatestTimestamp()
+	if latestTS != baseTS+400 {
+		t.Errorf("Expected latest timestamp %d after delete with older timestamp, got %d", baseTS+400, latestTS)
+	}
+
+	// Delete non-existent key should not affect timestamp
+	sl.Delete([]byte("nonexistent"), baseTS+500)
+	latestTS = sl.GetLatestTimestamp()
+	if latestTS != baseTS+400 {
+		t.Errorf("Expected latest timestamp %d after deleting non-existent key, got %d", baseTS+400, latestTS)
+	}
+
+	// Add another write operation with the highest timestamp yet
+	sl.Put([]byte("key4"), []byte("value4"), baseTS+600)
+	latestTS = sl.GetLatestTimestamp()
+	if latestTS != baseTS+600 {
+		t.Errorf("Expected latest timestamp %d after final insert, got %d", baseTS+600, latestTS)
+	}
+}
+
 func BenchmarkPrefixIterator(b *testing.B) {
 	sl := New()
 	now := time.Now().UnixNano()

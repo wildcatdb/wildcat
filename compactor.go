@@ -178,29 +178,32 @@ func (compactor *Compactor) scheduleSizeTieredCompaction(level *Level, levelNum 
 		return
 	}
 
-	// Sort SSTables by size for size-tiered compaction
-	sortedTables := make([]*SSTable, len(*sstables))
-	copy(sortedTables, *sstables)
+	// Filter out SSTables that active transactions might need
+	safeTables := compactor.filterSafeTablesForCompaction(*sstables)
+	if len(safeTables) < 2 {
+		compactor.db.log(fmt.Sprintf("Not enough safe SSTables for compaction in level %d (%d safe, need 2+)",
+			levelNum, len(safeTables)))
+		return
+	}
 
-	sort.Slice(sortedTables, func(i, j int) bool {
-		return sortedTables[i].Size < sortedTables[j].Size
+	// Sort safe SSTables by size for size-tiered compaction
+	sort.Slice(safeTables, func(i, j int) bool {
+		return safeTables[i].Size < safeTables[j].Size
 	})
 
-	// Find similar-sized SSTables
+	// Find similar-sized SSTables among the safe ones
 	var selectedTables []*SSTable
 
-	// Select up to CompactionBatchSize tables with similar size
-	for i := 0; i < len(sortedTables); {
-		size := sortedTables[i].Size
-		similarSized := []*SSTable{sortedTables[i]}
+	for i := 0; i < len(safeTables); {
+		size := safeTables[i].Size
+		similarSized := []*SSTable{safeTables[i]}
 
 		j := i + 1
-		for j < len(sortedTables) && float64(sortedTables[j].Size)/float64(size) <= 1.5 && len(similarSized) < compactor.db.opts.CompactionBatchSize {
-			similarSized = append(similarSized, sortedTables[j])
+		for j < len(safeTables) && float64(safeTables[j].Size)/float64(size) <= 1.5 && len(similarSized) < compactor.db.opts.CompactionBatchSize {
+			similarSized = append(similarSized, safeTables[j])
 			j++
 		}
 
-		// If we found enough similar-sized tables, select them
 		if len(similarSized) >= 2 {
 			selectedTables = similarSized
 			break
@@ -209,9 +212,9 @@ func (compactor *Compactor) scheduleSizeTieredCompaction(level *Level, levelNum 
 		i = j
 	}
 
-	// If we couldn't find similar-sized tables, just take the smallest ones
-	if len(selectedTables) < 2 && len(sortedTables) >= 2 {
-		selectedTables = sortedTables[:min(compactor.db.opts.CompactionBatchSize, len(sortedTables))]
+	// If we couldn't find similar-sized tables, just take the smallest safe ones
+	if len(selectedTables) < 2 && len(safeTables) >= 2 {
+		selectedTables = safeTables[:min(compactor.db.opts.CompactionBatchSize, len(safeTables))]
 	}
 
 	if len(selectedTables) >= 2 {
@@ -222,6 +225,9 @@ func (compactor *Compactor) scheduleSizeTieredCompaction(level *Level, levelNum 
 			targetLevel: levelNum + 1,
 			inProgress:  false,
 		})
+
+		compactor.db.log(fmt.Sprintf("Scheduled size-tiered compaction with %d safe SSTables (out of %d total)",
+			len(selectedTables), len(*sstables)))
 	}
 }
 
@@ -233,64 +239,59 @@ func (compactor *Compactor) scheduleLeveledCompaction(level *Level, levelNum int
 		return
 	}
 
-	// For leveled compaction, pick the SSTable with the smallest key range
-	// This is often more efficient than simply picking the oldest SSTable
+	// Filter safe tables first
+	safeTables := compactor.filterSafeTablesForCompaction(*sstables)
+	if len(safeTables) == 0 {
+		compactor.db.log(fmt.Sprintf("No safe SSTables for leveled compaction in level %d", levelNum))
+		return
+	}
+
+	// Pick the SSTable with the smallest key range among safe tables
 	var selectedTable *SSTable
 	var smallestRange int
 
-	for i, table := range *sstables {
-		// Calculate the key range size
+	for i, table := range safeTables {
 		keyRangeSize := bytes.Compare(table.Max, table.Min)
 
-		// Initialize on first table or update if we find a smaller range
 		if i == 0 || keyRangeSize < smallestRange {
 			smallestRange = keyRangeSize
 			selectedTable = table
 		}
 	}
 
-	// If we couldn't determine by key range (equal ranges), fall back to oldest
+	// If we couldn't determine by key range, fall back to oldest safe table
 	if selectedTable == nil {
-		selectedTable = (*sstables)[0]
-		for _, table := range *sstables {
+		selectedTable = safeTables[0]
+		for _, table := range safeTables {
 			if table.Id < selectedTable.Id {
 				selectedTable = table
 			}
 		}
 	}
 
-	// Find overlapping SSTables in the next level
+	// Find overlapping SSTables in the next level (and filter those too)
 	nextLevelNum := levelNum + 1
 	if nextLevelNum > len(*compactor.db.levels.Load()) {
 		return
 	}
 
 	nextLevel := (*compactor.db.levels.Load())[nextLevelNum-1]
-
 	nextLevelTables := nextLevel.sstables.Load()
-	if nextLevelTables == nil {
-		// No tables in next level, just move the table down
-		compactor.compactionQueue = append(compactor.compactionQueue, &compactorJob{
-			level:       levelNum,
-			priority:    score,
-			ssTables:    []*SSTable{selectedTable},
-			targetLevel: nextLevelNum,
-			inProgress:  false,
-		})
-		return
-	}
 
-	// Find overlapping tables in next level
-	var overlappingTables []*SSTable
-	for _, table := range *nextLevelTables {
-		if bytes.Compare(table.Max, selectedTable.Min) >= 0 && bytes.Compare(table.Min, selectedTable.Max) <= 0 {
-			overlappingTables = append(overlappingTables, table)
-		}
-	}
-
-	// Create compaction job with selected table and overlapping tables
 	selectedTables := []*SSTable{selectedTable}
-	selectedTables = append(selectedTables, overlappingTables...)
+
+	if nextLevelTables != nil {
+		var overlappingTables []*SSTable
+		for _, table := range *nextLevelTables {
+			if bytes.Compare(table.Max, selectedTable.Min) >= 0 && bytes.Compare(table.Min, selectedTable.Max) <= 0 {
+				overlappingTables = append(overlappingTables, table)
+			}
+		}
+
+		// Filter overlapping tables for safety too
+		safeOverlappingTables := compactor.filterSafeTablesForCompaction(overlappingTables)
+		selectedTables = append(selectedTables, safeOverlappingTables...)
+	}
 
 	compactor.compactionQueue = append(compactor.compactionQueue, &compactorJob{
 		level:       levelNum,
@@ -300,7 +301,8 @@ func (compactor *Compactor) scheduleLeveledCompaction(level *Level, levelNum int
 		inProgress:  false,
 	})
 
-	compactor.db.log(fmt.Sprintf("Scheduled leveled compaction for level %d with %d SSTables", levelNum, len(selectedTables)))
+	compactor.db.log(fmt.Sprintf("Scheduled leveled compaction for level %d with %d SSTables (%d safe)",
+		levelNum, len(selectedTables), len(safeTables)))
 }
 
 // executeCompactions processes pending compaction jobs
@@ -829,4 +831,34 @@ func getOrOpenBM(db *DB, path string) (*blockmanager.BlockManager, error) {
 	}
 
 	return bmInterface.(*blockmanager.BlockManager), nil
+}
+
+// isSafeToCompact checks if an SSTable is safe to compact based on active reads
+func (compactor *Compactor) isSafeToCompact(table *SSTable) bool {
+	oldestActiveRead := atomic.LoadInt64(&compactor.db.oldestActiveRead)
+
+	// If there are no active reads, safe to compact
+	if oldestActiveRead == 0 {
+		return true
+	}
+
+	// Only compact SSTables whose newest data is older than the oldest active read
+	// Ensures active transactions won't lose access to data they might need
+	return table.Timestamp < oldestActiveRead
+}
+
+// filterSafeTablesForCompaction filters out SSTables that are safe to compact
+func (compactor *Compactor) filterSafeTablesForCompaction(tables []*SSTable) []*SSTable {
+	var safeTables []*SSTable
+
+	for _, table := range tables {
+		if compactor.isSafeToCompact(table) {
+			safeTables = append(safeTables, table)
+		} else {
+			compactor.db.log(fmt.Sprintf("Skipping SSTable %d for compaction - needed by active reads (newest: %d, oldest active: %d)",
+				table.Id, table.Timestamp, atomic.LoadInt64(&compactor.db.oldestActiveRead)))
+		}
+	}
+
+	return safeTables
 }
