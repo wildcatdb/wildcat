@@ -47,6 +47,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
   - [Log Channel](#log-channel)
   - [Database Statistics](#database-statistics)
   - [Force Flushing](#force-flushing)
+- [Shared C Library](#shared-c-library)
 - [Overview](#overview)
     - [MVCC Model](#mvcc-model)
     - [WAL and Durability](#wal-and-durability)
@@ -492,6 +493,36 @@ err := db.ForceFlush()
 if err != nil {
     // Handle error
 }
+```
+
+## Shared C Library
+You will require the latest Go toolchain to build the shared C library for Wildcat. This allows you to use Wildcat as a C library in other languages.
+```bash
+go build -buildmode=c-shared -o libwildcat.so wildcat_c.go
+```
+
+### C API
+```c
+extern void* wildcat_open(wildcat_opts_t* opts);
+extern void wildcat_close(void* ptr);
+extern long int wildcat_begin_txn(void* ptr);
+extern int wildcat_txn_put(long int txnId, char* key, char* val);
+extern char* wildcat_txn_get(long int txnId, char* key);
+extern int wildcat_txn_commit(long int txnId);
+extern int wildcat_txn_rollback(long int txnId);
+extern char* wildcat_stats(void* ptr);
+extern int wildcat_force_flush(void* ptr);
+extern int wildcat_txn_delete(long int txnId, char* key);
+extern void wildcat_txn_free(long int txnId);
+extern long unsigned int wildcat_txn_new_iterator(long int txnId, int asc);
+extern long unsigned int wildcat_txn_new_range_iterator(long int txnId, char* start, char* end, int asc);
+extern long unsigned int wildcat_txn_new_prefix_iterator(long int txnId, char* prefix, int asc);
+extern int wildcat_txn_iterate_next(long unsigned int id);
+extern int wildcat_txn_iterate_prev(long unsigned int id);
+extern int wildcat_txn_iter_valid(long unsigned int id);
+extern char* wildcat_iterator_key(long unsigned int id);
+extern char* wildcat_iterator_value(long unsigned int id);
+extern void wildcat_iterator_free(long unsigned int id);
 ```
 
 ## Overview
