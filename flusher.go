@@ -77,7 +77,7 @@ func (flusher *Flusher) queueMemtable() error {
 		}
 	})
 
-	// Push the current memtable to the immutable stack
+	// Push the current memtable to the immutable queue
 	flusher.immutable.Enqueue(flusher.db.memtable.Load().(*Memtable))
 
 	// Update the current memtable to the new one
@@ -126,6 +126,7 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 		flusher.db.log("Skipping flush for empty memtable")
 		return nil // Nothing to flush
 	}
+
 	// Create a new SSTable
 	sstable := &SSTable{
 		Id:    flusher.db.sstIdGenerator.nextID(),
@@ -136,6 +137,7 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 	// Use max timestamp to ensure we get all keys when finding min/max
 	maxPossibleTs := time.Now().UnixNano() + 10000000000 // Far in the future
 
+	// Min and max keys are for sstable metadata
 	minKey, _, exists := memt.skiplist.GetMin(maxPossibleTs)
 	if exists {
 		sstable.Min = minKey
@@ -159,6 +161,7 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 	klogPath := fmt.Sprintf("%s%s1%s%s%d%s", flusher.db.opts.Directory, LevelPrefix, string(os.PathSeparator), SSTablePrefix, sstable.Id, KLogExtension)
 	vlogPath := fmt.Sprintf("%s%s1%s%s%d%s", flusher.db.opts.Directory, LevelPrefix, string(os.PathSeparator), SSTablePrefix, sstable.Id, VLogExtension)
 
+	// Klog stores an immutable btree, vlog stores the values
 	klogBm, err := blockmanager.Open(klogPath, os.O_RDWR|os.O_CREATE, memt.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption), flusher.db.opts.SyncInterval)
 	if err != nil {
 		return fmt.Errorf("failed to open KLog block manager: %w", err)
@@ -169,6 +172,7 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 		return fmt.Errorf("failed to open VLog block manager: %w", err)
 	}
 
+	// We create a new bloom filter if enabled and add it to sstable meta
 	if flusher.db.opts.BloomFilter {
 
 		// Create a bloom filter for the SSTable
@@ -180,6 +184,7 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 
 	}
 
+	// Create a BTree for the KLog
 	t, err := tree.Open(klogBm, flusher.db.opts.SSTableBTreeOrder, sstable)
 	if err != nil {
 		return fmt.Errorf("failed to create BTree: %w", err)

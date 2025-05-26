@@ -36,8 +36,8 @@ type Txn struct {
 	DeleteSet map[string]bool   // Key -> Deleted
 	Timestamp int64             // The timestamp of the transaction
 	Committed bool              // Whether the transaction is committed
-	db        *DB               // Not exported
-	mutex     sync.Mutex        // Not exported
+	db        *DB               // Not exported for serialization
+	mutex     sync.Mutex        // Not exported for serialization
 }
 
 // Begin starts a new transaction

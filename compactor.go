@@ -51,35 +51,22 @@ type Compactor struct {
 
 // sstCompactionIterator iterates over an SSTable for compaction
 type sstCompactionIterator struct {
-	sstable  *SSTable
-	tree     *tree.BTree
-	treeIter *tree.Iterator
-	entry    *KLogEntry
-	eof      bool
-}
-
-// mergeCompactionIterator merges multiple SSTable iterators
-type mergeCompactionIterator struct {
-	iters   []*sstCompactionIterator
-	current []*compactionEntry
-}
-
-// compactionEntry represents a key-value entry with timestamp
-type compactionEntry struct {
-	key       []byte
-	value     interface{}
-	timestamp int64
+	sstable  *SSTable       // The SSTable being iterated
+	tree     *tree.BTree    // The BTree of the SSTable
+	treeIter *tree.Iterator // The iterator for the BTree
+	entry    *KLogEntry     // The current KLog entry being processed
+	eof      bool           // End of file flag
 }
 
 // iterState holds the state of an iterator for compaction
 type iterState struct {
-	iter      *tree.Iterator
-	sstable   *SSTable
-	klogBm    *blockmanager.BlockManager
-	vlogBm    *blockmanager.BlockManager
-	hasNext   bool
-	nextKey   []byte
-	nextValue *KLogEntry
+	iter      *tree.Iterator             // The iterator for the SSTable
+	sstable   *SSTable                   // The SSTable being iterated
+	klogBm    *blockmanager.BlockManager // The block manager for KLog
+	vlogBm    *blockmanager.BlockManager // The block manager for VLog
+	hasNext   bool                       // Flag indicating if there is a next entry
+	nextKey   []byte                     // The next key to process
+	nextValue *KLogEntry                 // The next KLog entry to process
 }
 
 // newCompactor creates a new compactor
