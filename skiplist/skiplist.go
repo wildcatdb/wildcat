@@ -1185,3 +1185,31 @@ func (it *RangeIterator) Peek() ([]byte, []byte, int64, bool) {
 
 	return nil, nil, 0, false
 }
+
+// GetLatestTimestamp retrieves the latest timestamp across all nodes in the skip list
+func (sl *SkipList) GetLatestTimestamp() int64 {
+	var latestTimestamp int64 = 0
+
+	// Start at the header node
+	curr := sl.header
+
+	// Traverse all nodes at level 0 (bottom level contains all nodes)
+	currPtr := atomic.LoadPointer(&curr.forward[0])
+	curr = (*Node)(currPtr)
+
+	for curr != nil {
+		// Get the latest version for this node (head of version chain)
+		latestVersion := curr.getLatestVersion()
+
+		// Check if this version has a newer timestamp
+		if latestVersion != nil && latestVersion.Timestamp > latestTimestamp {
+			latestTimestamp = latestVersion.Timestamp
+		}
+
+		// Move to the next node
+		currPtr = atomic.LoadPointer(&curr.forward[0])
+		curr = (*Node)(currPtr)
+	}
+
+	return latestTimestamp
+}

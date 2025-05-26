@@ -35,6 +35,7 @@ type SSTable struct {
 	EntryCount  int                      // The number of entries in the SSTable
 	Level       int                      // The level of the SSTable
 	BloomFilter *bloomfilter.BloomFilter // Optional bloom filter for fast lookups
+	Timestamp   int64                    // Timestamp of latest entry in the SSTable
 	isMerging   int32                    // Atomic flag indicating if the SSTable is being merged
 	db          *DB                      // Reference to the database (not exported)
 }

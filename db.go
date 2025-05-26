@@ -31,18 +31,19 @@ import (
 	"unicode/utf8"
 )
 
+// SyncOption is a block manager sync option that can be set by the user.
 type SyncOption int
 
 const (
-	SyncNone SyncOption = iota
-	SyncFull
-	SyncPartial
+	SyncNone    SyncOption = iota // We don't sync
+	SyncFull                      // We sync the entire block manager after each write
+	SyncPartial                   // We sync based at intervals based on the SyncInterval option.. So every SyncInterval we sync the block manager.
 )
 
 // Prefixes, filenames, extensions constants
 const (
 	SSTablePrefix    = "sst_"     // Prefix for SSTable files
-	LevelPrefix      = "l"        // Prefix for level directories i.e. "l0", "l1", etc.
+	LevelPrefix      = "l"        // Prefix for level directories i.e. "l1", "l2", etc.
 	WALFileExtension = ".wal"     // Extension for Write Ahead Log files <timestamp>.wal
 	KLogExtension    = ".klog"    // Extension for KLog files
 	VLogExtension    = ".vlog"    // Extension for VLog files
@@ -60,7 +61,6 @@ const (
 	DefaultBlockManagerLRUSize         = 1024            // Size of the LRU cache for block managers
 	DefaultBlockManagerLRUEvictRatio   = 0.20            // Eviction ratio for the LRU cache
 	DefaultBlockManagerLRUAccessWeight = 0.8             // Access weight for the LRU cache
-	DefaultBlockSetSize                = 4 * 1024 * 1024 // Size of the block set
 	DefaultPermission                  = 0750            // Default permission for created files
 	DefaultBloomFilter                 = false           // Default Bloom filter option
 	DefaultMaxCompactionConcurrency    = 4               // Default max compaction concurrency
