@@ -16,6 +16,7 @@
 package wildcat
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"os"
@@ -168,8 +169,8 @@ func TestMergeIterator_LargeScale(t *testing.T) {
 		t.Fatalf("Failed to insert initial data: %v", err)
 	}
 
-	// print sstable count
-	log.Println(db.Stats())
+	// Print sstable count
+	fmt.Println(db.Stats())
 
 	// Update the same keys with newer values
 	time.Sleep(1 * time.Millisecond) // Ensure different timestamp
@@ -840,19 +841,19 @@ func TestMergeIterator_BidirectionalMultipleSources(t *testing.T) {
 
 		// Verify we get the most recent versions (MVCC validation)
 		expectedResults := make(map[string]string)
-		// Keys 0-4: v3 (updated in third batch)
+		// Keys 0-4 v3 (updated in third batch)
 		for i := 0; i < 5; i++ {
 			expectedResults[fmt.Sprintf("key%02d", i)] = fmt.Sprintf("value%02d_v3", i)
 		}
-		// Keys 5-9: v2 (updated in second batch)
+		// Keys 5-9 v2 (updated in second batch)
 		for i := 5; i < 10; i++ {
 			expectedResults[fmt.Sprintf("key%02d", i)] = fmt.Sprintf("value%02d_v2", i)
 		}
-		// Keys 10-14: v3 (from third batch, overwrites v2)
+		// Keys 10-14 v3 (from third batch, overwrites v2)
 		for i := 10; i < 15; i++ {
 			expectedResults[fmt.Sprintf("key%02d", i)] = fmt.Sprintf("value%02d_v3", i)
 		}
-		// Keys 15-19: v3 (only in third batch)
+		// Keys 15-19 v3 (only in third batch)
 		for i := 15; i < 20; i++ {
 			expectedResults[fmt.Sprintf("key%02d", i)] = fmt.Sprintf("value%02d_v3", i)
 		}
@@ -1163,4 +1164,1373 @@ func TestMergeIterator_BidirectionalStressTest(t *testing.T) {
 
 		t.Logf("Stress test direction changes passed - handled %d direction changes", len(directions))
 	})
+}
+
+func TestMergeIterator_RangeBasic(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_merge_iterator_range_basic_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+
+	// Create a log channel
+	logChan := make(chan string, 100)
+	defer func() {
+		// Drain the log channel
+		for len(logChan) > 0 {
+			<-logChan
+		}
+	}()
+
+	// Create a test DB
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncFull,
+		LogChannel:      logChan,
+		WriteBufferSize: 4 * 1024,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Insert test data with predictable ordering
+	testKeys := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
+	testValues := []string{"val_a", "val_b", "val_c", "val_d", "val_e", "val_f", "val_g", "val_h", "val_i", "val_j"}
+
+	err = db.Update(func(txn *Txn) error {
+		for i, key := range testKeys {
+			if err := txn.Put([]byte(key), []byte(testValues[i])); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+
+	t.Run("Range Ascending [c,g)", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		iter, err := txn.NewRangeIterator([]byte("c"), []byte("g"), true)
+		if err != nil {
+			t.Fatalf("Failed to create range iterator: %v", err)
+		}
+
+		var results []string
+		for {
+			key, val, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			log.Printf("Range [c,g) ascending - key: %s, value: %s", string(key), string(val))
+			results = append(results, string(key))
+		}
+
+		expected := []string{"c", "d", "e", "f"}
+		if len(results) != len(expected) {
+			t.Errorf("Expected %d keys, got %d", len(expected), len(results))
+		}
+
+		for i, expectedKey := range expected {
+			if i >= len(results) || results[i] != expectedKey {
+				t.Errorf("At index %d: expected %s, got %s", i, expectedKey,
+					func() string {
+						if i < len(results) {
+							return results[i]
+						}
+						return "nil"
+					}())
+			}
+		}
+
+		t.Logf("Range [c,g) ascending passed - got keys: %v", results)
+	})
+
+	t.Run("Range Descending [c,g)", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		iter, err := txn.NewRangeIterator([]byte("c"), []byte("g"), false)
+		if err != nil {
+			t.Fatalf("Failed to create range iterator: %v", err)
+		}
+
+		var results []string
+		for {
+			key, val, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			log.Printf("Range [c,g) descending - key: %s, value: %s", string(key), string(val))
+			results = append(results, string(key))
+		}
+
+		expected := []string{"f", "e", "d", "c"}
+		if len(results) != len(expected) {
+			t.Errorf("Expected %d keys, got %d", len(expected), len(results))
+		}
+
+		for i, expectedKey := range expected {
+			if i >= len(results) || results[i] != expectedKey {
+				t.Errorf("At index %d: expected %s, got %s", i, expectedKey,
+					func() string {
+						if i < len(results) {
+							return results[i]
+						}
+						return "nil"
+					}())
+			}
+		}
+
+		t.Logf("Range [c,g) descending passed - got keys: %v", results)
+	})
+
+	t.Run("Range Edge Cases", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		// Empty range
+		iter, err := txn.NewRangeIterator([]byte("z"), []byte("z"), true)
+		if err != nil {
+			t.Fatalf("Failed to create empty range iterator: %v", err)
+		}
+
+		_, _, _, ok := iter.Next()
+		if ok {
+			t.Error("Expected empty range to return no results")
+		}
+
+		// Single key range [d,e)
+		iter2, err := txn.NewRangeIterator([]byte("d"), []byte("e"), true)
+		if err != nil {
+			t.Fatalf("Failed to create single key range iterator: %v", err)
+		}
+
+		key, _, _, ok := iter2.Next()
+		if !ok || string(key) != "d" {
+			t.Errorf("Expected single key 'd', got %s (ok=%v)", string(key), ok)
+		}
+
+		// Should be no more keys
+		_, _, _, ok = iter2.Next()
+		if ok {
+			t.Error("Expected no more keys after single key range")
+		}
+
+		t.Log("Range edge cases passed")
+	})
+}
+
+func TestMergeIterator_RangeWithMVCC(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_merge_iterator_range_mvcc_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+
+	// Create a log channel
+	logChan := make(chan string, 100)
+	defer func() {
+		// Drain the log channel
+		for len(logChan) > 0 {
+			<-logChan
+		}
+	}()
+
+	// Create a test DB
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncFull,
+		LogChannel:      logChan,
+		WriteBufferSize: 2 * 1024, // Small buffer to force flushing
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Insert initial data
+	err = db.Update(func(txn *Txn) error {
+		for i := 0; i < 20; i++ {
+			key := fmt.Sprintf("key%02d", i)
+			value := fmt.Sprintf("value%02d_v1", i)
+			if err := txn.Put([]byte(key), []byte(value)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert initial data: %v", err)
+	}
+
+	// Wait a bit and update some keys in the range
+	time.Sleep(1 * time.Millisecond)
+	err = db.Update(func(txn *Txn) error {
+		for i := 5; i < 15; i++ {
+			key := fmt.Sprintf("key%02d", i)
+			value := fmt.Sprintf("value%02d_v2", i)
+			if err := txn.Put([]byte(key), []byte(value)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to update data: %v", err)
+	}
+
+	t.Run("Range MVCC Ascending [key05,key15)", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		iter, err := txn.NewRangeIterator([]byte("key05"), []byte("key15"), true)
+		if err != nil {
+			t.Fatalf("Failed to create range iterator: %v", err)
+		}
+
+		results := make(map[string]string)
+		for {
+			key, val, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			results[string(key)] = string(val)
+			log.Printf("Range MVCC ascending - key: %s, value: %s", string(key), string(val))
+		}
+
+		// Verify we get the most recent versions within the range
+		for i := 5; i < 15; i++ {
+			keyStr := fmt.Sprintf("key%02d", i)
+			expectedValue := fmt.Sprintf("value%02d_v2", i) // All keys in range were updated
+			if results[keyStr] != expectedValue {
+				t.Errorf("For key %s: expected %s, got %s", keyStr, expectedValue, results[keyStr])
+			}
+		}
+
+		// Verify we have exactly 10 keys (key05 to key14)
+		if len(results) != 10 {
+			t.Errorf("Expected 10 keys in range, got %d", len(results))
+		}
+
+		t.Logf("Range MVCC ascending passed - %d keys with correct versions", len(results))
+	})
+
+	t.Run("Range MVCC Descending [key05,key15)", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		iter, err := txn.NewRangeIterator([]byte("key05"), []byte("key15"), false)
+		if err != nil {
+			t.Fatalf("Failed to create range iterator: %v", err)
+		}
+
+		var keys []string
+		results := make(map[string]string)
+		for {
+			key, val, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			keyStr := string(key)
+			keys = append(keys, keyStr)
+			results[keyStr] = string(val)
+			log.Printf("Range MVCC descending - key: %s, value: %s", keyStr, string(val))
+		}
+
+		// Verify descending order
+		for i := 1; i < len(keys); i++ {
+			if keys[i-1] <= keys[i] {
+				t.Errorf("Keys not in descending order: %s should come after %s", keys[i-1], keys[i])
+			}
+		}
+
+		// Verify MVCC
+		for i := 5; i < 15; i++ {
+			keyStr := fmt.Sprintf("key%02d", i)
+			expectedValue := fmt.Sprintf("value%02d_v2", i)
+			if results[keyStr] != expectedValue {
+				t.Errorf("For key %s: expected %s, got %s", keyStr, expectedValue, results[keyStr])
+			}
+		}
+
+		t.Logf("Range MVCC descending passed - %d keys in descending order with correct versions", len(results))
+	})
+}
+
+func TestMergeIterator_PrefixBasic(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_merge_iterator_prefix_basic_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+
+	// Create a log channel
+	logChan := make(chan string, 100)
+	defer func() {
+		// Drain the log channel
+		for len(logChan) > 0 {
+			<-logChan
+		}
+	}()
+
+	// Create a test DB
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncFull,
+		LogChannel:      logChan,
+		WriteBufferSize: 4 * 1024,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Insert test data with different prefixes
+	testData := map[string]string{
+		"user:001":   "alice",
+		"user:002":   "bob",
+		"user:003":   "charlie",
+		"post:001":   "hello world",
+		"post:002":   "golang rocks",
+		"post:003":   "database design",
+		"config:001": "setting1",
+		"config:002": "setting2",
+		"user:004":   "diana",
+		"post:004":   "test post",
+	}
+
+	err = db.Update(func(txn *Txn) error {
+		for key, value := range testData {
+			if err := txn.Put([]byte(key), []byte(value)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+
+	t.Run("Prefix Ascending 'user:'", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		iter, err := txn.NewPrefixIterator([]byte("user:"), true)
+		if err != nil {
+			t.Fatalf("Failed to create prefix iterator: %v", err)
+		}
+
+		var results []string
+		values := make(map[string]string)
+		for {
+			key, val, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			keyStr := string(key)
+			results = append(results, keyStr)
+			values[keyStr] = string(val)
+			log.Printf("Prefix 'user:' ascending - key: %s, value: %s", keyStr, string(val))
+		}
+
+		// Verify all keys have the prefix
+		for _, key := range results {
+			if !bytes.HasPrefix([]byte(key), []byte("user:")) {
+				t.Errorf("Key %s does not have prefix 'user:'", key)
+			}
+		}
+
+		// Verify ascending order
+		for i := 1; i < len(results); i++ {
+			if results[i-1] >= results[i] {
+				t.Errorf("Keys not in ascending order: %s should come before %s", results[i-1], results[i])
+			}
+		}
+
+		// Verify we got all user keys
+		expectedUsers := []string{"user:001", "user:002", "user:003", "user:004"}
+		if len(results) != len(expectedUsers) {
+			t.Errorf("Expected %d user keys, got %d", len(expectedUsers), len(results))
+		}
+
+		t.Logf("Prefix 'user:' ascending passed - got keys: %v", results)
+	})
+
+	t.Run("Prefix Descending 'post:'", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		iter, err := txn.NewPrefixIterator([]byte("post:"), false)
+		if err != nil {
+			t.Fatalf("Failed to create prefix iterator: %v", err)
+		}
+
+		var results []string
+		values := make(map[string]string)
+		for {
+			key, val, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			keyStr := string(key)
+			results = append(results, keyStr)
+			values[keyStr] = string(val)
+			log.Printf("Prefix 'post:' descending - key: %s, value: %s", keyStr, string(val))
+		}
+
+		// Verify all keys have the prefix
+		for _, key := range results {
+			if !bytes.HasPrefix([]byte(key), []byte("post:")) {
+				t.Errorf("Key %s does not have prefix 'post:'", key)
+			}
+		}
+
+		// Verify descending order
+		for i := 1; i < len(results); i++ {
+			if results[i-1] <= results[i] {
+				t.Errorf("Keys not in descending order: %s should come after %s", results[i-1], results[i])
+			}
+		}
+
+		// Verify we got all post keys
+		expectedPosts := 4
+		if len(results) != expectedPosts {
+			t.Errorf("Expected %d post keys, got %d", expectedPosts, len(results))
+		}
+
+		t.Logf("Prefix 'post:' descending passed - got keys: %v", results)
+	})
+
+	t.Run("Prefix Non-existent", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		iter, err := txn.NewPrefixIterator([]byte("admin:"), true)
+		if err != nil {
+			t.Fatalf("Failed to create prefix iterator: %v", err)
+		}
+
+		_, _, _, ok := iter.Next()
+		if ok {
+			t.Error("Expected no results for non-existent prefix 'admin:'")
+		}
+
+		t.Log("Prefix non-existent test passed")
+	})
+}
+
+func TestMergeIterator_PrefixWithMVCC(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_merge_iterator_prefix_mvcc_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+
+	// Create a log channel
+	logChan := make(chan string, 100)
+	defer func() {
+		// Drain the log channel
+		for len(logChan) > 0 {
+			<-logChan
+		}
+	}()
+
+	// Create a test DB
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncFull,
+		LogChannel:      logChan,
+		WriteBufferSize: 2 * 1024,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Insert initial data with different prefixes
+	err = db.Update(func(txn *Txn) error {
+		for i := 0; i < 10; i++ {
+			userKey := fmt.Sprintf("user:%03d", i)
+			userValue := fmt.Sprintf("user_data_%03d_v1", i)
+			if err := txn.Put([]byte(userKey), []byte(userValue)); err != nil {
+				return err
+			}
+
+			configKey := fmt.Sprintf("config:%03d", i)
+			configValue := fmt.Sprintf("config_data_%03d_v1", i)
+			if err := txn.Put([]byte(configKey), []byte(configValue)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert initial data: %v", err)
+	}
+
+	// Wait and update some user keys
+	time.Sleep(1 * time.Millisecond)
+	err = db.Update(func(txn *Txn) error {
+		for i := 0; i < 5; i++ {
+			userKey := fmt.Sprintf("user:%03d", i)
+			userValue := fmt.Sprintf("user_data_%03d_v2", i)
+			if err := txn.Put([]byte(userKey), []byte(userValue)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to update user data: %v", err)
+	}
+
+	t.Run("Prefix MVCC Ascending 'user:'", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		iter, err := txn.NewPrefixIterator([]byte("user:"), true)
+		if err != nil {
+			t.Fatalf("Failed to create prefix iterator: %v", err)
+		}
+
+		results := make(map[string]string)
+		for {
+			key, val, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			keyStr := string(key)
+			results[keyStr] = string(val)
+			log.Printf("Prefix MVCC 'user:' ascending - key: %s, value: %s", keyStr, string(val))
+		}
+
+		// Verify we get the most recent versions
+		for i := 0; i < 10; i++ {
+			userKey := fmt.Sprintf("user:%03d", i)
+			var expectedValue string
+			if i < 5 {
+				expectedValue = fmt.Sprintf("user_data_%03d_v2", i) // Updated keys
+			} else {
+				expectedValue = fmt.Sprintf("user_data_%03d_v1", i) // Original keys
+			}
+
+			if results[userKey] != expectedValue {
+				t.Errorf("For key %s: expected %s, got %s", userKey, expectedValue, results[userKey])
+			}
+		}
+
+		// Verify we have exactly 10 user keys
+		if len(results) != 10 {
+			t.Errorf("Expected 10 user keys, got %d", len(results))
+		}
+
+		t.Logf("Prefix MVCC 'user:' ascending passed - %d keys with correct versions", len(results))
+	})
+
+	t.Run("Prefix MVCC Descending 'config:'", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		iter, err := txn.NewPrefixIterator([]byte("config:"), false)
+		if err != nil {
+			t.Fatalf("Failed to create prefix iterator: %v", err)
+		}
+
+		var keys []string
+		results := make(map[string]string)
+		for {
+			key, val, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			keyStr := string(key)
+			keys = append(keys, keyStr)
+			results[keyStr] = string(val)
+			log.Printf("Prefix MVCC 'config:' descending - key: %s, value: %s", keyStr, string(val))
+		}
+
+		// Verify descending order
+		for i := 1; i < len(keys); i++ {
+			if keys[i-1] <= keys[i] {
+				t.Errorf("Keys not in descending order: %s should come after %s", keys[i-1], keys[i])
+			}
+		}
+
+		// Verify all config keys have original values (not updated)
+		for i := 0; i < 10; i++ {
+			configKey := fmt.Sprintf("config:%03d", i)
+			expectedValue := fmt.Sprintf("config_data_%03d_v1", i)
+
+			if results[configKey] != expectedValue {
+				t.Errorf("For key %s: expected %s, got %s", configKey, expectedValue, results[configKey])
+			}
+		}
+
+		t.Logf("Prefix MVCC 'config:' descending passed - %d keys in descending order", len(results))
+	})
+}
+
+func TestMergeIterator_RangeBidirectional(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_merge_iterator_range_bidirectional_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+
+	// Create a log channel
+	logChan := make(chan string, 100)
+	defer func() {
+		// Drain the log channel
+		for len(logChan) > 0 {
+			<-logChan
+		}
+	}()
+
+	// Create a test DB
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncFull,
+		LogChannel:      logChan,
+		WriteBufferSize: 4 * 1024,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Insert test data
+	testKeys := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
+	err = db.Update(func(txn *Txn) error {
+		for _, key := range testKeys {
+			value := fmt.Sprintf("value_%s", key)
+			if err := txn.Put([]byte(key), []byte(value)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+
+	t.Run("Range Bidirectional Navigation [c,h)", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		// Start with ascending iterator
+		iter, err := txn.NewRangeIterator([]byte("c"), []byte("h"), true)
+		if err != nil {
+			t.Fatalf("Failed to create range iterator: %v", err)
+		}
+
+		// Move forward a few steps
+		var forwardKeys []string
+		for i := 0; i < 3; i++ {
+			key, val, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			forwardKeys = append(forwardKeys, string(key))
+			log.Printf("Range forward - key: %s, value: %s", string(key), string(val))
+		}
+
+		// Change direction and go backward
+		var backwardKeys []string
+		for i := 0; i < 2; i++ {
+			key, val, _, ok := iter.Prev()
+			if !ok {
+				break
+			}
+			backwardKeys = append(backwardKeys, string(key))
+			log.Printf("Range backward - key: %s, value: %s", string(key), string(val))
+		}
+
+		// Change direction again and go forward
+		var forwardAgainKeys []string
+		for i := 0; i < 2; i++ {
+			key, val, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			forwardAgainKeys = append(forwardAgainKeys, string(key))
+			log.Printf("Range forward again - key: %s, value: %s", string(key), string(val))
+		}
+
+		// Verify we can navigate in both directions within the range
+		if len(forwardKeys) == 0 {
+			t.Error("Failed to move forward with range")
+		}
+		if len(backwardKeys) == 0 {
+			t.Error("Failed to move backward with range")
+		}
+		if len(forwardAgainKeys) == 0 {
+			t.Error("Failed to move forward again with range")
+		}
+
+		// Verify all keys are within the range [c,h)
+		allKeys := append(append(forwardKeys, backwardKeys...), forwardAgainKeys...)
+		for _, key := range allKeys {
+			if key < "c" || key >= "h" {
+				t.Errorf("Key %s is outside range [c,h)", key)
+			}
+		}
+
+		t.Logf("Range bidirectional navigation passed - forward: %v, backward: %v, forward again: %v",
+			forwardKeys, backwardKeys, forwardAgainKeys)
+	})
+}
+
+func TestMergeIterator_RangeMultipleSources(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_merge_iterator_range_multisource_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+
+	// Create a log channel
+	logChan := make(chan string, 100)
+	defer func() {
+		// Drain the log channel
+		for len(logChan) > 0 {
+			<-logChan
+		}
+	}()
+
+	// Create a test DB
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncFull,
+		LogChannel:      logChan,
+		WriteBufferSize: 4 * 1024,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Insert initial batch (will go to SSTable)
+	err = db.Update(func(txn *Txn) error {
+		for i := 0; i < 30; i++ {
+			key := fmt.Sprintf("key%02d", i)
+			value := fmt.Sprintf("value%02d_v1", i)
+			if err := txn.Put([]byte(key), []byte(value)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert initial data: %v", err)
+	}
+
+	// Force flush to create SSTable
+	err = db.ForceFlush()
+	if err != nil {
+		t.Fatalf("Failed to force flush: %v", err)
+	}
+
+	// Insert second batch with overlapping keys (will go to another SSTable)
+	err = db.Update(func(txn *Txn) error {
+		for i := 10; i < 40; i++ {
+			key := fmt.Sprintf("key%02d", i)
+			value := fmt.Sprintf("value%02d_v2", i)
+			if err := txn.Put([]byte(key), []byte(value)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert second batch: %v", err)
+	}
+
+	// Force another flush
+	err = db.ForceFlush()
+	if err != nil {
+		t.Fatalf("Failed to force second flush: %v", err)
+	}
+
+	// Insert third batch (will stay in memtable)
+	err = db.Update(func(txn *Txn) error {
+		for i := 20; i < 50; i++ {
+			key := fmt.Sprintf("key%02d", i)
+			value := fmt.Sprintf("value%02d_v3", i)
+			if err := txn.Put([]byte(key), []byte(value)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert third batch: %v", err)
+	}
+
+	// Print stats
+	log.Println("Range multi-source database stats:")
+	log.Println(db.Stats())
+
+	t.Run("Range Multiple Sources Ascending [key15,key35)", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		iter, err := txn.NewRangeIterator([]byte("key15"), []byte("key35"), true)
+		if err != nil {
+			t.Fatalf("Failed to create range iterator: %v", err)
+		}
+
+		results := make(map[string]string)
+		var keys []string
+		for {
+			key, val, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			keyStr := string(key)
+			keys = append(keys, keyStr)
+			results[keyStr] = string(val)
+			log.Printf("Range multi-source ascending - key: %s, value: %s", keyStr, string(val))
+		}
+
+		// Verify ascending order
+		for i := 1; i < len(keys); i++ {
+			if keys[i-1] >= keys[i] {
+				t.Errorf("Keys not in ascending order: %s should come before %s", keys[i-1], keys[i])
+			}
+		}
+
+		// Verify all keys are within range
+		for _, key := range keys {
+			if key < "key15" || key > "key35" {
+				t.Errorf("Key %s is outside range [key15,key35)", key)
+			}
+		}
+
+		// Verify MVCC we should get the most recent versions
+		expectedResults := make(map[string]string)
+
+		// Keys 15-19 v2 (from second batch)
+		for i := 15; i < 20; i++ {
+			expectedResults[fmt.Sprintf("key%02d", i)] = fmt.Sprintf("value%02d_v2", i)
+		}
+
+		// Keys 20-34 v3 (from third batch, overwrites earlier versions)
+		for i := 20; i < 35; i++ {
+			expectedResults[fmt.Sprintf("key%02d", i)] = fmt.Sprintf("value%02d_v3", i)
+		}
+
+		for expectedKey, expectedValue := range expectedResults {
+			if results[expectedKey] != expectedValue {
+				t.Errorf("For key %s: expected %s, got %s", expectedKey, expectedValue, results[expectedKey])
+			}
+		}
+
+		t.Logf("Range multiple sources ascending passed - %d keys with correct MVCC", len(results))
+	})
+
+	t.Run("Range Multiple Sources Descending [key15,key35)", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		iter, err := txn.NewRangeIterator([]byte("key15"), []byte("key35"), false)
+		if err != nil {
+			t.Fatalf("Failed to create range iterator: %v", err)
+		}
+
+		results := make(map[string]string)
+		var keys []string
+		for {
+			key, val, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			keyStr := string(key)
+			keys = append(keys, keyStr)
+			results[keyStr] = string(val)
+			log.Printf("Range multi-source descending - key: %s, value: %s", keyStr, string(val))
+		}
+
+		// Verify descending order
+		for i := 1; i < len(keys); i++ {
+			if keys[i-1] <= keys[i] {
+				t.Errorf("Keys not in descending order: %s should come after %s", keys[i-1], keys[i])
+			}
+		}
+
+		// Verify all keys are within range
+		for _, key := range keys {
+			if key < "key15" || key > "key35" {
+				t.Errorf("Key %s is outside range [key15,key35)", key)
+			}
+		}
+
+		// Same MVCC verification as ascending
+		expectedResults := make(map[string]string)
+		for i := 15; i < 20; i++ {
+			expectedResults[fmt.Sprintf("key%02d", i)] = fmt.Sprintf("value%02d_v2", i)
+		}
+		for i := 20; i < 35; i++ {
+			expectedResults[fmt.Sprintf("key%02d", i)] = fmt.Sprintf("value%02d_v3", i)
+		}
+
+		for expectedKey, expectedValue := range expectedResults {
+			if results[expectedKey] != expectedValue {
+				t.Errorf("For key %s: expected %s, got %s", expectedKey, expectedValue, results[expectedKey])
+			}
+		}
+
+		t.Logf("Range multiple sources descending passed - %d keys with correct MVCC", len(results))
+	})
+}
+
+func TestMergeIterator_PrefixMultipleSources(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_merge_iterator_prefix_multisource_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+
+	// Create a log channel
+	logChan := make(chan string, 100)
+	defer func() {
+		// Drain the log channel
+		for len(logChan) > 0 {
+			<-logChan
+		}
+	}()
+
+	// Create a test DB
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncFull,
+		LogChannel:      logChan,
+		WriteBufferSize: 4 * 1024,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Insert initial batch with different prefixes (will go to SSTable)
+	err = db.Update(func(txn *Txn) error {
+		for i := 0; i < 20; i++ {
+			userKey := fmt.Sprintf("user:%03d", i)
+			userValue := fmt.Sprintf("user_data_%03d_v1", i)
+			if err := txn.Put([]byte(userKey), []byte(userValue)); err != nil {
+				return err
+			}
+
+			postKey := fmt.Sprintf("post:%03d", i)
+			postValue := fmt.Sprintf("post_data_%03d_v1", i)
+			if err := txn.Put([]byte(postKey), []byte(postValue)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert initial data: %v", err)
+	}
+
+	// Force flush
+	err = db.ForceFlush()
+	if err != nil {
+		t.Fatalf("Failed to force flush: %v", err)
+	}
+
+	// Insert second batch with overlapping user keys (will go to another SSTable)
+	err = db.Update(func(txn *Txn) error {
+		for i := 10; i < 30; i++ {
+			userKey := fmt.Sprintf("user:%03d", i)
+			userValue := fmt.Sprintf("user_data_%03d_v2", i)
+			if err := txn.Put([]byte(userKey), []byte(userValue)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert second batch: %v", err)
+	}
+
+	// Force another flush
+	err = db.ForceFlush()
+	if err != nil {
+		t.Fatalf("Failed to force second flush: %v", err)
+	}
+
+	// Insert third batch (will stay in memtable)
+	err = db.Update(func(txn *Txn) error {
+		for i := 15; i < 35; i++ {
+			userKey := fmt.Sprintf("user:%03d", i)
+			userValue := fmt.Sprintf("user_data_%03d_v3", i)
+			if err := txn.Put([]byte(userKey), []byte(userValue)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert third batch: %v", err)
+	}
+
+	// Print stats
+	log.Println("Prefix multi-source database stats:")
+	log.Println(db.Stats())
+
+	t.Run("Prefix Multiple Sources Ascending 'user:'", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		iter, err := txn.NewPrefixIterator([]byte("user:"), true)
+		if err != nil {
+			t.Fatalf("Failed to create prefix iterator: %v", err)
+		}
+
+		results := make(map[string]string)
+		var keys []string
+		for {
+			key, val, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			keyStr := string(key)
+			keys = append(keys, keyStr)
+			results[keyStr] = string(val)
+			log.Printf("Prefix multi-source ascending - key: %s, value: %s", keyStr, string(val))
+		}
+
+		// Verify ascending order
+		for i := 1; i < len(keys); i++ {
+			if keys[i-1] >= keys[i] {
+				t.Errorf("Keys not in ascending order: %s should come before %s", keys[i-1], keys[i])
+			}
+		}
+
+		// Verify all keys have the prefix
+		for _, key := range keys {
+			if !bytes.HasPrefix([]byte(key), []byte("user:")) {
+				t.Errorf("Key %s does not have prefix 'user:'", key)
+			}
+		}
+
+		// Verify MVCC we should get the most recent versions
+		expectedResults := make(map[string]string)
+		// Keys 0-9: v1 (only in first batch)
+		for i := 0; i < 10; i++ {
+			expectedResults[fmt.Sprintf("user:%03d", i)] = fmt.Sprintf("user_data_%03d_v1", i)
+		}
+		// Keys 10-14 v2 (from second batch)
+		for i := 10; i < 15; i++ {
+			expectedResults[fmt.Sprintf("user:%03d", i)] = fmt.Sprintf("user_data_%03d_v2", i)
+		}
+
+		// Keys 15-19 v3 (from third batch, overwrites v2)
+		for i := 15; i < 20; i++ {
+			expectedResults[fmt.Sprintf("user:%03d", i)] = fmt.Sprintf("user_data_%03d_v3", i)
+		}
+
+		// Keys 20-29 v3 (from third batch, overwrites v2)
+		for i := 20; i < 30; i++ {
+			expectedResults[fmt.Sprintf("user:%03d", i)] = fmt.Sprintf("user_data_%03d_v3", i)
+		}
+
+		// Keys 30-34 v3 (only in third batch)
+		for i := 30; i < 35; i++ {
+			expectedResults[fmt.Sprintf("user:%03d", i)] = fmt.Sprintf("user_data_%03d_v3", i)
+		}
+
+		for expectedKey, expectedValue := range expectedResults {
+			if results[expectedKey] != expectedValue {
+				t.Errorf("For key %s: expected %s, got %s", expectedKey, expectedValue, results[expectedKey])
+			}
+		}
+
+		t.Logf("Prefix multiple sources ascending passed - %d keys with correct MVCC", len(results))
+	})
+
+	t.Run("Prefix Multiple Sources Descending 'post:'", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		iter, err := txn.NewPrefixIterator([]byte("post:"), false)
+		if err != nil {
+			t.Fatalf("Failed to create prefix iterator: %v", err)
+		}
+
+		results := make(map[string]string)
+		var keys []string
+		for {
+			key, val, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			keyStr := string(key)
+			keys = append(keys, keyStr)
+			results[keyStr] = string(val)
+			log.Printf("Prefix multi-source descending - key: %s, value: %s", keyStr, string(val))
+		}
+
+		// Verify descending order
+		for i := 1; i < len(keys); i++ {
+			if keys[i-1] <= keys[i] {
+				t.Errorf("Keys not in descending order: %s should come after %s", keys[i-1], keys[i])
+			}
+		}
+
+		// Verify all keys have the prefix
+		for _, key := range keys {
+			if !bytes.HasPrefix([]byte(key), []byte("post:")) {
+				t.Errorf("Key %s does not have prefix 'post:'", key)
+			}
+		}
+
+		// Post keys were only in the first batch, so all should have v1
+		for i := 0; i < 20; i++ {
+			postKey := fmt.Sprintf("post:%03d", i)
+			expectedValue := fmt.Sprintf("post_data_%03d_v1", i)
+			if results[postKey] != expectedValue {
+				t.Errorf("For key %s: expected %s, got %s", postKey, expectedValue, results[postKey])
+			}
+		}
+
+		t.Logf("Prefix multiple sources descending passed - %d keys with correct values", len(results))
+	})
+}
+
+func TestMergeIterator_RangeAndPrefixEdgeCases(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_merge_iterator_edge_cases_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+
+	// Create a log channel
+	logChan := make(chan string, 100)
+	defer func() {
+		// Drain the log channel
+		for len(logChan) > 0 {
+			<-logChan
+		}
+	}()
+
+	// Create a test DB
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncFull,
+		LogChannel:      logChan,
+		WriteBufferSize: 1024,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	t.Run("Empty Range Iterator", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		iter, err := txn.NewRangeIterator([]byte("x"), []byte("y"), true)
+		if err != nil {
+			t.Fatalf("Failed to create empty range iterator: %v", err)
+		}
+
+		_, _, _, ok := iter.Next()
+		if ok {
+			t.Error("Expected empty range iterator to return no results")
+		}
+
+		_, _, _, ok = iter.Prev()
+		if ok {
+			t.Error("Expected empty range iterator Prev() to return no results")
+		}
+
+		if iter.HasNext() {
+			t.Error("Expected HasNext() to return false for empty range")
+		}
+
+		t.Log("Empty range iterator test passed")
+	})
+
+	t.Run("Empty Prefix Iterator", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		iter, err := txn.NewPrefixIterator([]byte("nonexistent:"), true)
+		if err != nil {
+			t.Fatalf("Failed to create empty prefix iterator: %v", err)
+		}
+
+		_, _, _, ok := iter.Next()
+		if ok {
+			t.Error("Expected empty prefix iterator to return no results")
+		}
+
+		_, _, _, ok = iter.Prev()
+		if ok {
+			t.Error("Expected empty prefix iterator Prev() to return no results")
+		}
+
+		if iter.HasNext() {
+			t.Error("Expected HasNext() to return false for empty prefix")
+		}
+
+		t.Log("Empty prefix iterator test passed")
+	})
+
+	// Insert some test data for boundary testing
+	err = db.Update(func(txn *Txn) error {
+		testData := map[string]string{
+			"a":   "value_a",
+			"aa":  "value_aa",
+			"aaa": "value_aaa",
+			"ab":  "value_ab",
+			"b":   "value_b",
+			"ba":  "value_ba",
+			"bb":  "value_bb",
+			"c":   "value_c",
+		}
+		for key, value := range testData {
+			if err := txn.Put([]byte(key), []byte(value)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert boundary test data: %v", err)
+	}
+
+	t.Run("Range Boundary Cases", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		// Range with same start and end (empty range)
+		iter, err := txn.NewRangeIterator([]byte("b"), []byte("b"), true)
+		if err != nil {
+			t.Fatalf("Failed to create boundary range iterator: %v", err)
+		}
+
+		_, _, _, ok := iter.Next()
+		if ok {
+			t.Error("Expected empty range [b,b) to return no results")
+		}
+
+		// Range with one key [b,ba)
+		iter2, err := txn.NewRangeIterator([]byte("b"), []byte("ba"), true)
+		if err != nil {
+			t.Fatalf("Failed to create single key range iterator: %v", err)
+		}
+
+		key, _, _, ok := iter2.Next()
+		if !ok || string(key) != "b" {
+			t.Errorf("Expected single key 'b' in range [b,ba), got %s (ok=%v)", string(key), ok)
+		}
+
+		_, _, _, ok = iter2.Next()
+		if ok {
+			t.Error("Expected no more keys after single key in range")
+		}
+
+		t.Log("Range boundary cases passed")
+	})
+
+	t.Run("Prefix Boundary Cases", func(t *testing.T) {
+		txn := db.Begin()
+		defer txn.remove()
+
+		// Prefix "a" should match "a", "aa", "aaa", "ab"
+		iter, err := txn.NewPrefixIterator([]byte("a"), true)
+		if err != nil {
+			t.Fatalf("Failed to create prefix iterator: %v", err)
+		}
+
+		expectedKeys := []string{"a", "aa", "aaa", "ab"}
+		var actualKeys []string
+		for {
+			key, _, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			actualKeys = append(actualKeys, string(key))
+		}
+
+		if len(actualKeys) != len(expectedKeys) {
+			t.Errorf("Expected %d keys with prefix 'a', got %d", len(expectedKeys), len(actualKeys))
+		}
+
+		for i, expected := range expectedKeys {
+			if i >= len(actualKeys) || actualKeys[i] != expected {
+				t.Errorf("At index %d: expected %s, got %s", i, expected,
+					func() string {
+						if i < len(actualKeys) {
+							return actualKeys[i]
+						}
+						return "nil"
+					}())
+			}
+		}
+
+		// Prefix "aa" should match "aa", "aaa"
+		iter2, err := txn.NewPrefixIterator([]byte("aa"), true)
+		if err != nil {
+			t.Fatalf("Failed to create prefix iterator: %v", err)
+		}
+
+		expectedKeys2 := []string{"aa", "aaa"}
+		var actualKeys2 []string
+		for {
+			key, _, _, ok := iter2.Next()
+			if !ok {
+				break
+			}
+			actualKeys2 = append(actualKeys2, string(key))
+		}
+
+		if len(actualKeys2) != len(expectedKeys2) {
+			t.Errorf("Expected %d keys with prefix 'aa', got %d", len(expectedKeys2), len(actualKeys2))
+		}
+
+		for i, expected := range expectedKeys2 {
+			if i >= len(actualKeys2) || actualKeys2[i] != expected {
+				t.Errorf("At index %d: expected %s, got %s", i, expected,
+					func() string {
+						if i < len(actualKeys2) {
+							return actualKeys2[i]
+						}
+						return "nil"
+					}())
+			}
+		}
+
+		t.Logf("Prefix boundary cases passed - 'a': %v, 'aa': %v", actualKeys, actualKeys2)
+	})
+
 }

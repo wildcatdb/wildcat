@@ -89,6 +89,7 @@ func (mi *MergeIterator) initializeIterator(it *iterator) error {
 		}
 
 		if it.ascending {
+
 			// For ascending, start from beginning
 			key, value, ts, ok := t.Next()
 			if ok && ts <= mi.ts {
@@ -106,6 +107,7 @@ func (mi *MergeIterator) initializeIterator(it *iterator) error {
 			}
 
 			t.ToLast()
+
 			// Get current position using Peek or by reading directly
 			key, value, ts, ok := t.Peek()
 			if ok && ts <= mi.ts {
@@ -150,7 +152,6 @@ func (mi *MergeIterator) initializeIterator(it *iterator) error {
 			}
 		} else {
 			// For descending, need to position at the end first
-			// Add safety check before calling ToLast
 			if !t.Valid() {
 				it.exhausted = true
 				return nil
@@ -158,7 +159,7 @@ func (mi *MergeIterator) initializeIterator(it *iterator) error {
 
 			t.ToLast()
 
-			// Get current position using Peek or by reading directly
+			// After ToLast(), we should check if we're still in bounds
 			key, value, ts, ok := t.Peek()
 			if ok && ts <= mi.ts {
 				it.currentKey = key
@@ -191,6 +192,7 @@ func (mi *MergeIterator) initializeIterator(it *iterator) error {
 		}
 
 		if it.ascending {
+
 			// For ascending, start from beginning
 			key, value, ts, ok := t.Next()
 			if ok && ts <= mi.ts {
@@ -208,6 +210,7 @@ func (mi *MergeIterator) initializeIterator(it *iterator) error {
 			}
 
 			t.ToLast()
+
 			// Get current position using Peek or by reading directly
 			key, value, ts, ok := t.Peek()
 			if ok && ts <= mi.ts {
@@ -235,7 +238,6 @@ func (mi *MergeIterator) initializeIterator(it *iterator) error {
 			}
 		}
 	case *tree.Iterator:
-		// Add nil check
 		if t == nil {
 			it.exhausted = true
 			return nil
@@ -277,6 +279,7 @@ func (mi *MergeIterator) initializeIterator(it *iterator) error {
 					it.currentValue = it.sst.readValueFromVLog(entry.ValueBlockID)
 					it.currentTimestamp = entry.Timestamp
 				} else {
+
 					// Find a valid position going backwards
 					for t.Prev() {
 						entry, err := mi.extractKLogEntry(t.Value())
@@ -360,17 +363,10 @@ func (mi *MergeIterator) SetDirection(ascending bool) error {
 	mi.heap = make(iteratorHeap, 0, len(mi.allIterators))
 	mi.reverseHeap = make(reverseIteratorHeap, 0, len(mi.allIterators))
 
-	// Re-initialize all iterators in the new direction
 	for _, it := range mi.allIterators {
 		it.ascending = ascending
-		it.exhausted = false
 
-		// Re-initialize the iterator from scratch in the new direction
-		if err := mi.initializeIterator(it); err != nil {
-			continue // Skip this iterator if there's an error
-		}
-
-		if !it.exhausted {
+		if !it.exhausted && len(it.currentKey) > 0 {
 			if ascending {
 				heap.Push(&mi.heap, it)
 			} else {
@@ -378,10 +374,6 @@ func (mi *MergeIterator) SetDirection(ascending bool) error {
 			}
 		}
 	}
-
-	// Clear the last key since we're starting fresh
-	mi.lastKey = nil
-	mi.lastTimestamp = 0
 
 	return nil
 }
@@ -422,7 +414,6 @@ func (mi *MergeIterator) seekIterator(it *iterator, seekKey []byte) error {
 		}
 
 	case *tree.Iterator:
-		// Tree iterators have seek functionality
 		if err := t.Seek(seekKey); err != nil {
 			it.exhausted = true
 			return err
@@ -589,6 +580,66 @@ func (mi *MergeIterator) advanceIterator(it *iterator) {
 			}
 		}
 
+	case *skiplist.RangeIterator:
+		if t == nil {
+			it.exhausted = true
+			return
+		}
+
+		for {
+			var key []byte
+			var value []byte
+			var ts int64
+			var ok bool
+
+			if it.ascending {
+				key, value, ts, ok = t.Next()
+			} else {
+				key, value, ts, ok = t.Prev()
+			}
+
+			if !ok {
+				it.exhausted = true
+				return
+			}
+			if ts <= mi.ts {
+				it.currentKey = key
+				it.currentValue = value
+				it.currentTimestamp = ts
+				return
+			}
+		}
+
+	case *skiplist.PrefixIterator:
+		if t == nil {
+			it.exhausted = true
+			return
+		}
+
+		for {
+			var key []byte
+			var value []byte
+			var ts int64
+			var ok bool
+
+			if it.ascending {
+				key, value, ts, ok = t.Next()
+			} else {
+				key, value, ts, ok = t.Prev()
+			}
+
+			if !ok {
+				it.exhausted = true
+				return
+			}
+			if ts <= mi.ts {
+				it.currentKey = key
+				it.currentValue = value
+				it.currentTimestamp = ts
+				return
+			}
+		}
+
 	case *tree.Iterator:
 		if t == nil {
 			it.exhausted = true
@@ -650,9 +701,12 @@ func (mi *MergeIterator) IsAscending() bool {
 // iteratorHeap implements heap.Interface for managing iterators by key
 type iteratorHeap []*iterator
 
+// Len returns the number of elements in the heap
 func (h iteratorHeap) Len() int { return len(h) }
 
+// Less compares two iterators based on their current keys and timestamps
 func (h iteratorHeap) Less(i, j int) bool {
+
 	// Compare keys lexicographically
 	cmp := bytes.Compare(h[i].currentKey, h[j].currentKey)
 	if cmp != 0 {
@@ -662,12 +716,14 @@ func (h iteratorHeap) Less(i, j int) bool {
 	return h[i].currentTimestamp > h[j].currentTimestamp
 }
 
+// Swap swaps two elements in the heap and updates their indices
 func (h iteratorHeap) Swap(i, j int) {
 	h[i], h[j] = h[j], h[i]
 	h[i].index = i
 	h[j].index = j
 }
 
+// Push adds a new iterator to the heap
 func (h *iteratorHeap) Push(x interface{}) {
 	n := len(*h)
 	item := x.(*iterator)
@@ -675,6 +731,7 @@ func (h *iteratorHeap) Push(x interface{}) {
 	*h = append(*h, item)
 }
 
+// Pop removes and returns the iterator with the smallest key from the heap
 func (h *iteratorHeap) Pop() interface{} {
 	old := *h
 	n := len(old)
@@ -688,24 +745,29 @@ func (h *iteratorHeap) Pop() interface{} {
 // reverseIteratorHeap for descending iteration (largest keys first)
 type reverseIteratorHeap []*iterator
 
+// Len returns the number of elements in the reverse heap
 func (h reverseIteratorHeap) Len() int { return len(h) }
 
+// Less compares two iterators based on their current keys and timestamps in reverse order
 func (h reverseIteratorHeap) Less(i, j int) bool {
 	// Compare keys lexicographically (reverse order for descending)
 	cmp := bytes.Compare(h[i].currentKey, h[j].currentKey)
 	if cmp != 0 {
 		return cmp > 0 // Reverse comparison for descending order
 	}
+
 	// If keys are equal, prioritize by timestamp (newer first)
 	return h[i].currentTimestamp > h[j].currentTimestamp
 }
 
+// Swap swaps two elements in the reverse heap and updates their indices
 func (h reverseIteratorHeap) Swap(i, j int) {
 	h[i], h[j] = h[j], h[i]
 	h[i].index = i
 	h[j].index = j
 }
 
+// Push adds a new iterator to the reverse heap
 func (h *reverseIteratorHeap) Push(x interface{}) {
 	n := len(*h)
 	item := x.(*iterator)
@@ -713,6 +775,7 @@ func (h *reverseIteratorHeap) Push(x interface{}) {
 	*h = append(*h, item)
 }
 
+// Pop removes and returns the iterator with the largest key from the reverse heap
 func (h *reverseIteratorHeap) Pop() interface{} {
 	old := *h
 	n := len(old)
