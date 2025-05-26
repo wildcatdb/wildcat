@@ -213,7 +213,8 @@ if err != nil {
 ### Iterating Keys
 Wildcat provides comprehensive iteration capabilities with MVCC consistency.
 
-You can set ascending or descending order, and iterate over all keys, a range of keys, or keys with a specific prefix.
+> [!TIP]
+> You can set ascending or descending order, and iterate over all keys, a range of keys, or keys with a specific prefix.
 
 #### Full Iterator (bidirectional)
 ```go
@@ -544,41 +545,41 @@ Recovery process consists of several steps
 - **Incomplete transaction preservation** Uncommitted transactions remain accessible via GetTxn(id)
 
 #### Durability Order
-**WAL** All writes recorded atomically with full transaction details (ReadSet, WriteSet, DeleteSet, commit status)
-**Memtable** Writes reflected in memory immediately upon commit
-**SSTables** Memtables flushed to SSTables asynchronously via background flusher
+- **WAL** All writes recorded atomically with full transaction details (ReadSet, WriteSet, DeleteSet, commit status)
+- **Memtable** Writes reflected in memory immediately upon commit
+- **SSTables** Memtables flushed to SSTables asynchronously via background flusher
 
 #### Recovery Guarantees
-**Complete state restoration** All committed transactions are fully recovered
-**Incomplete transaction access** Uncommitted transactions can be inspected, committed, or rolled back
-**Timestamp consistency** WAL replay maintains correct timestamp ordering
-**Atomic recovery** Only transactions with durable WAL entries are considered recoverable
+- **Complete state restoration** All committed transactions are fully recovered
+- **Incomplete transaction access** Uncommitted transactions can be inspected, committed, or rolled back
+- **Timestamp consistency** WAL replay maintains correct timestamp ordering
+- **Atomic recovery** Only transactions with durable WAL entries are considered recoverable
 
 ### Block Manager
 Wildcat's block manager provides low-level, high-performance file I/O with sophisticated features.
 
 #### Core
-**Direct I/O** Uses pread/pwrite system calls for atomic, position-independent operations
-**Block chaining** Supports multi-block data with automatic chain management
-**Free block management** Atomic queue-based allocation with block reuse
-**CRC verification** All blocks include CRC32 checksums for data integrity
-**Concurrent access** Thread-safe operations with lock-free design where possible
+- **Direct I/O** Uses pread/pwrite system calls for atomic, position-independent operations
+- **Block chaining** Supports multi-block data with automatic chain management
+- **Free block management** Atomic queue-based allocation with block reuse
+- **CRC verification** All blocks include CRC32 checksums for data integrity
+- **Concurrent access** Thread-safe operations with lock-free design where possible
 
 #### Block Structure
-**Header validation** Magic number and version verification
-**Block metadata** Size, next block ID, and CRC checksums
-**Chain support** Automatic handling of data spanning multiple blocks
-**Free space tracking** Intelligent free block scanning and allocation
+- **Header validation** Magic number and version verification
+- **Block metadata** Size, next block ID, and CRC checksums
+- **Chain support** Automatic handling of data spanning multiple blocks
+- **Free space tracking** Intelligent free block scanning and allocation
 
 #### Sync Options
-**SyncNone** No disk synchronization (fastest, least durable)
-**SyncFull** Synchronous writes with fdatasync (safest, slower)
-**SyncPartial** Background synchronization at configurable intervals (balanced)
+- **SyncNone** No disk synchronization (fastest, least durable)
+- **SyncFull** Synchronous writes with fdatasync (safest, slower)
+- **SyncPartial** Background synchronization at configurable intervals (balanced)
 
 #### Recovery Features
-**Block validation** CRC verification on all block reads
-**Chain reconstruction** Automatic detection and handling of multi-block data
-**Free space recovery** Intelligent scanning to rebuild free block allocation table
+- **Block validation** CRC verification on all block reads
+- **Chain reconstruction** Automatic detection and handling of multi-block data
+- **Free space recovery** Intelligent scanning to rebuild free block allocation table
 
 ### LRU Cache
 Wildcat uses a sophisticated lock-free LRU cache for block manager handles.
@@ -643,30 +644,30 @@ iter.Valid()          // Check if positioned at valid entry
 ```
 
 #### Performance Optimizations
-**Lazy loading** Nodes loaded on-demand from block storage
-**Efficient splitting** Automatic node splitting maintains balance
-**Leaf linking** Direct leaf-to-leaf pointers for faster iteration
-**Memory efficient** Minimal memory footprint with block-based storage
+- **Lazy loading** Nodes loaded on-demand from block storage
+- **Efficient splitting** Automatic node splitting maintains balance
+- **Leaf linking** Direct leaf-to-leaf pointers for faster iteration
+- **Memory efficient** Minimal memory footprint with block-based storage
 
 #### Node Structure
-**Internal nodes** Store keys and child pointers for navigation
-**Leaf nodes** Store actual key-value pairs with next/prev links
-**BSON encoding** Consistent serialization format across all node types
+- **Internal nodes** Store keys and child pointers for navigation
+- **Leaf nodes** Store actual key-value pairs with next/prev links
+- **BSON encoding** Consistent serialization format across all node types
 
 ### SkipList
 Wildcat's SkipList serves as the core data structure for memtables, providing concurrent MVCC access with lock-free operations.
 
 #### MVCC Architecture
-**Version chains** Each key maintains a linked list of timestamped versions
-**Timestamp ordering** Physical nanosecond timestamps ensure global ordering
-**Lock-free access** Atomic operations enable concurrent reads and writes
-**Snapshot isolation** Readers see consistent snapshots at their read timestamp
+- **Version chains** Each key maintains a linked list of timestamped versions
+- **Timestamp ordering** Physical nanosecond timestamps ensure global ordering
+- **Lock-free access** Atomic operations enable concurrent reads and writes
+- **Snapshot isolation** Readers see consistent snapshots at their read timestamp
 
 #### Concurrency Features
-**Non-blocking reads** Readers never block, even during concurrent writes
-**Atomic writes** CAS operations ensure thread-safe modifications
-**Version visibility** Timestamp-based filtering for MVCC consistency
-**Memory ordering** Proper atomic synchronization prevents race conditions
+- **Non-blocking reads** Readers never block, even during concurrent writes
+- **Atomic writes** CAS operations ensure thread-safe modifications
+- **Version visibility** Timestamp-based filtering for MVCC consistency
+- **Memory ordering** Proper atomic synchronization prevents race conditions
 
 #### Version Management
 ```go
@@ -679,10 +680,10 @@ type ValueVersion struct {
 ```
 
 #### Advanced Operations
-**Put operations** Atomic insertion with version chaining
-**Delete operations** Tombstone markers with timestamp tracking
-**Get operations** Version-aware lookups with timestamp filtering
-**Range scanning** Efficient iteration over key ranges with MVCC consistency
+- **Put operations** Atomic insertion with version chaining
+- **Delete operations** Tombstone markers with timestamp tracking
+- **Get operations** Version-aware lookups with timestamp filtering
+- **Range scanning** Efficient iteration over key ranges with MVCC consistency
 
 **Iterator Types**
 ```go
