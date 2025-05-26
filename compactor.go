@@ -19,7 +19,9 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/guycipher/wildcat/blockmanager"
-	"github.com/guycipher/wildcat/bloomfilter"
+	"github.com/guycipher/wildcat/tree"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"os"
 	"sort"
 	"sync"
@@ -29,30 +31,30 @@ import (
 
 // compactorJob represents a scheduled compaction
 type compactorJob struct {
-	level       int
-	priority    float64
-	ssTables    []*SSTable
-	targetLevel int
-	inProgress  bool
+	level       int        // The level being compacted
+	priority    float64    // The priority of the compaction job
+	ssTables    []*SSTable // The SSTables to be compacted
+	targetLevel int        // The target level for the compaction
+	inProgress  bool       // Flag indicating if the job is in progress
 }
 
 // Compactor is responsible for managing compaction jobs
 type Compactor struct {
-	db              *DB
-	compactionQueue []*compactorJob
-	activeJobs      int32
-	maxConcurrency  int
-	lastCompaction  time.Time
-	scoreLock       sync.Mutex
+	db              *DB             // Reference to the database
+	compactionQueue []*compactorJob // Queue of compaction jobs
+	activeJobs      int32           // Number of active compaction jobs
+	maxConcurrency  int             // Maximum number of concurrent compactions
+	lastCompaction  time.Time       // Timestamp of the last compaction
+	scoreLock       sync.Mutex      // Mutex for synchronizing compaction score calculations
 }
 
 // sstCompactionIterator iterates over an SSTable for compaction
 type sstCompactionIterator struct {
-	sstable    *SSTable
-	klogIter   *blockmanager.Iterator
-	blockset   *BlockSet
-	blockIndex int
-	eof        bool
+	sstable  *SSTable
+	tree     *tree.BTree
+	treeIter *tree.Iterator
+	entry    *KLogEntry
+	eof      bool
 }
 
 // mergeCompactionIterator merges multiple SSTable iterators
@@ -458,9 +460,6 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 		oldVlogPath := fmt.Sprintf("%s%s%d%s%s%d%s", compactor.db.opts.Directory, LevelPrefix, sourceLevel,
 			string(os.PathSeparator), SSTablePrefix, table.Id, VLogExtension)
 
-		// Wait a bit before deleting to ensure no ongoing reads
-		time.Sleep(100 * time.Millisecond)
-
 		// Remove from LRU first
 		if bm, ok := compactor.db.lru.Get(oldKlogPath); ok {
 			if bm, ok := bm.(*blockmanager.BlockManager); ok {
@@ -484,316 +483,241 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 	return nil
 }
 
+type iterState struct {
+	iter      *tree.Iterator
+	sstable   *SSTable
+	klogBm    *blockmanager.BlockManager
+	vlogBm    *blockmanager.BlockManager
+	hasNext   bool
+	nextKey   []byte
+	nextValue *KLogEntry
+}
+
 // mergeSSTables merges multiple SSTables into a new SSTable
-func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *blockmanager.BlockManager, newSSTable *SSTable) error {
-	// Write metadata as first block
-	sstableData, err := newSSTable.serializeSSTable()
-	if err != nil {
-		return fmt.Errorf("failed to serialize SSTable: %w", err)
-	}
+func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *blockmanager.BlockManager, output *SSTable) error {
+	readTs := time.Now().UnixNano() + 10000000000
 
-	_, err = klogBm.Append(sstableData)
-	if err != nil {
-		return fmt.Errorf("failed to write KLog: %w", err)
-	}
+	var iters []*iterState
 
-	// Determine if this is the bottom level (for tombstone removal)
-	isBottomLevel := newSSTable.Level == len(*compactor.db.levels.Load())-1
+	// Initialize iterators
+	for _, sst := range sstables {
+		klogPath := fmt.Sprintf("%s%s%d%s%s%d%s", compactor.db.opts.Directory, LevelPrefix, sst.Level, string(os.PathSeparator), SSTablePrefix, sst.Id, KLogExtension)
+		vlogPath := fmt.Sprintf("%s%s%d%s%s%d%s", compactor.db.opts.Directory, LevelPrefix, sst.Level, string(os.PathSeparator), SSTablePrefix, sst.Id, VLogExtension)
 
-	// Get the oldest active read timestamp if available
-	// If not tracking this, we use a conservative approach and keep tombstones
-	var oldestReadTimestamp int64
-	oldestReadTimestamp = atomic.LoadInt64(&compactor.db.oldestActiveRead)
+		kbm := getOrOpenBM(compactor.db, klogPath)
+		vbm := getOrOpenBM(compactor.db, vlogPath)
 
-	// Create a merged iterator over all input SSTables
-	iterators := make([]*sstCompactionIterator, len(sstables))
-	for i, table := range sstables {
-		iterators[i] = newSSTCompactionIterator(table)
-	}
-	mergeIter := newMergeCompactionIterator(iterators)
-
-	// Create a block set for the merged data
-	blockset := &BlockSet{
-		Entries: make([]*KLogEntry, 0),
-		Size:    0,
-	}
-
-	entryCount := 0
-	var totalSize int64 = 0
-
-	// Create a bloom filter if the option is enabled
-	var bloomFilter *bloomfilter.BloomFilter
-	if compactor.db.opts.BloomFilter {
-		// Estimate the number of unique keys based on input tables
-		estimatedUniqueKeys := 0
-		for _, table := range sstables {
-			estimatedUniqueKeys += table.EntryCount
-		}
-		// Use a more conservative estimate to avoid underprovision
-		bloomFilter, err = bloomfilter.New(uint(estimatedUniqueKeys), compactor.db.opts.BloomFilterFPR)
+		bt, err := tree.Open(kbm, compactor.db.opts.SSTableBTreeOrder, sst)
 		if err != nil {
-			return fmt.Errorf("failed to create bloom filter: %w", err)
-
-		}
-	}
-
-	// Keep track of the last seen key for potential tombstone optimization
-	var lastKey []byte
-	var lastKeyTombstone bool
-	var savedTombstones int
-	var droppedTombstones int
-
-	// Helper function to check if a value is a tombstone
-	isTombstone := func(valueBlockID int64, value interface{}) bool {
-		// Special marker for deletion
-		if valueBlockID == -1 {
-			return true
+			return fmt.Errorf("failed to open BTree: %w", err)
 		}
 
-		// Check if the value is nil or empty (another tombstone indicator)
-		valueBytes, ok := value.([]byte)
-		return !ok || valueBytes == nil || len(valueBytes) == 0
-	}
-
-	// Helper function to determine if a tombstone should be kept
-	shouldKeepTombstone := func(key []byte, ts int64) bool {
-		// Always keep tombstones in non-bottom levels
-		if !isBottomLevel {
-			return true
+		iter, err := bt.Iterator(true)
+		if err != nil {
+			return fmt.Errorf("failed to open iterator: %w", err)
 		}
 
-		// Drop tombstones older than possible oldest active read in bottom level
-		if oldestReadTimestamp > 0 && ts < oldestReadTimestamp {
-			return false
+		state := &iterState{
+			iter:    iter,
+			sstable: sst,
+			klogBm:  kbm,
+			vlogBm:  vbm,
 		}
 
-		// Check overlap with SSTables in other levels
-		for levelNum, level := range *compactor.db.levels.Load() {
-			// Skip the current level and target level
-			if levelNum == newSSTable.Level || levelNum == sstables[0].Level {
-				continue
-			}
+		state.hasNext = iter.Valid()
+		if state.hasNext {
+			key := iter.Key()
 
-			levelSSTables := level.sstables.Load()
-			if levelSSTables == nil {
-				continue
-			}
+			val := iter.Value()
+			var klogEntry *KLogEntry
 
-			// Check if the key might be in any SSTable range
-			for _, table := range *levelSSTables {
-				// Skip tables that are part of this compaction
-				isCompacting := false
-				for _, compactingTable := range sstables {
-					if table.Id == compactingTable.Id {
-						isCompacting = true
-						break
+			if entry, ok := val.(*KLogEntry); ok {
+				klogEntry = entry
+			} else if doc, ok := val.(primitive.D); ok {
+				// Handle primitive.D case
+				klogEntry = &KLogEntry{}
+				for _, elem := range doc {
+					switch elem.Key {
+					case "key":
+						if keyData, ok := elem.Value.(primitive.Binary); ok {
+							klogEntry.Key = keyData.Data
+						}
+					case "timestamp":
+						if ts, ok := elem.Value.(int64); ok {
+							klogEntry.Timestamp = ts
+						}
+					case "valueblockid":
+						if blockID, ok := elem.Value.(int64); ok {
+							klogEntry.ValueBlockID = blockID
+						}
 					}
 				}
-				if isCompacting {
-					continue
-				}
+			} else {
 
-				// If key is in the range of this SSTable, we need to keep the tombstone
-				if bytes.Compare(key, table.Min) >= 0 && bytes.Compare(key, table.Max) <= 0 {
-					return true
+				bsonData, err := bson.Marshal(val)
+				if err == nil {
+					klogEntry = &KLogEntry{}
+					_ = bson.Unmarshal(bsonData, klogEntry)
 				}
+			}
+
+			if klogEntry != nil {
+				state.nextKey = key
+				state.nextValue = klogEntry
+			} else {
+				state.hasNext = false
 			}
 		}
 
-		// If we reach here, the tombstone is likely not needed
-		return false
+		iters = append(iters, state)
 	}
 
-	// Iterate through all entries and merge them
+	bt, err := tree.Open(klogBm, compactor.db.opts.SSTableBTreeOrder, output)
+	if err != nil {
+		return fmt.Errorf("failed to create output BTree: %w", err)
+	}
+
+	var entryCount int64
+	var totalSize int64
+
 	for {
-		key, value, ts, valid := mergeIter.next()
-		if !valid {
-			break
+		var minKey []byte
+		var candidates []*iterState
+
+		// Find smallest key among all iterators
+		for _, it := range iters {
+			if it.hasNext {
+				if minKey == nil || bytes.Compare(it.nextKey, minKey) < 0 {
+					minKey = it.nextKey
+				}
+			}
 		}
 
-		// Check if this is a tombstone
-		valueBlockID := int64(-1)
-		if value != nil {
-			// For real values, we write to VLog and get a block ID
-			var err error
-			valueBlockID, err = vlogBm.Append(value.([]byte))
+		if minKey == nil {
+			break // Done
+		}
+
+		// Collect all versions of this key
+		for _, it := range iters {
+			if it.hasNext && bytes.Equal(it.nextKey, minKey) {
+				candidates = append(candidates, it)
+			}
+		}
+
+		// Choose latest visible version
+		var latest *KLogEntry
+		var latestState *iterState
+		for _, it := range candidates {
+			kv := it.nextValue
+			if kv.Timestamp <= readTs {
+				if latest == nil || kv.Timestamp > latest.Timestamp {
+					latest = kv
+					latestState = it
+				}
+			}
+		}
+
+		// Insert if not a tombstone
+		if latest != nil && latest.ValueBlockID != -1 {
+
+			// Read the value from the original VLog
+			val, _, err := latestState.vlogBm.Read(latest.ValueBlockID)
 			if err != nil {
-				return fmt.Errorf("failed to write VLog: %w", err)
+				return fmt.Errorf("failed to read value: %w", err)
+			}
+
+			if val != nil {
+				// Write to new VLog
+				vID, err := vlogBm.Append(val)
+				if err != nil {
+					return fmt.Errorf("failed to write to VLog: %w", err)
+				}
+
+				// Create new KLog entry
+				klogEntry := &KLogEntry{
+					Key:          latest.Key,
+					Timestamp:    latest.Timestamp,
+					ValueBlockID: vID,
+				}
+
+				// Insert into new KLog
+				if err := bt.Put(latest.Key, klogEntry); err != nil {
+					return fmt.Errorf("failed to insert into KLog: %w", err)
+				}
+
+				entryCount++
+				totalSize += int64(len(latest.Key) + len(val))
 			}
 		}
 
-		isTomb := isTombstone(valueBlockID, value)
+		// Advance all iterators with that key
+		for _, it := range candidates {
+			// Move to next item
+			it.iter.Next()
+			it.hasNext = it.iter.Valid()
 
-		if isTomb {
-			// Tombstone found - decide if we should keep it
-			if !shouldKeepTombstone(key, ts) {
-				droppedTombstones++
-				continue // Skip this tombstone entirely
+			if it.hasNext {
+				key := it.iter.Key()
+				val := it.iter.Value()
+
+				var klogEntry *KLogEntry
+				if entry, ok := val.(*KLogEntry); ok {
+					klogEntry = entry
+				} else if doc, ok := val.(primitive.D); ok {
+					klogEntry = &KLogEntry{}
+					for _, elem := range doc {
+						switch elem.Key {
+						case "key":
+							if keyData, ok := elem.Value.(primitive.Binary); ok {
+								klogEntry.Key = keyData.Data
+							}
+						case "timestamp":
+							if ts, ok := elem.Value.(int64); ok {
+								klogEntry.Timestamp = ts
+							}
+						case "valueblockid":
+							if blockID, ok := elem.Value.(int64); ok {
+								klogEntry.ValueBlockID = blockID
+							}
+						}
+					}
+				} else {
+					bsonData, err := bson.Marshal(val)
+					if err == nil {
+						klogEntry = &KLogEntry{}
+						_ = bson.Unmarshal(bsonData, klogEntry)
+					}
+				}
+
+				if klogEntry != nil {
+					it.nextKey = key
+					it.nextValue = klogEntry
+				} else {
+					it.hasNext = false
+				}
 			}
-
-			// Check for consecutive tombstones
-			if lastKeyTombstone && bytes.Equal(lastKey, key) {
-				// Skip duplicate tombstones for the same key
-				continue
-			}
-
-			savedTombstones++
-		} else {
-			// Add the key to the bloom filter if this is not a tombstone
-			if bloomFilter != nil {
-				// The bloom filter itself will handle duplicates efficiently
-				bloomFilter.Add(key)
-			}
-		}
-
-		// Remember last key and tombstone status for potential optimizations
-		lastKey = key
-		lastKeyTombstone = isTomb
-
-		// Add the entry to the block set
-		klogEntry := &KLogEntry{
-			Key:          key,
-			Timestamp:    ts,
-			ValueBlockID: valueBlockID,
-		}
-
-		blockset.Entries = append(blockset.Entries, klogEntry)
-
-		// Calculate entry size - for tombstones, only count the key size
-		var entrySize int64
-		if isTomb {
-			entrySize = int64(len(key))
-		} else {
-			entrySize = int64(len(key) + len(value.([]byte)))
-		}
-
-		blockset.Size += entrySize
-		totalSize += entrySize
-		entryCount++
-
-		// Flush the block set if it reaches the threshold
-		if blockset.Size >= compactor.db.opts.BlockSetSize {
-			blocksetData, err := blockset.serializeBlockSet()
-			if err != nil {
-				return fmt.Errorf("failed to serialize BlockSet: %w", err)
-			}
-
-			_, err = klogBm.Append(blocksetData)
-			if err != nil {
-				return fmt.Errorf("failed to write BlockSet to KLog: %w", err)
-			}
-
-			blockset.Entries = make([]*KLogEntry, 0)
-			blockset.Size = 0
 		}
 	}
 
-	// Write any remaining entries
-	if len(blockset.Entries) > 0 {
-		blocksetData, err := blockset.serializeBlockSet()
-		if err != nil {
-			return fmt.Errorf("failed to serialize BlockSet: %w", err)
-		}
-
-		_, err = klogBm.Append(blocksetData)
-		if err != nil {
-			return fmt.Errorf("failed to write BlockSet to KLog: %w", err)
-		}
-	}
-
-	// Update the SSTable metadata
-	newSSTable.Size = totalSize
-	newSSTable.EntryCount = entryCount
-	newSSTable.BloomFilter = bloomFilter
-
-	return nil
-}
-
-// newSSTCompactionIterator creates a new iterator over an SSTable
-func newSSTCompactionIterator(sst *SSTable) *sstCompactionIterator {
-	// Get the KLog block manager
-	klogPath := fmt.Sprintf("%s%s%d%s%s%d%s", sst.db.opts.Directory, LevelPrefix, sst.Level,
-		string(os.PathSeparator), SSTablePrefix, sst.Id, KLogExtension)
-
-	var klogBm *blockmanager.BlockManager
-	var err error
-
-	if v, ok := sst.db.lru.Get(klogPath); ok {
-		klogBm = v.(*blockmanager.BlockManager)
-	} else {
-		klogBm, err = blockmanager.Open(klogPath, os.O_RDONLY, sst.db.opts.Permission,
-			blockmanager.SyncOption(sst.db.opts.SyncOption), sst.db.opts.SyncInterval)
-		if err != nil {
-			return &sstCompactionIterator{eof: true}
-		}
-		sst.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
-			// Close the block manager when evicted from LRU
-			if bm, ok := value.(*blockmanager.BlockManager); ok {
-				_ = bm.Close()
-			}
-		})
-	}
-
-	iter := &sstCompactionIterator{
-		sstable:    sst,
-		klogIter:   klogBm.Iterator(),
-		blockIndex: -1,
-		eof:        false,
-	}
-
-	// Skip the first block (metadata)
-	_, _, err = iter.klogIter.Next()
-	if err != nil {
-		iter.eof = true
-		return iter
-	}
-
-	// Load the first block set
-	err = iter.loadNextBlockSet()
-	if err != nil {
-		iter.eof = true
-	}
-
-	return iter
-}
-
-// loadNextBlockSet loads the next block set from the KLog
-func (iter *sstCompactionIterator) loadNextBlockSet() error {
-	data, _, err := iter.klogIter.Next()
-	if err != nil {
-		return err
-	}
-
-	var blockset BlockSet
-	err = blockset.deserializeBlockSet(data)
-	if err != nil {
-		return err
-	}
-
-	iter.blockset = &blockset
-	iter.blockIndex = 0
+	// Update output SSTable metadata
+	output.EntryCount = int(entryCount)
+	output.Size = totalSize
 
 	return nil
 }
 
 // next returns the next key-value pair from the SSTable
 func (iter *sstCompactionIterator) next() ([]byte, interface{}, int64, bool) {
-	if iter.eof || iter.blockset == nil {
+	if iter.eof || iter.entry == nil {
 		return nil, nil, 0, false
 	}
 
-	// If we've reached the end of the current block set, load the next one
-	if iter.blockIndex >= len(iter.blockset.Entries) {
-		err := iter.loadNextBlockSet()
-		if err != nil {
-			iter.eof = true
-			return nil, nil, 0, false
-		}
+	// Get the next entry from the B-tree
+	if iter.treeIter == nil {
+		return nil, nil, 0, false
 	}
 
-	// Get the current entry
-	entry := iter.blockset.Entries[iter.blockIndex]
-	iter.blockIndex++
+	iter.treeIter.Next()
 
 	// Get the VLog block manager
 	vlogPath := fmt.Sprintf("%s%s%d%s%s%d%s", iter.sstable.db.opts.Directory, LevelPrefix, iter.sstable.Level,
@@ -812,6 +736,7 @@ func (iter *sstCompactionIterator) next() ([]byte, interface{}, int64, bool) {
 			return nil, nil, 0, false
 		}
 		iter.sstable.db.lru.Put(vlogPath, vlogBm, func(key, value interface{}) {
+
 			// Close the block manager when evicted from LRU
 			if bm, ok := value.(*blockmanager.BlockManager); ok {
 				_ = bm.Close()
@@ -820,97 +745,13 @@ func (iter *sstCompactionIterator) next() ([]byte, interface{}, int64, bool) {
 	}
 
 	// Read the value from VLog
-	value, _, err := vlogBm.Read(entry.ValueBlockID)
+	value, _, err := vlogBm.Read(iter.treeIter.Value().(*KLogEntry).ValueBlockID)
 	if err != nil {
 		iter.eof = true
 		return nil, nil, 0, false
 	}
 
-	return entry.Key, value, entry.Timestamp, true
-}
-
-// newMergeCompactionIterator creates a new merge iterator
-func newMergeCompactionIterator(iters []*sstCompactionIterator) *mergeCompactionIterator {
-	m := &mergeCompactionIterator{
-		iters:   iters,
-		current: make([]*compactionEntry, len(iters)),
-	}
-
-	// Initialize the current entries
-	for i, iter := range iters {
-		key, value, ts, valid := iter.next()
-		if valid {
-			m.current[i] = &compactionEntry{
-				key:       key,
-				value:     value,
-				timestamp: ts,
-			}
-		}
-	}
-
-	return m
-}
-
-// next returns the next key-value pair in sorted order
-func (m *mergeCompactionIterator) next() ([]byte, interface{}, int64, bool) {
-	// Find the smallest key
-	var smallestIdx = -1
-	var smallestKey []byte
-	var latestTS int64
-
-	for i, entry := range m.current {
-		if entry == nil {
-			continue
-		}
-
-		if smallestIdx == -1 || bytes.Compare(entry.key, smallestKey) < 0 {
-			smallestIdx = i
-			smallestKey = entry.key
-			latestTS = entry.timestamp
-		} else if bytes.Equal(entry.key, smallestKey) && entry.timestamp > latestTS {
-			// If keys are equal, take the one with the latest timestamp
-			smallestIdx = i
-			latestTS = entry.timestamp
-		}
-	}
-
-	if smallestIdx == -1 {
-		return nil, nil, 0, false // No more entries
-	}
-
-	// Get the current smallest entry
-	result := m.current[smallestIdx]
-
-	// Advance the iterator that provided this entry
-	key, value, ts, valid := m.iters[smallestIdx].next()
-	if valid {
-		m.current[smallestIdx] = &compactionEntry{
-			key:       key,
-			value:     value,
-			timestamp: ts,
-		}
-	} else {
-		m.current[smallestIdx] = nil
-	}
-
-	// For keys that match but have lower timestamps, skip them
-	for i, entry := range m.current {
-		if entry != nil && bytes.Equal(entry.key, result.key) && entry.timestamp < result.timestamp {
-			// Advance this iterator
-			key, value, ts, valid = m.iters[i].next()
-			if valid {
-				m.current[i] = &compactionEntry{
-					key:       key,
-					value:     value,
-					timestamp: ts,
-				}
-			} else {
-				m.current[i] = nil
-			}
-		}
-	}
-
-	return result.key, result.value, result.timestamp, true
+	return iter.treeIter.Value().(*KLogEntry).Key, value, iter.treeIter.Value().(*KLogEntry).Timestamp, true
 }
 
 // shouldCompact determines if compaction is needed
@@ -943,4 +784,21 @@ func (compactor *Compactor) shouldCompact() bool {
 	}
 
 	return false
+}
+
+func getOrOpenBM(db *DB, path string) *blockmanager.BlockManager {
+	if bm, ok := db.lru.Get(path); ok {
+		return bm.(*blockmanager.BlockManager)
+	}
+	bm, err := blockmanager.Open(path, os.O_RDONLY, db.opts.Permission,
+		blockmanager.SyncOption(db.opts.SyncOption), db.opts.SyncInterval)
+	if err != nil {
+		panic(fmt.Errorf("failed to open block manager %s: %w", path, err))
+	}
+	db.lru.Put(path, bm, func(key, value interface{}) {
+		if bm, ok := value.(*blockmanager.BlockManager); ok {
+			_ = bm.Close()
+		}
+	})
+	return bm
 }

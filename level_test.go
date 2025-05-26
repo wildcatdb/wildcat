@@ -24,14 +24,10 @@ import (
 )
 
 func TestLevel_BasicOperations(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_level_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -92,12 +88,12 @@ func TestLevel_BasicOperations(t *testing.T) {
 	}
 
 	level1 := (*levels)[0] // Level 1 is at index 0
-	sstables := level1.sstables.Load()
+	sstables := level1.SSTables()
 
-	if sstables == nil || len(*sstables) == 0 {
+	if sstables == nil || len(sstables) == 0 {
 		t.Errorf("Expected at least one SSTable in level 1, but found none")
 	} else {
-		t.Logf("Found %d SSTables in level 1", len(*sstables))
+		t.Logf("Found %d SSTables in level 1", len(sstables))
 	}
 
 	// Check level properties
@@ -150,14 +146,10 @@ func TestLevel_BasicOperations(t *testing.T) {
 }
 
 func TestLevel_Reopen(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_level_reopen_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel that won't be closed in this test
 	logChan := make(chan string, 100)
@@ -204,11 +196,11 @@ func TestLevel_Reopen(t *testing.T) {
 		// Get level info before closing
 		levels := db.levels.Load()
 		level1 := (*levels)[0]
-		sstables := level1.sstables.Load()
+		sstables := level1.SSTables()
 		if sstables == nil {
 			t.Fatalf("No SSTables found in level 1 before closing")
 		}
-		originalSSTableCount := len(*sstables)
+		originalSSTableCount := len(sstables)
 		originalSize := level1.getSize()
 
 		t.Logf("Before closing: Level 1 has %d SSTables and size %d", originalSSTableCount, originalSize)
@@ -288,14 +280,10 @@ func TestLevel_Reopen(t *testing.T) {
 }
 
 func TestLevel_SizeMethods(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_level_size_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)
@@ -380,14 +368,10 @@ func TestLevel_SizeMethods(t *testing.T) {
 }
 
 func TestLevel_ErrorHandling(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_level_error_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a log channel
 	logChan := make(chan string, 100)

@@ -74,7 +74,7 @@ const (
 	DefaultBloomFilterProbability      = 0.01                   // Default probability for Bloom filter
 	DefaultWALAppendRetry              = 10                     // Default number of retries for WAL append
 	DefaultWALAppendBackoff            = 128 * time.Microsecond // Default backoff duration for WAL append
-
+	DefaultSSTableBTreeOrder           = 10                     // Default order of the B-tree for SSTables
 )
 
 // Options represents the configuration options for Wildcat
@@ -88,7 +88,6 @@ type Options struct {
 	BlockManagerLRUSize        int           // Size of the LRU cache for block managers
 	BlockManagerLRUEvictRatio  float64       // Eviction ratio for the LRU cache
 	BlockManagerLRUAccesWeight float64       // Access weight for the LRU cache
-	BlockSetSize               int64         // Amount of entries per klog block (in bytes)
 	Permission                 os.FileMode   // Permission for created files
 	LogChannel                 chan string   // Channel for logging
 	BloomFilter                bool          // Enable Bloom filter for SSTables
@@ -104,6 +103,7 @@ type Options struct {
 	BloomFilterFPR             float64       // False positive rate for Bloom filter
 	WalAppendRetry             int           // Number of retries for WAL append
 	WalAppendBackoff           time.Duration // Backoff duration for WAL append
+	SSTableBTreeOrder          int           // Order of the B-tree for SSTables
 }
 
 // DB represents the main Wildcat structure
@@ -275,10 +275,6 @@ func (opts *Options) setDefaults() {
 		opts.LevelMultiplier = DefaultLevelMultiplier
 	}
 
-	if opts.BlockSetSize <= 0 {
-		opts.BlockSetSize = DefaultBlockSetSize
-	}
-
 	if opts.Permission == 0 {
 		opts.Permission = DefaultPermission
 	}
@@ -345,6 +341,10 @@ func (opts *Options) setDefaults() {
 
 	if opts.BlockManagerLRUAccesWeight <= 0 {
 		opts.BlockManagerLRUAccesWeight = DefaultBlockManagerLRUAccessWeight
+	}
+
+	if opts.SSTableBTreeOrder <= 0 {
+		opts.SSTableBTreeOrder = DefaultSSTableBTreeOrder
 	}
 
 }
@@ -448,8 +448,6 @@ func (db *DB) reinstate() error {
 	}
 
 	// Global transaction map to track transactions across all WAL files
-	// We'll organize this as a map of transaction ID to a slice of transaction entries
-	// This helps preserve the order of operations within a transaction
 	txnTimeline := make(map[int64][]*Txn)
 	var totalEntries int
 
@@ -530,7 +528,6 @@ func (db *DB) reinstate() error {
 	}
 
 	// Now consolidate the transaction timeline into the final transaction state
-	// Each operation should be applied in order, and the last operation for a key wins
 	globalTxnMap := make(map[int64]*Txn)
 
 	for txnID, txnEntries := range txnTimeline {
@@ -543,9 +540,6 @@ func (db *DB) reinstate() error {
 			Committed: false,
 			db:        db,
 		}
-
-		// Track the status of each key to determine the final state
-		keyStates := make(map[string]string) // Map of key to its current state ("write", "delete", or "read")
 
 		// Apply transactions in chronological order
 		for _, entry := range txnEntries {
@@ -562,7 +556,6 @@ func (db *DB) reinstate() error {
 			// Process writes - newer operations override older ones
 			for key, value := range entry.WriteSet {
 				finalTxn.WriteSet[key] = value
-				keyStates[key] = "write" // Mark as written
 				// If it was previously deleted, remove it from delete set
 				delete(finalTxn.DeleteSet, key)
 			}
@@ -571,7 +564,6 @@ func (db *DB) reinstate() error {
 			for key := range entry.DeleteSet {
 				delete(finalTxn.WriteSet, key) // Remove from write set
 				finalTxn.DeleteSet[key] = true
-				keyStates[key] = "delete" // Mark as deleted
 			}
 
 			// Process reads - always keep the latest read timestamp
@@ -580,7 +572,6 @@ func (db *DB) reinstate() error {
 				if ts, exists := finalTxn.ReadSet[key]; !exists || timestamp > ts {
 					finalTxn.ReadSet[key] = timestamp
 				}
-				// Reads don't change the write/delete status
 			}
 		}
 
@@ -594,7 +585,8 @@ func (db *DB) reinstate() error {
 		globalTxnMap[txnID] = finalTxn
 	}
 
-	// Now create immutable memtables for all but the last WAL
+	// Create immutable memtables for all but the last WAL
+	// and include committed transactions in them
 	for i, walFile := range walFiles[:len(walFiles)-1] {
 		walPath := fmt.Sprintf("%s%s", db.opts.Directory, walFile)
 
@@ -606,8 +598,9 @@ func (db *DB) reinstate() error {
 			db: db,
 		}
 
-		// For immutable memtables, we'll apply all transactions that were committed
-		populateMemtableFromTxns(immutableMemt, globalTxnMap, true)
+		// For immutable memtables, include committed transactions
+		// This ensures that data is available for reading even before flushing completes
+		populateMemtableFromTxns(immutableMemt, globalTxnMap, false) // false = only committed txns
 
 		// Enqueue the memtable for flushing
 		db.flusher.enqueueMemtable(immutableMemt)
@@ -644,7 +637,7 @@ func (db *DB) reinstate() error {
 	})
 
 	// Populate the active memtable with all committed transactions
-	populateMemtableFromTxns(activeMemt, globalTxnMap, false)
+	populateMemtableFromTxns(activeMemt, globalTxnMap, false) // false = only committed txns
 
 	// Store the active memtable
 	db.memtable.Store(activeMemt)
@@ -718,7 +711,7 @@ func populateMemtableFromTxns(memt *Memtable, txnMap map[int64]*Txn, includeUnco
 		txnSlice = append(txnSlice, txnWithID{id, txn})
 	}
 
-	// Sort by timestamp
+	// Sort by timestamp to ensure proper ordering
 	sort.Slice(txnSlice, func(i, j int) bool {
 		return txnSlice[i].txn.Timestamp < txnSlice[j].txn.Timestamp
 	})
@@ -726,18 +719,27 @@ func populateMemtableFromTxns(memt *Memtable, txnMap map[int64]*Txn, includeUnco
 	for _, t := range txnSlice {
 		txn := t.txn
 
-		// Skip uncommitted transactions unless explicitly requested
-		if !txn.Committed && !includeUncommitted {
+		// For immutable memtables, we should include ALL committed transactions
+		// For active memtables, we include committed transactions but not uncommitted ones
+		shouldInclude := false
+		if txn.Committed {
+			shouldInclude = true
+			committedCount++
+		} else if includeUncommitted {
+			shouldInclude = true
 			uncommittedCount++
-			continue
+		} else {
+			uncommittedCount++
 		}
 
-		committedCount++
+		if !shouldInclude {
+			continue
+		}
 
 		// Process all keys in this transaction
 		// Writes first
 		for key, value := range txn.WriteSet {
-			// Only update if this key wasn't deleted by this transaction
+			// Only update if this key wasn't deleted by this same transaction
 			if !txn.DeleteSet[key] {
 				keyFinalStates[key] = struct {
 					isDeleted bool
@@ -823,6 +825,59 @@ func (db *DB) ForceFlush() error {
 	})
 
 	return nil
+}
+
+// Stats returns a string with the current statistics of the Wildcat database
+func (db *DB) Stats() string {
+	if db == nil {
+		return "Database is nil"
+	}
+
+	stats := fmt.Sprintf("Wildcat DB Stats:\n")
+	stats += fmt.Sprintf("Write Buffer Size: %d bytes\n", db.opts.WriteBufferSize)
+	stats += fmt.Sprintf("Sync Option: %d\n", db.opts.SyncOption)
+	stats += fmt.Sprintf("Level Count: %d\n", db.opts.LevelCount)
+	stats += fmt.Sprintf("Bloom Filter Enabled: %t\n", db.opts.BloomFilter)
+	stats += fmt.Sprintf("Max Compaction Concurrency: %d\n", db.opts.MaxCompactionConcurrency)
+
+	stats += fmt.Sprintf("Compaction Cooldown Period: %s\n", db.opts.CompactionCooldownPeriod)
+	stats += fmt.Sprintf("Compaction Batch Size: %d\n", db.opts.CompactionBatchSize)
+	stats += fmt.Sprintf("Compaction Size Ratio: %.2f\n", db.opts.CompactionSizeRatio)
+	stats += fmt.Sprintf("Compaction Size Threshold: %d\n", db.opts.CompactionSizeThreshold)
+	stats += fmt.Sprintf("Compaction Score Size Weight: %.2f\n", db.opts.CompactionScoreSizeWeight)
+	stats += fmt.Sprintf("Compaction Score Count Weight: %.2f\n", db.opts.CompactionScoreCountWeight)
+	stats += fmt.Sprintf("Flusher Ticker Interval: %s\n", db.opts.FlusherTickerInterval)
+	stats += fmt.Sprintf("Compactor Ticker Interval: %s\n", db.opts.CompactorTickerInterval)
+	stats += fmt.Sprintf("Bloom Filter False Positive Rate: %.2f\n", db.opts.BloomFilterFPR)
+	stats += fmt.Sprintf("WAL Append Retry: %d\n", db.opts.WalAppendRetry)
+	stats += fmt.Sprintf("WAL Append Backoff: %s\n", db.opts.WalAppendBackoff)
+	stats += fmt.Sprintf("SSTable B-Tree Order: %d\n", db.opts.SSTableBTreeOrder)
+	stats += fmt.Sprintf("Block Manager LRU Size: %d\n", db.opts.BlockManagerLRUSize)
+	stats += fmt.Sprintf("Block Manager LRU Evict Ratio: %.2f\n", db.opts.BlockManagerLRUEvictRatio)
+	stats += fmt.Sprintf("Block Manager LRU Access Weight: %.2f\n", db.opts.BlockManagerLRUAccesWeight)
+	stats += fmt.Sprintf("ID Generator State:\n")
+	stats += fmt.Sprintf("  Last SST ID: %d\n", db.idgs.lastSstID)
+	stats += fmt.Sprintf("  Last WAL ID: %d\n", db.idgs.lastWalID)
+	stats += fmt.Sprintf("  Last TXN ID: %d\n", db.idgs.lastTxnID)
+	stats += fmt.Sprintf("Active Memtable Size: %d bytes\n", atomic.LoadInt64(&db.memtable.Load().(*Memtable).size))
+	stats += fmt.Sprintf("Active Memtable Entries: %d\n", db.memtable.Load().(*Memtable).skiplist.Count(time.Now().UnixNano()+10000000000))
+	stats += fmt.Sprintf("Active Transactions: %d\n", len(*db.txns.Load()))
+	stats += fmt.Sprintf("Oldest Active Read Timestamp: %d\n", db.oldestActiveRead)
+	stats += fmt.Sprintf("Total WAL Files: %d\n", len(db.flusher.immutable.List()))
+
+	sstables := 0
+
+	levels := db.levels.Load()
+	if levels != nil {
+		for _, level := range *levels {
+
+			sstables += len(level.SSTables())
+		}
+	}
+
+	stats += fmt.Sprintf("Total SSTables: %d\n", sstables)
+
+	return stats
 }
 
 // loadState loads the ID generator state from a file

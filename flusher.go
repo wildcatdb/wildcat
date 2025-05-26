@@ -20,6 +20,7 @@ import (
 	"github.com/guycipher/wildcat/blockmanager"
 	"github.com/guycipher/wildcat/queue"
 	"github.com/guycipher/wildcat/skiplist"
+	"github.com/guycipher/wildcat/tree"
 	"os"
 	"sync/atomic"
 	"time"
@@ -27,9 +28,10 @@ import (
 
 // Flusher is responsible for queuing and flushing memtables to disk
 type Flusher struct {
-	db        *DB          // The db instance
-	immutable *queue.Queue // Immutable queue for memtables
-	swapping  int32        // Atomic flag indicating if the flusher is swapping
+	db        *DB                      // The db instance
+	immutable *queue.Queue             // Immutable queue for memtables
+	flushing  atomic.Pointer[Memtable] // Atomic pointer to the current flushing memtable
+	swapping  int32                    // Atomic flag indicating if the flusher is swapping
 }
 
 // newFlusher creates a new Flusher instance
@@ -102,6 +104,9 @@ func (flusher *Flusher) backgroundProcess() {
 
 			flusher.db.log(fmt.Sprintf("Flusher: flushing immutable memtable %s", immutableMemt.(*Memtable).wal.path))
 
+			// Set the flushing memtable
+			flusher.flushing.Store(immutableMemt.(*Memtable))
+
 			// Flush the immutable memtable to disk
 			err := flusher.flushMemtable(immutableMemt.(*Memtable))
 			if err != nil {
@@ -162,6 +167,7 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 	}
 
 	if flusher.db.opts.BloomFilter {
+
 		// Create a bloom filter for the SSTable
 		sstable.BloomFilter, err = memt.createBloomFilter(int64(entryCount))
 		if err != nil {
@@ -171,26 +177,17 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 
 	}
 
-	// Encode metadata
-	sstableData, err := sstable.serializeSSTable()
+	t, err := tree.Open(klogBm, flusher.db.opts.SSTableBTreeOrder, sstable)
 	if err != nil {
-		return fmt.Errorf("failed to serialize SSTable: %w", err)
-	}
-
-	// Write first block to KLog
-	_, err = klogBm.Append(sstableData)
-	if err != nil {
-		return fmt.Errorf("failed to write KLog: %w", err)
-	}
-
-	blockset := &BlockSet{
-		Entries: make([]*KLogEntry, 0),
-		Size:    0,
+		return fmt.Errorf("failed to create BTree: %w", err)
 	}
 
 	// Use the maximum possible timestamp to make sure we get ALL versions
 	// of keys during iteration, preserving their original transaction timestamps
-	iter := memt.skiplist.NewIterator(nil, maxPossibleTs)
+	iter, err := memt.skiplist.NewIterator(nil, maxPossibleTs)
+	if err != nil {
+		return fmt.Errorf("failed to create iterator for flush: %w", err)
+	}
 
 	flusher.db.log(fmt.Sprintf("Starting to flush memtable to SSTable %d", sstable.Id))
 
@@ -209,10 +206,12 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 				ValueBlockID: -1, // Special marker for deletion
 			}
 
-			blockset.Entries = append(blockset.Entries, klogEntry)
-			blockset.Size += int64(len(key))
+			err = t.Put(key, klogEntry) // Insert deletion marker into B-tree
+			if err != nil {
+				return fmt.Errorf("failed to insert deletion marker into B-tree: %w", err)
+			}
 		} else {
-			// Normal entry - handle as before
+			// Viewable value, write it to the VLog
 			id, err := vlogBm.Append(value[:])
 			if err != nil {
 				return fmt.Errorf("failed to write VLog: %w", err)
@@ -224,41 +223,11 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 				ValueBlockID: id,
 			}
 
-			blockset.Entries = append(blockset.Entries, klogEntry)
-			blockset.Size += int64(len(key) + len(value))
-		}
-
-		// Check if we need to flush this blockset
-		if blockset.Size >= flusher.db.opts.BlockSetSize {
-			// Write the blockset to KLog
-			blocksetData, err := blockset.serializeBlockSet()
+			// Insert the KLog entry into the B-tree
+			err = t.Put(key, klogEntry)
 			if err != nil {
-				return fmt.Errorf("failed to serialize BlockSet: %w", err)
+				return fmt.Errorf("failed to insert KLog entry into B-tree: %w", err)
 			}
-
-			_, err = klogBm.Append(blocksetData)
-			if err != nil {
-				return fmt.Errorf("failed to write BlockSet to KLog: %w", err)
-			}
-
-			// Reset the blockset for next iteration
-			blockset = &BlockSet{
-				Entries: make([]*KLogEntry, 0),
-				Size:    0,
-			}
-		}
-	}
-
-	// Write any remaining blockset to KLog
-	if len(blockset.Entries) > 0 {
-		blocksetData, err := blockset.serializeBlockSet()
-		if err != nil {
-			return fmt.Errorf("failed to serialize BlockSet: %w", err)
-		}
-
-		_, err = klogBm.Append(blocksetData)
-		if err != nil {
-			return fmt.Errorf("failed to write BlockSet to KLog: %w", err)
 		}
 
 	}

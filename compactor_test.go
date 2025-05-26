@@ -25,14 +25,10 @@ import (
 )
 
 func TestCompactor_Basic(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_compactor_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a test DB with a small write buffer to force flushing
 	opts := &Options{
@@ -151,14 +147,10 @@ func TestCompactor_Basic(t *testing.T) {
 }
 
 func TestCompactor_LeveledCompaction(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_leveled_compaction_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a test DB with smaller sizes to trigger compactions
 	opts := &Options{
@@ -286,14 +278,10 @@ func TestCompactor_LeveledCompaction(t *testing.T) {
 }
 
 func TestCompactor_SizeTieredCompaction(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_size_tiered_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a test DB with settings to trigger size-tiered compactions
 	opts := &Options{
@@ -443,14 +431,10 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 }
 
 func TestCompactor_CompactionQueue(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_compaction_queue_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a test DB
 	opts := &Options{
@@ -593,14 +577,10 @@ func TestCompactor_CompactionQueue(t *testing.T) {
 }
 
 func TestCompactor_ConcurrentCompactions(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_concurrent_compaction_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create a test DB with multiple compaction concurrency
 	opts := &Options{

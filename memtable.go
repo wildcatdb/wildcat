@@ -159,7 +159,10 @@ func (memtable *Memtable) replay(activeTxns *[]*Txn) error {
 // Creates a bloom filter from skiplist
 func (memtable *Memtable) createBloomFilter(entries int64) (*bloomfilter.BloomFilter, error) {
 	maxPossibleTs := time.Now().UnixNano() + 10000000000 // Far in the future
-	iter := memtable.skiplist.NewIterator(nil, maxPossibleTs)
+	iter, err := memtable.skiplist.NewIterator(nil, maxPossibleTs)
+	if err != nil {
+		return nil, err
+	}
 
 	bf, err := bloomfilter.New(uint(entries), memtable.db.opts.BloomFilterFPR)
 	if err != nil {

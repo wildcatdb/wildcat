@@ -39,5 +39,8 @@ jobs:
       - name: Run skiplist tests
         run: go test ./skiplist -v
 
+      - name: Run btree tests
+        run: go test ./tree -v
+
       - name: Run core tests
         run: go test -v

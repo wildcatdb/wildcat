@@ -135,54 +135,6 @@ func TestTxnSerialization(t *testing.T) {
 	// We don't compare mutex as it's not easily comparable
 }
 
-// TestBlockSetSerialization tests the serialization and deserialization of BlockSet
-func TestBlockSetSerialization(t *testing.T) {
-	// Create a test block set
-	original := &BlockSet{
-		Entries: []*KLogEntry{
-			{Key: []byte("key1"), ValueBlockID: 1, Timestamp: 1000},
-			{Key: []byte("key2"), ValueBlockID: 2, Timestamp: 2000},
-			{Key: []byte("key3"), ValueBlockID: 3, Timestamp: 3000},
-		},
-		Size: 12345,
-	}
-
-	// Serialize the block set
-	data, err := original.serializeBlockSet()
-	if err != nil {
-		t.Fatalf("Failed to serialize block set: %v", err)
-	}
-
-	// Deserialize the block set
-	result := &BlockSet{}
-	err = result.deserializeBlockSet(data)
-	if err != nil {
-		t.Fatalf("Failed to deserialize block set: %v", err)
-	}
-
-	// Compare the original and deserialized block set
-	if original.Size != result.Size {
-		t.Errorf("Size mismatch: expected %d, got %d", original.Size, result.Size)
-	}
-
-	if len(original.Entries) != len(result.Entries) {
-		t.Errorf("Entries length mismatch: expected %d, got %d", len(original.Entries), len(result.Entries))
-	} else {
-		for i, entry := range original.Entries {
-			resultEntry := result.Entries[i]
-			if !bytes.Equal(entry.Key, resultEntry.Key) {
-				t.Errorf("Entry %d Key mismatch: expected %v, got %v", i, entry.Key, resultEntry.Key)
-			}
-			if entry.ValueBlockID != resultEntry.ValueBlockID {
-				t.Errorf("Entry %d Value mismatch: expected %v, got %v", i, entry.ValueBlockID, resultEntry.ValueBlockID)
-			}
-			if entry.Timestamp != resultEntry.Timestamp {
-				t.Errorf("Entry %d Timestamp mismatch: expected %d, got %d", i, entry.Timestamp, resultEntry.Timestamp)
-			}
-		}
-	}
-}
-
 // TestSSTableSerializationError tests error handling in SSTable serialization
 func TestSSTableSerializationError(t *testing.T) {
 	// Create an invalid SSTable that would cause serialization to fail
@@ -201,16 +153,6 @@ func TestTxnSerializationError(t *testing.T) {
 	// Test deserialize with empty data
 	txn := &Txn{}
 	err := txn.deserializeTransaction([]byte{})
-	if err == nil {
-		t.Errorf("Expected error when deserializing empty data, got nil")
-	}
-}
-
-// TestBlockSetSerializationError tests error handling in BlockSet serialization
-func TestBlockSetSerializationError(t *testing.T) {
-	// Test deserialize with empty data
-	bs := &BlockSet{}
-	err := bs.deserializeBlockSet([]byte{})
 	if err == nil {
 		t.Errorf("Expected error when deserializing empty data, got nil")
 	}
@@ -235,10 +177,4 @@ func TestCorruptedDataDeserialization(t *testing.T) {
 		t.Errorf("Expected error when deserializing corrupted Txn data, got nil")
 	}
 
-	// Test BlockSet
-	bs := &BlockSet{}
-	err = bs.deserializeBlockSet(corruptedData)
-	if err == nil {
-		t.Errorf("Expected error when deserializing corrupted BlockSet data, got nil")
-	}
 }

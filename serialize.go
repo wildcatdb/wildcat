@@ -63,28 +63,6 @@ func (txn *Txn) deserializeTransaction(data []byte) error {
 	return nil
 }
 
-// serializeBlockSet uses BSON to serialize the block set
-func (bs *BlockSet) serializeBlockSet() ([]byte, error) {
-	// Serialize the block set to BSON
-	data, err := bson.Marshal(bs)
-	if err != nil {
-		return nil, err
-	}
-
-	return data, nil
-}
-
-// deserializeBlockSet uses BSON to deserialize the block set
-func (bs *BlockSet) deserializeBlockSet(data []byte) error {
-	// Deserialize the block set from BSON
-	err := bson.Unmarshal(data, bs)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 // serializeIDGeneratorState uses BSON to serialize the ID generator state
 func (idgs *IDGeneratorState) serializeIDGeneratorState() ([]byte, error) {
 	// Serialize the IDGeneratorState to BSON
