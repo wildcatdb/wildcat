@@ -429,6 +429,53 @@ stats := db.Stats()
 fmt.Println(stats)
 ```
 
+**Output example**
+```bash
+┌───────────────────────────────────────────────────────────────────────────┐
+│ Wildcat DB Stats and Configuration                                        │
+├───────────────────────────────────────────────────────────────────────────┤
+│ Write Buffer Size          : 25                                           │
+│ Sync Option                : 1                                            │
+│ Level Count                : 6                                            │
+│ Bloom Filter Enabled       : false                                        │
+│ Max Compaction Concurrency : 4                                            │
+│ Compaction Cooldown        : 5s                                           │
+│ Compaction Batch Size      : 8                                            │
+│ Compaction Size Ratio      : 1.1                                          │
+│ Compaction Threshold       : 8                                            │
+│ Score Size Weight          : 0.8                                          │
+│ Score Count Weight         : 0.2                                          │
+│ Flusher Interval           : 1ms                                          │
+│ Compactor Interval         : 250ms                                        │
+│ Bloom FPR                  : 0.01                                         │
+│ WAL Retry                  : 10                                           │
+│ WAL Backoff                : 128µs                                        │
+│ SSTable B-Tree Order       : 10                                           │
+│ LRU Size                   : 1024                                         │
+│ LRU Evict Ratio            : 0.2                                          │
+│ LRU Access Weight          : 0.8                                          │
+│ File Version               : 1                                            │
+│ Magic Number               : 1464421444                                   │
+│ Directory                  : /tmp/db_merge_iterator_large_test1776741552/ │
+├───────────────────────────────────────────────────────────────────────────┤
+│ ID Generator State                                                        │
+├───────────────────────────────────────────────────────────────────────────┤
+│ Last SST ID                : 0                                            │
+│ Last WAL ID                : 0                                            │
+│ Last TXN ID                : 0                                            │
+├───────────────────────────────────────────────────────────────────────────┤
+│ Runtime Statistics                                                        │
+├───────────────────────────────────────────────────────────────────────────┤
+│ Active Memtable Size       : 0                                            │
+│ Active Memtable Entries    : 0                                            │
+│ Active Transactions        : 20                                           │
+│ Oldest Read Timestamp      : 0                                            │
+│ WAL Files                  : 4                                            │
+│ Total SSTables             : 5                                            │
+│ Total Entries              : 18                                           │
+└───────────────────────────────────────────────────────────────────────────┘
+```
+
 This returns detailed information including
 - Configuration settings and tuning parameters
 - Active memtable size and entry count

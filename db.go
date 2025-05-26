@@ -28,6 +28,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 type SyncOption int
@@ -174,6 +175,7 @@ func Open(opts *Options) (*DB, error) {
 
 	if _, err := os.Stat(db.opts.Directory); os.IsNotExist(err) {
 		db.log(fmt.Sprintf("Directory %s does not exist, creating it...", db.opts.Directory))
+
 		// Create the directory if it does not exist
 		if err := os.MkdirAll(db.opts.Directory, db.opts.Permission); err != nil {
 			return nil, fmt.Errorf("failed to create directory: %w", err)
@@ -827,57 +829,183 @@ func (db *DB) ForceFlush() error {
 	return nil
 }
 
-// Stats returns a string with the current statistics of the Wildcat database
-func (db *DB) Stats() string {
+// totalEntries returns the total number of entries in the database,
+func (db *DB) totalEntries() int64 {
 	if db == nil {
-		return "Database is nil"
+		return 0
 	}
 
-	stats := fmt.Sprintf("Wildcat DB Stats:\n")
-	stats += fmt.Sprintf("Write Buffer Size: %d bytes\n", db.opts.WriteBufferSize)
-	stats += fmt.Sprintf("Sync Option: %d\n", db.opts.SyncOption)
-	stats += fmt.Sprintf("Level Count: %d\n", db.opts.LevelCount)
-	stats += fmt.Sprintf("Bloom Filter Enabled: %t\n", db.opts.BloomFilter)
-	stats += fmt.Sprintf("Max Compaction Concurrency: %d\n", db.opts.MaxCompactionConcurrency)
+	total := int64(0)
 
-	stats += fmt.Sprintf("Compaction Cooldown Period: %s\n", db.opts.CompactionCooldownPeriod)
-	stats += fmt.Sprintf("Compaction Batch Size: %d\n", db.opts.CompactionBatchSize)
-	stats += fmt.Sprintf("Compaction Size Ratio: %.2f\n", db.opts.CompactionSizeRatio)
-	stats += fmt.Sprintf("Compaction Size Threshold: %d\n", db.opts.CompactionSizeThreshold)
-	stats += fmt.Sprintf("Compaction Score Size Weight: %.2f\n", db.opts.CompactionScoreSizeWeight)
-	stats += fmt.Sprintf("Compaction Score Count Weight: %.2f\n", db.opts.CompactionScoreCountWeight)
-	stats += fmt.Sprintf("Flusher Ticker Interval: %s\n", db.opts.FlusherTickerInterval)
-	stats += fmt.Sprintf("Compactor Ticker Interval: %s\n", db.opts.CompactorTickerInterval)
-	stats += fmt.Sprintf("Bloom Filter False Positive Rate: %.2f\n", db.opts.BloomFilterFPR)
-	stats += fmt.Sprintf("WAL Append Retry: %d\n", db.opts.WalAppendRetry)
-	stats += fmt.Sprintf("WAL Append Backoff: %s\n", db.opts.WalAppendBackoff)
-	stats += fmt.Sprintf("SSTable B-Tree Order: %d\n", db.opts.SSTableBTreeOrder)
-	stats += fmt.Sprintf("Block Manager LRU Size: %d\n", db.opts.BlockManagerLRUSize)
-	stats += fmt.Sprintf("Block Manager LRU Evict Ratio: %.2f\n", db.opts.BlockManagerLRUEvictRatio)
-	stats += fmt.Sprintf("Block Manager LRU Access Weight: %.2f\n", db.opts.BlockManagerLRUAccesWeight)
-	stats += fmt.Sprintf("ID Generator State:\n")
-	stats += fmt.Sprintf("  Last SST ID: %d\n", db.idgs.lastSstID)
-	stats += fmt.Sprintf("  Last WAL ID: %d\n", db.idgs.lastWalID)
-	stats += fmt.Sprintf("  Last TXN ID: %d\n", db.idgs.lastTxnID)
-	stats += fmt.Sprintf("Active Memtable Size: %d bytes\n", atomic.LoadInt64(&db.memtable.Load().(*Memtable).size))
-	stats += fmt.Sprintf("Active Memtable Entries: %d\n", db.memtable.Load().(*Memtable).skiplist.Count(time.Now().UnixNano()+10000000000))
-	stats += fmt.Sprintf("Active Transactions: %d\n", len(*db.txns.Load()))
-	stats += fmt.Sprintf("Oldest Active Read Timestamp: %d\n", db.oldestActiveRead)
-	stats += fmt.Sprintf("Total WAL Files: %d\n", len(db.flusher.immutable.List()))
+	// Count entries in the active memtable
+	if activeMemt, ok := db.memtable.Load().(*Memtable); ok {
+		total += int64(activeMemt.skiplist.Count(time.Now().UnixNano() + 10000000000))
+	}
 
-	sstables := 0
+	// Count entries in immutable memtables
+	db.flusher.immutable.ForEach(func(item interface{}) bool {
+		if memt, ok := item.(*Memtable); ok {
+			total += int64(memt.skiplist.Count(time.Now().UnixNano() + 10000000000))
+		}
+		return true // Continue iteration
+	})
 
-	levels := db.levels.Load()
-	if levels != nil {
-		for _, level := range *levels {
-
-			sstables += len(level.SSTables())
+	for _, level := range *db.levels.Load() {
+		if level != nil {
+			for _, sstable := range level.SSTables() {
+				total += int64(sstable.EntryCount)
+			}
 		}
 	}
 
-	stats += fmt.Sprintf("Total SSTables: %d\n", sstables)
+	return total
+}
 
-	return stats
+// Stats returns a string with the current statistics of the Wildcat database
+func (db *DB) Stats() string {
+	if db == nil {
+		return "┌─────────────────────────────┐\n│   ⚠ Database is nil   │\n└─────────────────────────────┘"
+	}
+
+	type Section struct {
+		Title  string
+		Labels []string
+		Values []any
+	}
+
+	// Define sections
+	sections := []Section{
+		{
+			Title: "Wildcat DB Stats and Configuration",
+			Labels: []string{
+				"Write Buffer Size", "Sync Option", "Level Count", "Bloom Filter Enabled",
+				"Max Compaction Concurrency", "Compaction Cooldown", "Compaction Batch Size",
+				"Compaction Size Ratio", "Compaction Threshold", "Score Size Weight",
+				"Score Count Weight", "Flusher Interval", "Compactor Interval", "Bloom FPR",
+				"WAL Retry", "WAL Backoff", "SSTable B-Tree Order", "LRU Size",
+				"LRU Evict Ratio", "LRU Access Weight",
+				"File Version",
+				"Magic Number",
+				"Directory",
+			},
+			Values: []any{
+				db.opts.WriteBufferSize, db.opts.SyncOption, db.opts.LevelCount, db.opts.BloomFilter,
+				db.opts.MaxCompactionConcurrency, db.opts.CompactionCooldownPeriod, db.opts.CompactionBatchSize,
+				db.opts.CompactionSizeRatio, db.opts.CompactionSizeThreshold, db.opts.CompactionScoreSizeWeight,
+				db.opts.CompactionScoreCountWeight, db.opts.FlusherTickerInterval, db.opts.CompactorTickerInterval,
+				db.opts.BloomFilterFPR, db.opts.WalAppendRetry, db.opts.WalAppendBackoff,
+				db.opts.SSTableBTreeOrder, db.opts.BlockManagerLRUSize, db.opts.BlockManagerLRUEvictRatio,
+				db.opts.BlockManagerLRUAccesWeight,
+				blockmanager.Version,
+				blockmanager.MagicNumber,
+				db.opts.Directory,
+			},
+		},
+		{
+			Title:  "ID Generator State",
+			Labels: []string{"Last SST ID", "Last WAL ID", "Last TXN ID"},
+			Values: []any{db.idgs.lastSstID, db.idgs.lastWalID, db.idgs.lastTxnID},
+		},
+		{
+			Title: "Runtime Statistics",
+			Labels: []string{
+				"Active Memtable Size", "Active Memtable Entries", "Active Transactions",
+				"Oldest Read Timestamp", "WAL Files", "Total SSTables",
+				"Total Entries",
+			},
+			Values: []any{
+				atomic.LoadInt64(&db.memtable.Load().(*Memtable).size),
+				db.memtable.Load().(*Memtable).skiplist.Count(time.Now().UnixNano() + 10000000000),
+				len(*db.txns.Load()), db.oldestActiveRead, len(db.flusher.immutable.List()), func() int {
+					sstables := 0
+					levels := db.levels.Load()
+					if levels != nil {
+						for _, level := range *levels {
+							sstables += len(level.SSTables())
+						}
+					}
+					return sstables
+				}(),
+				db.totalEntries(),
+			},
+		},
+	}
+
+	// Calculate maximum widths for proper alignment
+	maxLabelWidth, maxValueWidth := 0, 0
+	maxTitleWidth := 0
+
+	for _, section := range sections {
+		// Check title width
+		if len(section.Title) > maxTitleWidth {
+			maxTitleWidth = len(section.Title)
+		}
+
+		// Check label and value widths
+		for i, label := range section.Labels {
+			if len(label) > maxLabelWidth {
+				maxLabelWidth = len(label)
+			}
+			valueStr := fmt.Sprintf("%v", section.Values[i])
+			// Use utf8.RuneCountInString for proper Unicode character counting
+			valueRuneCount := utf8.RuneCountInString(valueStr)
+			if valueRuneCount > maxValueWidth {
+				maxValueWidth = valueRuneCount
+			}
+		}
+	}
+
+	// Calculate total content width: label + " : " + value
+	contentWidth := maxLabelWidth + 3 + maxValueWidth
+
+	// Ensure title fits
+	if maxTitleWidth > contentWidth {
+		contentWidth = maxTitleWidth
+	}
+
+	// Total table width: borders (2) + padding (2) + content
+	tableWidth := contentWidth + 4
+
+	// Create border elements
+	top := "┌" + strings.Repeat("─", tableWidth-2) + "┐"
+	divider := "├" + strings.Repeat("─", tableWidth-2) + "┤"
+	bottom := "└" + strings.Repeat("─", tableWidth-2) + "┘"
+
+	// Helper function to write data rows
+	writeRow := func(b *strings.Builder, label string, value any) {
+		valueStr := fmt.Sprintf("%v", value)
+		// Use utf8.RuneCountInString for proper Unicode character counting
+		valueRuneCount := utf8.RuneCountInString(valueStr)
+		padding := contentWidth - maxLabelWidth - 3 - valueRuneCount
+		b.WriteString(fmt.Sprintf("│ %-*s : %s%s │\n",
+			maxLabelWidth, label, valueStr, strings.Repeat(" ", padding)))
+	}
+
+	// Helper function to write title rows
+	writeTitle := func(b *strings.Builder, title string) {
+		padding := contentWidth - len(title)
+		b.WriteString(fmt.Sprintf("│ %s%s │\n", title, strings.Repeat(" ", padding)))
+	}
+
+	// Build the table
+	var b strings.Builder
+	b.WriteString(top + "\n")
+
+	for i, section := range sections {
+		if i > 0 {
+			b.WriteString(divider + "\n")
+		}
+
+		writeTitle(&b, section.Title)
+		b.WriteString(divider + "\n")
+
+		for j, label := range section.Labels {
+			writeRow(&b, label, section.Values[j])
+		}
+	}
+
+	b.WriteString(bottom)
+	return b.String()
 }
 
 // loadState loads the ID generator state from a file

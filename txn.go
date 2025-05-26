@@ -393,7 +393,6 @@ func (txn *Txn) NewIterator(asc bool) (*MergeIterator, error) {
 		}
 	}
 
-	// Pass the ascending parameter to NewMergeIterator
 	return NewMergeIterator(items, txn.Timestamp, asc)
 }
 
@@ -403,7 +402,7 @@ func (txn *Txn) NewRangeIterator(startKey []byte, endKey []byte, asc bool) (*Mer
 
 	// Active memtable
 	active := txn.db.memtable.Load().(*Memtable)
-	iter, err := active.skiplist.NewIterator(nil, txn.Timestamp)
+	iter, err := active.skiplist.NewRangeIterator(startKey, endKey, txn.Timestamp)
 	if err != nil {
 		return nil, err
 	}
@@ -489,7 +488,6 @@ func (txn *Txn) NewRangeIterator(startKey []byte, endKey []byte, asc bool) (*Mer
 		}
 	}
 
-	// Pass the ascending parameter to NewMergeIterator
 	return NewMergeIterator(items, txn.Timestamp, asc)
 }
 
@@ -499,7 +497,7 @@ func (txn *Txn) NewPrefixIterator(prefix []byte, asc bool) (*MergeIterator, erro
 
 	// Active memtable
 	active := txn.db.memtable.Load().(*Memtable)
-	iter, err := active.skiplist.NewIterator(nil, txn.Timestamp)
+	iter, err := active.skiplist.NewPrefixIterator(prefix, txn.Timestamp)
 	if err != nil {
 		return nil, err
 	}
@@ -585,7 +583,6 @@ func (txn *Txn) NewPrefixIterator(prefix []byte, asc bool) (*MergeIterator, erro
 		}
 	}
 
-	// Pass the ascending parameter to NewMergeIterator
 	return NewMergeIterator(items, txn.Timestamp, asc)
 }
 

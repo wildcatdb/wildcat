@@ -17,6 +17,7 @@ package wildcat
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"github.com/guycipher/wildcat/blockmanager"
 	"github.com/guycipher/wildcat/tree"
@@ -68,6 +69,17 @@ type compactionEntry struct {
 	key       []byte
 	value     interface{}
 	timestamp int64
+}
+
+// iterState holds the state of an iterator for compaction
+type iterState struct {
+	iter      *tree.Iterator
+	sstable   *SSTable
+	klogBm    *blockmanager.BlockManager
+	vlogBm    *blockmanager.BlockManager
+	hasNext   bool
+	nextKey   []byte
+	nextValue *KLogEntry
 }
 
 // newCompactor creates a new compactor
@@ -215,6 +227,7 @@ func (compactor *Compactor) scheduleSizeTieredCompaction(level *Level, levelNum 
 
 // scheduleLeveledCompaction schedules a leveled compaction
 func (compactor *Compactor) scheduleLeveledCompaction(level *Level, levelNum int, score float64) {
+	compactor.db.log(fmt.Sprintf("Scheduling leveled compaction for level %d with score %.2f", levelNum, score))
 	sstables := level.sstables.Load()
 	if sstables == nil || len(*sstables) == 0 {
 		return
@@ -286,6 +299,8 @@ func (compactor *Compactor) scheduleLeveledCompaction(level *Level, levelNum int
 		targetLevel: nextLevelNum,
 		inProgress:  false,
 	})
+
+	compactor.db.log(fmt.Sprintf("Scheduled leveled compaction for level %d with %d SSTables", levelNum, len(selectedTables)))
 }
 
 // executeCompactions processes pending compaction jobs
@@ -343,6 +358,8 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 	if len(sstables) == 0 {
 		return nil
 	}
+
+	compactor.db.log(fmt.Sprintf("Compacting %d SSTables from level %d to level %d", len(sstables), sourceLevel, targetLevel))
 
 	// Create a new SSTable for the target level
 	newSSTable := &SSTable{
@@ -480,17 +497,10 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 		_ = os.Remove(oldVlogPath)
 	}
 
-	return nil
-}
+	compactor.db.log(fmt.Sprintf("Compaction complete: %d SSTables merged into new SSTable %d at level %d",
+		len(sstables), newSSTable.Id, targetLevel))
 
-type iterState struct {
-	iter      *tree.Iterator
-	sstable   *SSTable
-	klogBm    *blockmanager.BlockManager
-	vlogBm    *blockmanager.BlockManager
-	hasNext   bool
-	nextKey   []byte
-	nextValue *KLogEntry
+	return nil
 }
 
 // mergeSSTables merges multiple SSTables into a new SSTable
@@ -504,8 +514,15 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 		klogPath := fmt.Sprintf("%s%s%d%s%s%d%s", compactor.db.opts.Directory, LevelPrefix, sst.Level, string(os.PathSeparator), SSTablePrefix, sst.Id, KLogExtension)
 		vlogPath := fmt.Sprintf("%s%s%d%s%s%d%s", compactor.db.opts.Directory, LevelPrefix, sst.Level, string(os.PathSeparator), SSTablePrefix, sst.Id, VLogExtension)
 
-		kbm := getOrOpenBM(compactor.db, klogPath)
-		vbm := getOrOpenBM(compactor.db, vlogPath)
+		kbm, err := getOrOpenBM(compactor.db, klogPath)
+		if err != nil {
+			return fmt.Errorf("failed to open KLog block manager: %w", err)
+		}
+
+		vbm, err := getOrOpenBM(compactor.db, vlogPath)
+		if err != nil {
+			return fmt.Errorf("failed to open VLog block manager: %w", err)
+		}
 
 		bt, err := tree.Open(kbm, compactor.db.opts.SSTableBTreeOrder, sst)
 		if err != nil {
@@ -786,19 +803,30 @@ func (compactor *Compactor) shouldCompact() bool {
 	return false
 }
 
-func getOrOpenBM(db *DB, path string) *blockmanager.BlockManager {
-	if bm, ok := db.lru.Get(path); ok {
-		return bm.(*blockmanager.BlockManager)
-	}
-	bm, err := blockmanager.Open(path, os.O_RDONLY, db.opts.Permission,
-		blockmanager.SyncOption(db.opts.SyncOption), db.opts.SyncInterval)
-	if err != nil {
-		panic(fmt.Errorf("failed to open block manager %s: %w", path, err))
-	}
-	db.lru.Put(path, bm, func(key, value interface{}) {
-		if bm, ok := value.(*blockmanager.BlockManager); ok {
-			_ = bm.Close()
+// getOrOpenBM retrieves a BlockManager from the LRU cache or opens it if not found
+func getOrOpenBM(db *DB, path string) (*blockmanager.BlockManager, error) {
+	var ok bool
+	var bmInterface interface{}
+
+	if bmInterface, ok = db.lru.Get(path); !ok {
+
+		bm, err := blockmanager.Open(path, os.O_RDONLY, db.opts.Permission,
+			blockmanager.SyncOption(db.opts.SyncOption), db.opts.SyncInterval)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open block manager: %w", err)
 		}
-	})
-	return bm
+		db.lru.Put(path, bm, func(key, value interface{}) {
+			if bm, ok := value.(*blockmanager.BlockManager); ok {
+				_ = bm.Close()
+			}
+		})
+	} else {
+		if bm, ok := bmInterface.(*blockmanager.BlockManager); ok {
+			return bm, nil
+		} else {
+			return nil, errors.New("invalid type in LRU cache")
+		}
+	}
+
+	return bmInterface.(*blockmanager.BlockManager), nil
 }

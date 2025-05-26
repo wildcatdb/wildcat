@@ -784,8 +784,6 @@ func (sl *SkipList) NewPrefixIterator(prefix []byte, readTimestamp int64) (*Pref
 // If startKey is nil, iteration starts from the beginning
 // If endKey is nil, iteration continues to the end
 func (sl *SkipList) NewRangeIterator(startKey, endKey []byte, readTimestamp int64) (*RangeIterator, error) {
-	// Very defensive range validation - only panic on clearly invalid ranges
-	// Allow edge cases like empty ranges or boundary conditions for testing
 	if startKey != nil && endKey != nil &&
 		len(startKey) > 0 && len(endKey) > 0 {
 		cmp := sl.comparator(startKey, endKey)
@@ -998,14 +996,42 @@ func (it *RangeIterator) Key() []byte {
 }
 
 func (it *RangeIterator) ToLast() {
-	// Move to the last node within the range
+	// Find the last node within the range
+	var lastValidNode *Node = nil
+
+	// Start from current position and scan forward to find last valid node
+	curr := it.current
 	for {
-		currPtr := atomic.LoadPointer(&it.current.forward[0])
+		if curr == nil {
+			break
+		}
+
+		// Check if current node is in range and has visible data
+		if it.SkipList.isInRange(curr.key, it.startKey, it.endKey) {
+			version := curr.findVisibleVersion(it.readTimestamp)
+			if version != nil && version.Type != Delete {
+				lastValidNode = curr
+			}
+		}
+
+		// Move to next node
+		currPtr := atomic.LoadPointer(&curr.forward[0])
 		next := (*Node)(currPtr)
+
+		// Stop if next node is out of range
 		if next == nil || !it.SkipList.isInRange(next.key, it.startKey, it.endKey) {
 			break
 		}
-		it.current = next
+
+		curr = next
+	}
+
+	// Set current to the last valid node found
+	if lastValidNode != nil {
+		it.current = lastValidNode
+	} else {
+		// No valid nodes in range
+		it.current = nil
 	}
 }
 
