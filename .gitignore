@@ -9,3 +9,9 @@ go.work
 go.work.sum
 .env
 .idea
+libwildcat.so
+libwildcat.h
+libwildcat.dll
+c/libwildcat.so
+c/libwildcat.h
+c/libwildcat.dll
