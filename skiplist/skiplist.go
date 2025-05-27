@@ -493,6 +493,7 @@ func (sl *SkipList) NewIterator(startKey []byte, readTimestamp int64) (*Iterator
 	}, nil
 }
 
+// ToLast moves the iterator to the last node in the skip list
 func (it *Iterator) ToLast() {
 	// Move to the last node
 	for {
@@ -505,6 +506,7 @@ func (it *Iterator) ToLast() {
 	}
 }
 
+// Valid checks if the iterator is currently pointing to a valid node
 func (it *Iterator) Valid() bool {
 	return it.current != nil
 }
@@ -582,6 +584,7 @@ func (it *Iterator) Prev() ([]byte, []byte, int64, bool) {
 	return nil, nil, 0, false
 }
 
+// Peek peek ahead without advancing the iterator
 func (it *Iterator) Peek() ([]byte, []byte, int64, bool) {
 	if it.current == nil {
 		return nil, nil, 0, false
@@ -818,6 +821,7 @@ func (sl *SkipList) NewRangeIterator(startKey, endKey []byte, readTimestamp int6
 	}, nil
 }
 
+// Key returns the current key for the prefix iterator
 func (it *PrefixIterator) Key() []byte {
 	if it.current == nil {
 		return nil
@@ -825,6 +829,7 @@ func (it *PrefixIterator) Key() []byte {
 	return it.current.key
 }
 
+// ToLast moves the prefix iterator to the last node with the matching prefix
 func (it *PrefixIterator) ToLast() {
 	// Move to the last node with the prefix
 	for {
@@ -837,6 +842,7 @@ func (it *PrefixIterator) ToLast() {
 	}
 }
 
+// Value returns the current value and timestamp for the prefix iterator
 func (it *PrefixIterator) Value() ([]byte, int64, bool) {
 	if it.current == nil {
 		return nil, 0, false
@@ -852,6 +858,7 @@ func (it *PrefixIterator) Value() ([]byte, int64, bool) {
 
 }
 
+// Valid checks if the prefix iterator is currently pointing to a valid node
 func (it *PrefixIterator) Valid() bool {
 	return it.current != nil
 }
@@ -988,6 +995,7 @@ func (it *PrefixIterator) Peek() ([]byte, []byte, int64, bool) {
 	return nil, nil, 0, false
 }
 
+// Key returns the current key of the range iterator
 func (it *RangeIterator) Key() []byte {
 	if it.current == nil {
 		return nil
@@ -995,6 +1003,7 @@ func (it *RangeIterator) Key() []byte {
 	return it.current.key
 }
 
+// ToLast moves the range iterator to the last node within the specified range
 func (it *RangeIterator) ToLast() {
 	// Find the last node within the range
 	var lastValidNode *Node = nil
@@ -1035,10 +1044,12 @@ func (it *RangeIterator) ToLast() {
 	}
 }
 
+// Valid checks if the range iterator is currently positioned at a valid node
 func (it *RangeIterator) Valid() bool {
 	return it.current != nil
 }
 
+// Value gets the current value and timestamp
 func (it *RangeIterator) Value() ([]byte, int64, bool) {
 	if it.current == nil {
 		return nil, 0, false

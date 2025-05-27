@@ -137,7 +137,7 @@ func TestBTreeNodeStructure(t *testing.T) {
 	}
 
 	// Get root node and examine its structure
-	rootNode, err := tree.loadNode(tree.rootBlockID)
+	rootNode, err := tree.loadNode(tree.metadata.RootBlockID)
 
 	if err != nil {
 		t.Fatalf("failed to load root node: %v", err)

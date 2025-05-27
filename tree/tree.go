@@ -23,21 +23,19 @@ import (
 	"sort"
 )
 
+const ReservedMetadataBlockID = 2 // Reserved block ID for metadata
+
 // BTree represents the tree.  An append only immutable B-tree implementation optimized for range and prefix iteration.
 type BTree struct {
-	blockManager BlockManager
-	rootBlockID  int64
-	order        int
-	metaBlockId  int64
-	extra        interface{}
+	blockManager BlockManager // Block manager for storing nodes
+	metadata     *Metadata    // Metadata of the B-tree
 }
 
 // Metadata represents the metadata of the B-tree
 type Metadata struct {
-	RootBlockID int64
-	Order       int
-	Version     int
-	Extra       interface{}
+	RootBlockID int64       // Block ID of the root node
+	Order       int         // Minimum degree t
+	Extra       interface{} // Extra metadata, can be any type
 }
 
 // BlockManager interface matches your existing implementation
@@ -50,9 +48,9 @@ type BlockManager interface {
 
 // Node represents a B-tree node
 type Node struct {
-	BlockID  int64
-	IsLeaf   bool
-	Keys     [][]byte
+	BlockID  int64         // BlockID in which node lives
+	IsLeaf   bool          // Is this a leaf node?
+	Keys     [][]byte      // Keys in the node, sorted
 	Values   []interface{} // Used in both leaf and internal nodes for consistency
 	Children []int64       // Block IDs of child nodes
 	Parent   int64         // Block ID of parent node (for efficient traversal)
@@ -62,15 +60,15 @@ type Node struct {
 
 // Iterator provides bidirectional iteration capabilities
 type Iterator struct {
-	btree       *BTree
-	currentNode *Node
-	currentIdx  int
+	btree       *BTree          // Reference to the B-tree instance
+	currentNode *Node           // Current node being iterated
+	currentIdx  int             // Current index within the current node
 	stack       []iteratorFrame // Stack for tree traversal
-	ascending   bool
-	startKey    []byte
-	endKey      []byte
-	prefix      []byte
-	finished    bool
+	ascending   bool            // Direction of iteration (true for ascending, false for descending)
+	startKey    []byte          // Start key for range iteration
+	endKey      []byte          // End key for range iteration
+	prefix      []byte          // Prefix for prefix iteration
+	finished    bool            // Indicates if the iterator has finished iterating
 }
 
 // iteratorFrame is used to keep track of the current node and index during iteration
@@ -87,27 +85,22 @@ func Open(blockManager BlockManager, order int, extraMeta interface{}) (*BTree, 
 
 	bt := &BTree{
 		blockManager: blockManager,
-		order:        order,
-		metaBlockId:  2, // Reserved for metadata
-		extra:        extraMeta,
 	}
 
 	// Try to load existing metadata first
-	metadata, err := bt.loadMetadata()
+	err := bt.loadMetadata()
 	if err != nil {
 		// File doesn't exist or is empty - create new tree
-		return bt.createNewTree()
+		return bt.createNewTree(extraMeta, order)
+	} else {
+		// Validate existing tree
+		if bt.metadata.Order != order {
+			return nil, fmt.Errorf("existing tree has order %d, requested %d", bt.metadata.Order, order)
+		}
 	}
-
-	// Validate existing tree
-	if metadata.Order != order {
-		return nil, fmt.Errorf("existing tree has order %d, requested %d", metadata.Order, order)
-	}
-
-	bt.rootBlockID = metadata.RootBlockID
 
 	// Verify root exists and is valid
-	_, err = bt.loadNode(bt.rootBlockID)
+	_, err = bt.loadNode(bt.metadata.RootBlockID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load existing root: %v", err)
 	}
@@ -115,7 +108,8 @@ func Open(blockManager BlockManager, order int, extraMeta interface{}) (*BTree, 
 	return bt, nil
 }
 
-func (bt *BTree) createNewTree() (*BTree, error) {
+// createNewTree initializes a new B-tree with an empty root node
+func (bt *BTree) createNewTree(extra interface{}, order int) (*BTree, error) {
 	// Create initial root node
 	root := &Node{
 		BlockID:  -1,
@@ -133,7 +127,14 @@ func (bt *BTree) createNewTree() (*BTree, error) {
 		return nil, err
 	}
 
-	bt.rootBlockID = blockID
+	bt.metadata = &Metadata{
+		RootBlockID: blockID,
+		Order:       order,
+	}
+
+	if extra != nil {
+		bt.metadata.Extra = extra // Attach extra metadata if provided
+	}
 
 	// Save metadata
 	err = bt.saveMetadata()
@@ -145,39 +146,33 @@ func (bt *BTree) createNewTree() (*BTree, error) {
 }
 
 // loadNode loads a node from the block manager
-func (bt *BTree) loadMetadata() (*Metadata, error) {
-	data, _, err := bt.blockManager.Read(bt.metaBlockId)
+func (bt *BTree) loadMetadata() error {
+	data, _, err := bt.blockManager.Read(ReservedMetadataBlockID)
 	if err != nil {
-		return nil, err // File doesn't exist or block 0 doesn't exist
+		return err // File doesn't exist or block ReservedMetadataBlockID is empty
 	}
 
 	var metadata Metadata
 	err = bson.Unmarshal(data, &metadata)
 	if err != nil {
-		return nil, err // Failed to unmarshal metadata
+		return err // Failed to unmarshal metadata
 	}
 
-	bt.extra = metadata.Extra // Attach extra metadata if needed
+	bt.metadata = &metadata
 
-	return &metadata, nil
+	return nil
 }
 
 // saveMetadata saves the metadata of the B-tree
 func (bt *BTree) saveMetadata() error {
-	metadata := Metadata{
-		RootBlockID: bt.rootBlockID,
-		Order:       bt.order,
-		Version:     1,
-		Extra:       bt.extra,
-	}
 
-	meta, err := bson.Marshal(&metadata)
+	meta, err := bson.Marshal(&bt.metadata)
 	if err != nil {
 		return err
 	}
 
 	// Save to block 0, or create it if it doesn't exist
-	_, err = bt.blockManager.Update(bt.metaBlockId, meta)
+	_, err = bt.blockManager.Update(ReservedMetadataBlockID, meta)
 	if err != nil {
 		// If update fails, try append (for first time)
 		_, err = bt.blockManager.Append(meta)
@@ -189,16 +184,16 @@ func (bt *BTree) saveMetadata() error {
 // Put adds a key-value pair to the B-tree, updates if the key already exists
 func (bt *BTree) Put(key []byte, value interface{}) error {
 
-	if bt.rootBlockID == -1 {
+	if bt.metadata.RootBlockID == -1 {
 		return errors.New("tree not initialized")
 	}
 
-	root, err := bt.loadNode(bt.rootBlockID)
+	root, err := bt.loadNode(bt.metadata.RootBlockID)
 	if err != nil {
 		return err
 	}
 
-	oldRootID := bt.rootBlockID
+	oldRootID := bt.metadata.RootBlockID
 
 	// If root is full, create new root
 	if bt.isNodeFull(root) {
@@ -207,7 +202,7 @@ func (bt *BTree) Put(key []byte, value interface{}) error {
 			IsLeaf:   false,
 			Keys:     make([][]byte, 0),
 			Values:   make([]interface{}, 0),
-			Children: []int64{bt.rootBlockID},
+			Children: []int64{bt.metadata.RootBlockID},
 			Parent:   -1,
 		}
 
@@ -217,7 +212,7 @@ func (bt *BTree) Put(key []byte, value interface{}) error {
 		}
 
 		// Update the root reference
-		bt.rootBlockID = newRootID
+		bt.metadata.RootBlockID = newRootID
 
 		// Update old root's parent
 		root.Parent = newRootID
@@ -232,20 +227,20 @@ func (bt *BTree) Put(key []byte, value interface{}) error {
 	}
 
 	// If root changed, save metadata
-	if bt.rootBlockID != oldRootID {
+	if bt.metadata.RootBlockID != oldRootID {
 		err := bt.saveMetadata()
 		if err != nil {
 			return fmt.Errorf("failed to save metadata after root change: %v", err)
 		}
 	}
 
-	return bt.insertNonFull(bt.rootBlockID, key, value)
+	return bt.insertNonFull(bt.metadata.RootBlockID, key, value)
 }
 
 // Get finds a value by key
 func (bt *BTree) Get(key []byte) (interface{}, bool, error) {
 
-	return bt.get(bt.rootBlockID, key)
+	return bt.get(bt.metadata.RootBlockID, key)
 }
 
 // RangeIterator returns an iterator for keys in the range [startKey, endKey]
@@ -519,6 +514,7 @@ func (iter *Iterator) SetDirection(ascending bool) {
 	iter.ascending = ascending
 }
 
+// Peek returns the current key and value without advancing the iterator
 func (iter *Iterator) Peek() ([]byte, interface{}, bool) {
 	if !iter.Valid() {
 		return nil, nil, false
@@ -760,6 +756,7 @@ func (iter *Iterator) HasNext() bool {
 	return iter.Valid()
 }
 
+// BTree returns the B-tree instance associated with this iterator
 func (iter *Iterator) BTree() *BTree {
 	return iter.btree
 }
@@ -858,7 +855,7 @@ func (bt *BTree) get(blockID int64, key []byte) (interface{}, bool, error) {
 
 // findLeafPosition finds the leaf node and index for a given key
 func (bt *BTree) findLeafPosition(key []byte) (*Node, int, error) {
-	node, err := bt.loadNode(bt.rootBlockID)
+	node, err := bt.loadNode(bt.metadata.RootBlockID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -877,7 +874,7 @@ func (bt *BTree) findLeafPosition(key []byte) (*Node, int, error) {
 
 // findFirstLeaf finds the leftmost (first) leaf node in the tree
 func (bt *BTree) findFirstLeaf() (*Node, error) {
-	node, err := bt.loadNode(bt.rootBlockID)
+	node, err := bt.loadNode(bt.metadata.RootBlockID)
 	if err != nil {
 		return nil, err
 	}
@@ -898,7 +895,7 @@ func (bt *BTree) findFirstLeaf() (*Node, error) {
 
 // findLastLeaf finds the rightmost (last) leaf node in the tree
 func (bt *BTree) findLastLeaf() (*Node, error) {
-	node, err := bt.loadNode(bt.rootBlockID)
+	node, err := bt.loadNode(bt.metadata.RootBlockID)
 	if err != nil {
 		return nil, err
 	}
@@ -987,7 +984,7 @@ func (bt *BTree) splitChild(parent *Node, childIdx int) error {
 		return err
 	}
 
-	mid := bt.order - 1
+	mid := bt.metadata.Order - 1
 	midKey := child.Keys[mid]
 	midValue := child.Values[mid]
 
@@ -1106,7 +1103,7 @@ func (bt *BTree) splitChild(parent *Node, childIdx int) error {
 
 // isNodeFull checks if a node is full
 func (bt *BTree) isNodeFull(node *Node) bool {
-	return len(node.Keys) >= 2*bt.order-1
+	return len(node.Keys) >= 2*bt.metadata.Order-1
 }
 
 // findKeyIndex finds the index of the key in the sorted keys slice
@@ -1166,8 +1163,10 @@ func (bt *BTree) loadNode(blockID int64) (*Node, error) {
 	return node, nil
 }
 
+// GetExtraMeta retrieves extra metadata associated with the B-tree.
+// This is set on btree creation.
 func (bt *BTree) GetExtraMeta() interface{} {
-	return bt.extra
+	return bt.metadata.Extra
 }
 
 // serializeNode converts a Node into a byte array
