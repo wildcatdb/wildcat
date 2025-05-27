@@ -19,31 +19,37 @@ package main
 #include <stdlib.h>
 #include <string.h>
 
+typedef enum {
+    SYNC_NONE = 0,
+    SYNC_ALWAYS,
+    SYNC_INTERVAL
+} sync_option_t;
+
 typedef struct {
     char* directory;
-    long writeBufferSize;
-    int syncOption;
-    long syncIntervalNs;
-    int levelCount;
-    int levelMultiplier;
-    int blockManagerLRUSize;
-    double blockManagerLRUEvictRatio;
-    double blockManagerLRUAccessWeight;
+    long write_buffer_size;
+    int sync_option;
+    long sync_interval_ns;
+    int level_count;
+    int level_multiplier;
+    int block_manager_lru_size;
+    double block_manager_lru_evict_ratio;
+    double block_manager_lru_access_weight;
     int permission;
-    int bloomFilter;
-    int maxCompactionConcurrency;
-    long compactionCooldownNs;
-    int compactionBatchSize;
-    double compactionSizeRatio;
-    int compactionSizeThreshold;
-    double compactionScoreSizeWeight;
-    double compactionScoreCountWeight;
-    long flusherIntervalNs;
-    long compactorIntervalNs;
-    double bloomFPR;
-    int walAppendRetry;
-    long walAppendBackoffNs;
-    int sstableBTreeOrder;
+    int bloom_filter;
+    int max_compaction_concurrency;
+    long compaction_cooldown_ns;
+    int compaction_batch_size;
+    double compaction_size_ratio;
+    int compaction_size_threshold;
+    double compaction_score_size_weight;
+    double compaction_score_count_weight;
+    long flusher_interval_ns;
+    long compactor_interval_ns;
+    double bloom_fpr;
+    int wal_append_retry;
+    long wal_append_backoff_ns;
+    int sstable_btree_order;
 } wildcat_opts_t;
 */
 import "C"
@@ -83,29 +89,29 @@ var (
 func fromCOptions(copts *C.wildcat_opts_t) *wildcat.Options {
 	return &wildcat.Options{
 		Directory:                  C.GoString(copts.directory),
-		WriteBufferSize:            int64(copts.writeBufferSize),
-		SyncOption:                 wildcat.SyncOption(copts.syncOption),
-		SyncInterval:               time.Duration(copts.syncIntervalNs),
-		LevelCount:                 int(copts.levelCount),
-		LevelMultiplier:            int(copts.levelMultiplier),
-		BlockManagerLRUSize:        int(copts.blockManagerLRUSize),
-		BlockManagerLRUEvictRatio:  float64(copts.blockManagerLRUEvictRatio),
-		BlockManagerLRUAccesWeight: float64(copts.blockManagerLRUAccessWeight),
+		WriteBufferSize:            int64(copts.write_buffer_size),
+		SyncOption:                 wildcat.SyncOption(copts.sync_option),
+		SyncInterval:               time.Duration(copts.sync_interval_ns),
+		LevelCount:                 int(copts.level_count),
+		LevelMultiplier:            int(copts.level_multiplier),
+		BlockManagerLRUSize:        int(copts.block_manager_lru_size),
+		BlockManagerLRUEvictRatio:  float64(copts.block_manager_lru_evict_ratio),
+		BlockManagerLRUAccesWeight: float64(copts.block_manager_lru_access_weight),
 		Permission:                 os.FileMode(copts.permission),
-		BloomFilter:                copts.bloomFilter != 0,
-		MaxCompactionConcurrency:   int(copts.maxCompactionConcurrency),
-		CompactionCooldownPeriod:   time.Duration(copts.compactionCooldownNs),
-		CompactionBatchSize:        int(copts.compactionBatchSize),
-		CompactionSizeRatio:        float64(copts.compactionSizeRatio),
-		CompactionSizeThreshold:    int(copts.compactionSizeThreshold),
-		CompactionScoreSizeWeight:  float64(copts.compactionScoreSizeWeight),
-		CompactionScoreCountWeight: float64(copts.compactionScoreCountWeight),
-		FlusherTickerInterval:      time.Duration(copts.flusherIntervalNs),
-		CompactorTickerInterval:    time.Duration(copts.compactorIntervalNs),
-		BloomFilterFPR:             float64(copts.bloomFPR),
-		WalAppendRetry:             int(copts.walAppendRetry),
-		WalAppendBackoff:           time.Duration(copts.walAppendBackoffNs),
-		SSTableBTreeOrder:          int(copts.sstableBTreeOrder),
+		BloomFilter:                copts.bloom_filter != 0,
+		MaxCompactionConcurrency:   int(copts.max_compaction_concurrency),
+		CompactionCooldownPeriod:   time.Duration(copts.compaction_cooldown_ns),
+		CompactionBatchSize:        int(copts.compaction_batch_size),
+		CompactionSizeRatio:        float64(copts.compaction_size_ratio),
+		CompactionSizeThreshold:    int(copts.compaction_size_threshold),
+		CompactionScoreSizeWeight:  float64(copts.compaction_score_size_weight),
+		CompactionScoreCountWeight: float64(copts.compaction_score_count_weight),
+		FlusherTickerInterval:      time.Duration(copts.flusher_interval_ns),
+		CompactorTickerInterval:    time.Duration(copts.compactor_interval_ns),
+		BloomFilterFPR:             float64(copts.bloom_fpr),
+		WalAppendRetry:             int(copts.wal_append_retry),
+		WalAppendBackoff:           time.Duration(copts.wal_append_backoff_ns),
+		SSTableBTreeOrder:          int(copts.sstable_btree_order),
 	}
 }
 
