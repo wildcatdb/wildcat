@@ -8,13 +8,13 @@
 Wildcat is a high-performance embedded key-value database (or storage engine) written in Go. It incorporates modern database design principles including LSM (Log-Structured Merge) tree architecture, MVCC (Multi-Version Concurrency Control), and lock-free data structures for its critical paths, along with automatic background operations to deliver excellent read/write performance with strong consistency guarantees.
 
 ## Features
-- LSM (Log-Structured Merge) tree architecture optimized for high write throughput
+- LSM (Log-Structured Merge) tree architecture optimized for write and read throughput
 - Lock-free MVCC ensures non-blocking reads and writes
 - WAL logging captures full transaction state for recovery and rehydration
 - Version-aware skip list for fast in-memory MVCC access
 - Atomic write path, safe for multithreaded use
 - Scalable design with background flusher and compactor
-- Durable and concurrent block storage, leveraging direct, offset-based file I/O (using `pread`/`pwrite`) for optimal performance and control
+- Durable and concurrent and atomic block storage, leveraging direct, offset-based file I/O (using `pread`/`pwrite`) for optimal performance and control
 - Atomic LRU for active block manager handles
 - Memtable lifecycle management and snapshot durability
 - SSTables are immutable BTree's
@@ -72,7 +72,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - Linux/macOS/Windows (64-bit)
 
 ## Basic Usage
-Wildcat supports opening multiple `wildcat.DB` instances in parallel, each operating independently in separate directories.
+Wildcat supports opening multiple `*wildcat.DB` instances in parallel, each operating independently in separate directories.
 
 ### Import
 ```go
@@ -87,11 +87,11 @@ The only required option is the database directory path.
 // Create default options
 opts := &wildcat.Options{
 Directory: "/path/to/db",
-    // Use defaults for other settings
+    // You don't need to set all options only Directory is required!
 }
 
 // Open or create a new Wildcat DB instance
-db, err := wildcat.Open(opts)
+db, err := wildcat.Open(opts) // Returns *wildcat.DB
 if err != nil {
     // Handle error
 }
@@ -159,7 +159,7 @@ opts := &wildcat.Options{
 24. **BlockManagerLRUAccesWeight** Weight for LRU access eviction. Balances how much to prioritize access frequency vs. age when deciding what to evict.
 
 ### Simple Key-Value Operations
-The easiest way to interact with Wildcat is through the Update method, which handles transactions automatically.
+The easiest way to interact with Wildcat is through the Update method, which handles transactions automatically.  This means it runs begin, commit, and rollback for you, allowing you to focus on the operations themselves.
 ```go
 // Write a value
 err := db.Update(func(txn *wildcat.Txn) error {
@@ -171,7 +171,7 @@ if err != nil {
 
 // Read a value
 var result []byte
-err = db.Update(func(txn *wildcat.Txn) error {
+err = db.View(func(txn *wildcat.Txn) error {
     var err error
     result, err = txn.Get([]byte("hello"))
     return err
@@ -345,6 +345,9 @@ err = db.View(func(txn *wildcat.Txn) error {
 
 ### Batch Operations
 You can perform multiple operations in a single transaction.
+
+> [!CAUTION]
+> Batch operations on the Wildcat engine are slower completed inside an `Update`.  It's better to use Begin->Put flow for batch writes.
 ```go
 err := db.Update(func(txn *wildcat.Txn) error {
     // Write multiple key-value pairs
@@ -358,6 +361,27 @@ err := db.Update(func(txn *wildcat.Txn) error {
     }
     return nil
 })
+```
+
+OR
+```go
+// Begin a transaction
+txn := db.Begin()
+
+// Perform batch operations
+for i := 0; i < 1000; i++ {
+    key := []byte(fmt.Sprintf("key%d", i))
+    value := []byte(fmt.Sprintf("value%d", i))
+
+    if err := txn.Put(key, value); err != nil {
+        txn.Rollback()
+        // Handle error
+        return err
+    }
+}
+
+// Commit the transaction
+err := txn.Commit()
 ```
 
 ### Transaction Recovery
@@ -486,7 +510,7 @@ This returns detailed information including
 - Compaction and flushing statistics
 
 ### Force Flushing
-You can force a flush of all memtables to disk using the `Flush` method. This is useful for ensuring durability before performing critical operations.
+You can force a flush of current and immutable memtables to disk using the `Flush` method.
 ```go
 // Force all memtables to flush to SSTables
 err := db.ForceFlush()
@@ -503,6 +527,12 @@ go build -buildmode=c-shared -o libwildcat.so wildcat_c.go
 
 ### C API
 ```c
+typedef enum {
+    SYNC_NONE = 0,
+    SYNC_ALWAYS,
+    SYNC_INTERVAL
+} sync_option_t;
+
 extern void* wildcat_open(wildcat_opts_t* opts);
 extern void wildcat_close(void* ptr);
 extern long int wildcat_begin_txn(void* ptr);
@@ -548,7 +578,7 @@ extern void wildcat_iterator_free(long unsigned int id);
 - L1–L2 use size-tiered compaction.
 - L3+ use leveled compaction by key range.
 - Concurrent compaction with configurable maximum concurrency limits.
-- Compaction score is calculated using a hybrid formula `score = (levelSize / capacity) * 0.7 + (sstableCount / threshold) * 0.3` compaction is triggered when score > 1.0
+- Compaction score is calculated using a hybrid formula `score = (levelSize / capacity) * 0.7 + (sstableCount / threshold) * 0.3` compaction is triggered when `score > 1.0`
 - Cooldown period enforced between compactions to prevent resource thrashing.
 - Compaction filters out redundant tombstones based on timestamp and overlapping range.
 - A tombstone is dropped if it's older than the oldest active read and no longer needed in higher levels.
@@ -604,7 +634,7 @@ score = (levelSize / capacity) * sizeWeight + (sstableCount / threshold) * count
 - Read and write operations are designed to be non-blocking.
 - WAL appends are retried with backoff and allow concurrent writes.
 - Flusher and Compactor run as independent goroutines, handling flushing and compaction in the background.
-- Block manager uses per-file concurrency-safe(multi writer-reader) access and is integrated with LRU for lifecycle management. It leverages direct system calls (pread/pwrite) for efficient, non-blocking disk I/O.
+- Block manager uses per-file concurrency-safe(multi writer-reader) access and is integrated with LRU for lifecycle management. It leverages direct system calls (`pread/pwrite`) for efficient, non-blocking disk I/O.
 - Writers never block; readers always see consistent, committed snapshots.
 - No uncommitted state ever surfaces due to internal synchronization and timestamp-based visibility guarantees.
 
@@ -623,7 +653,7 @@ Recovery process consists of several steps
 - **Incomplete transaction preservation** Uncommitted transactions remain accessible via GetTxn(id)
 
 #### Durability Order
-- **WAL** All writes recorded atomically with full transaction details (ReadSet, WriteSet, DeleteSet, commit status)
+- **WAL** All writes recorded atomically with full transaction details (`ReadSet`, `WriteSet`, `DeleteSet`, commit status)
 - **Memtable** Writes reflected in memory immediately upon commit
 - **SSTables** Memtables flushed to SSTables asynchronously via background flusher
 
@@ -634,7 +664,7 @@ Recovery process consists of several steps
 - **Atomic recovery** Only transactions with durable WAL entries are considered recoverable
 
 ### Block Manager
-Wildcat's block manager provides low-level, high-performance file I/O with sophisticated features.
+Wildcat's block manager provides a low-level, atomic high-performance file I/O with sophisticated features.
 
 #### Core
 - **Direct I/O** Uses pread/pwrite system calls for atomic, position-independent operations
