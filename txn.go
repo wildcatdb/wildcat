@@ -219,6 +219,7 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 	}
 
 	// Check currently flushing memtable if any
+	// We do this as depending on write buffer the flushing memory table can take a while to persist to an immutable btree (sstable)
 	fmem := txn.db.flusher.flushing.Load()
 	if fmem != nil {
 		val, ts, ok = fmem.skiplist.Get(key, txn.Timestamp)
@@ -231,7 +232,7 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 	// Check immutable memtables
 	txn.db.flusher.immutable.ForEach(func(item interface{}) bool {
 		memt := item.(*Memtable)
-		val, ts, ok := memt.skiplist.Get(key, txn.Timestamp)
+		val, ts, ok = memt.skiplist.Get(key, txn.Timestamp)
 		if ok && ts <= txn.Timestamp && ts > bestTimestamp {
 			bestValue = val
 			bestTimestamp = ts
@@ -250,7 +251,7 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 
 			// Check all SSTables in this level
 			for _, sstable := range *sstables {
-				val, ts := sstable.get(key, txn.Timestamp)
+				val, ts = sstable.get(key, txn.Timestamp)
 
 				if ts == 0 {
 					continue // Key not found in this SSTable or timestamp not visible

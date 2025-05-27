@@ -18,6 +18,7 @@ package skiplist
 import (
 	"bytes"
 	"fmt"
+	"math/rand"
 	"sync"
 	"testing"
 	"time"
@@ -1262,6 +1263,44 @@ func BenchmarkSkipListPut(b *testing.B) {
 		value := []byte(fmt.Sprintf("value-%d", i))
 		sl.Put(key, value, now+int64(i))
 	}
+}
+
+func BenchmarkSkipListParallelWrites(b *testing.B) {
+	sl := New()
+	now := time.Now().UnixNano()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for i := 0; pb.Next(); i++ {
+			key := []byte(fmt.Sprintf("key-%d", i))
+			value := []byte(fmt.Sprintf("value-%d", i))
+			sl.Put(key, value, now+int64(i))
+		}
+	})
+}
+
+func BenchmarkSkipListParallelGets(b *testing.B) {
+	sl := New()
+	now := time.Now().UnixNano()
+
+	// Prepopulate the SkipList with keys and values
+	numKeys := 1000
+	for i := 0; i < numKeys; i++ {
+		key := []byte(fmt.Sprintf("key-%d", i))
+		value := []byte(fmt.Sprintf("value-%d", i))
+		sl.Put(key, value, now+int64(i))
+	}
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+		for pb.Next() {
+			// Generate a random key to fetch
+			i := rng.Intn(numKeys)
+			key := []byte(fmt.Sprintf("key-%d", i))
+			_, _, _ = sl.Get(key, now+int64(numKeys))
+		}
+	})
 }
 
 func BenchmarkSkipListGet(b *testing.B) {
