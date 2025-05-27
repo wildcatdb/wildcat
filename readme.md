@@ -30,6 +30,11 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - Tombstone-aware compaction with retention based on active transaction windows
 - Transaction recovery with incomplete transactions are preserved and accessible after crashes
 
+## Overview
+<div>
+    <h1 align="left"><img width="428" src="artwork/arch-diagram.png"></h1>
+</div>
+
 ## Table of Contents
 - [Version and Compatibility](#version-and-compatibility)
 - [Basic Usage](#basic-usage)
