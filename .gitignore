@@ -15,3 +15,5 @@ libwildcat.dll
 c/libwildcat.so
 c/libwildcat.h
 c/libwildcat.dll
+c/wildcat_example
+c/wildcat_example.exe

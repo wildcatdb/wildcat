@@ -6,7 +6,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-// https://www.mozilla.org/en-US/MPL/2.0/
+// https://www.mozilla.org/en/US/MPL/2.0/
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -75,15 +75,7 @@ var (
 	dbMu      sync.Mutex
 )
 
-// store txn info per DB
-type txnHandle struct {
-	db  *wildcat.DB
-	txn *wildcat.Txn
-}
-
-var (
-	txnMap = sync.Map{} // map[int64]*txnHandle
-)
+// Removed txnHandle struct and txnMap - no longer needed!
 
 type iteratorHandle struct {
 	iter  *wildcat.MergeIterator
@@ -100,8 +92,6 @@ var (
 
 // Register a database and return its handle ID
 func registerDB(db *wildcat.DB) uint64 {
-	dbMu.Lock()
-	defer dbMu.Unlock()
 	dbCounter++
 	dbMap.Store(dbCounter, db)
 	return dbCounter
@@ -182,18 +172,25 @@ func wildcat_begin_txn(handle C.ulong) C.long {
 		return -1
 	}
 	txn := db.Begin()
-	txnMap.Store(txn.Id, &txnHandle{db: db, txn: txn})
 	return C.long(txn.Id)
 }
 
 //export wildcat_txn_put
-func wildcat_txn_put(txnId C.long, key *C.char, val *C.char) C.int {
-	h, ok := txnMap.Load(int64(txnId))
-	if !ok {
+func wildcat_txn_put(handle C.ulong, txnId C.long, key *C.char, val *C.char) C.int {
+	db := getDB(uint64(handle))
+	if db == nil {
 		return -1
 	}
-	txn := h.(*txnHandle).txn
-	err := txn.Put(C.GoBytes(unsafe.Pointer(key), C.int(C.strlen(key))),
+
+	txn, err := db.GetTxn(int64(txnId))
+	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_put: transaction not found: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
+		return -1
+	}
+
+	err = txn.Put(C.GoBytes(unsafe.Pointer(key), C.int(C.strlen(key))),
 		C.GoBytes(unsafe.Pointer(val), C.int(C.strlen(val))))
 	if err != nil {
 		cMsg := C.CString(fmt.Sprintf("wildcat_txn_put failed: %v", err))
@@ -205,12 +202,20 @@ func wildcat_txn_put(txnId C.long, key *C.char, val *C.char) C.int {
 }
 
 //export wildcat_txn_get
-func wildcat_txn_get(txnId C.long, key *C.char) *C.char {
-	h, ok := txnMap.Load(int64(txnId))
-	if !ok {
+func wildcat_txn_get(handle C.ulong, txnId C.long, key *C.char) *C.char {
+	db := getDB(uint64(handle))
+	if db == nil {
 		return nil
 	}
-	txn := h.(*txnHandle).txn
+
+	txn, err := db.GetTxn(int64(txnId))
+	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_get: transaction not found: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
+		return nil
+	}
+
 	val, err := txn.Get(C.GoBytes(unsafe.Pointer(key), C.int(C.strlen(key))))
 	if err != nil {
 		cMsg := C.CString(fmt.Sprintf("wildcat_txn_get failed: %v", err))
@@ -221,26 +226,154 @@ func wildcat_txn_get(txnId C.long, key *C.char) *C.char {
 	return C.CString(string(val))
 }
 
-//export wildcat_txn_commit
-func wildcat_txn_commit(txnId C.long) C.int {
-	h, ok := txnMap.Load(int64(txnId))
-	if !ok {
+//export wildcat_txn_delete
+func wildcat_txn_delete(handle C.ulong, txnId C.long, key *C.char) C.int {
+	db := getDB(uint64(handle))
+	if db == nil {
 		return -1
 	}
-	txn := h.(*txnHandle).txn
-	txnMap.Delete(int64(txnId))
+
+	txn, err := db.GetTxn(int64(txnId))
+	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_delete: transaction not found: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
+		return -1
+	}
+
+	err = txn.Delete(C.GoBytes(unsafe.Pointer(key), C.int(C.strlen(key))))
+	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_delete failed: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
+		return -1
+	}
+	return 0
+}
+
+//export wildcat_txn_commit
+func wildcat_txn_commit(handle C.ulong, txnId C.long) C.int {
+	db := getDB(uint64(handle))
+	if db == nil {
+		return -1
+	}
+
+	txn, err := db.GetTxn(int64(txnId))
+	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_commit: transaction not found: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
+		return -1
+	}
+
 	return boolToInt(txn.Commit() == nil)
 }
 
 //export wildcat_txn_rollback
-func wildcat_txn_rollback(txnId C.long) C.int {
-	h, ok := txnMap.Load(int64(txnId))
-	if !ok {
+func wildcat_txn_rollback(handle C.ulong, txnId C.long) C.int {
+	db := getDB(uint64(handle))
+	if db == nil {
 		return -1
 	}
-	txn := h.(*txnHandle).txn
-	txnMap.Delete(int64(txnId))
+
+	txn, err := db.GetTxn(int64(txnId))
+	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_rollback: transaction not found: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
+		return -1
+	}
+
 	return boolToInt(txn.Rollback() == nil)
+}
+
+//export wildcat_txn_free
+func wildcat_txn_free(handle C.ulong, txnId C.long) {
+	// The database handles transaction cleanup internally when
+	// commit/rollback is called, so this is essentially a no-op
+	// but we keep it for API compatibility..
+}
+
+//export wildcat_txn_new_iterator
+func wildcat_txn_new_iterator(handle C.ulong, txnId C.long, asc C.int) C.ulong {
+	db := getDB(uint64(handle))
+	if db == nil {
+		return 0
+	}
+
+	txn, err := db.GetTxn(int64(txnId))
+	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_new_iterator: transaction not found: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
+		return 0
+	}
+
+	iter, err := txn.NewIterator(asc != 0)
+	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_new_iterator failed: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
+		return 0
+	}
+	return C.ulong(registerIterator(iter))
+}
+
+//export wildcat_txn_new_range_iterator
+func wildcat_txn_new_range_iterator(handle C.ulong, txnId C.long, start, end *C.char, asc C.int) C.ulong {
+	db := getDB(uint64(handle))
+	if db == nil {
+		return 0
+	}
+
+	txn, err := db.GetTxn(int64(txnId))
+	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_new_range_iterator: transaction not found: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
+		return 0
+	}
+
+	iter, err := txn.NewRangeIterator(
+		C.GoBytes(unsafe.Pointer(start), C.int(C.strlen(start))),
+		C.GoBytes(unsafe.Pointer(end), C.int(C.strlen(end))),
+		asc != 0,
+	)
+	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_new_range_iterator failed: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
+		return 0
+	}
+	return C.ulong(registerIterator(iter))
+}
+
+//export wildcat_txn_new_prefix_iterator
+func wildcat_txn_new_prefix_iterator(handle C.ulong, txnId C.long, prefix *C.char, asc C.int) C.ulong {
+	db := getDB(uint64(handle))
+	if db == nil {
+		return 0
+	}
+
+	txn, err := db.GetTxn(int64(txnId))
+	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_new_prefix_iterator: transaction not found: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
+		return 0
+	}
+
+	iter, err := txn.NewPrefixIterator(
+		C.GoBytes(unsafe.Pointer(prefix), C.int(C.strlen(prefix))),
+		asc != 0,
+	)
+	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_new_prefix_iterator failed: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
+		return 0
+	}
+	return C.ulong(registerIterator(iter))
 }
 
 //export wildcat_stats
@@ -261,83 +394,6 @@ func wildcat_force_flush(handle C.ulong) C.int {
 	}
 	err := db.ForceFlush()
 	return boolToInt(err == nil)
-}
-
-//export wildcat_txn_delete
-func wildcat_txn_delete(txnId C.long, key *C.char) C.int {
-	h, ok := txnMap.Load(int64(txnId))
-	if !ok {
-		return -1
-	}
-	txn := h.(*txnHandle).txn
-	err := txn.Delete(C.GoBytes(unsafe.Pointer(key), C.int(C.strlen(key))))
-	if err != nil {
-		cMsg := C.CString(fmt.Sprintf("wildcat_txn_delete failed: %v", err))
-		C.print_error(cMsg)
-		C.free(unsafe.Pointer(cMsg))
-		return -1
-	}
-	return 0
-}
-
-//export wildcat_txn_free
-func wildcat_txn_free(txnId C.long) {
-	txnMap.Delete(int64(txnId))
-}
-
-//export wildcat_txn_new_iterator
-func wildcat_txn_new_iterator(txnId C.long, asc C.int) C.ulong {
-	h, ok := txnMap.Load(int64(txnId))
-	if !ok {
-		return 0
-	}
-	iter, err := h.(*txnHandle).txn.NewIterator(asc != 0)
-	if err != nil {
-		cMsg := C.CString(fmt.Sprintf("wildcat_txn_new_iterator failed: %v", err))
-		C.print_error(cMsg)
-		C.free(unsafe.Pointer(cMsg))
-		return 0
-	}
-	return C.ulong(registerIterator(iter))
-}
-
-//export wildcat_txn_new_range_iterator
-func wildcat_txn_new_range_iterator(txnId C.long, start, end *C.char, asc C.int) C.ulong {
-	h, ok := txnMap.Load(int64(txnId))
-	if !ok {
-		return 0
-	}
-	iter, err := h.(*txnHandle).txn.NewRangeIterator(
-		C.GoBytes(unsafe.Pointer(start), C.int(C.strlen(start))),
-		C.GoBytes(unsafe.Pointer(end), C.int(C.strlen(end))),
-		asc != 0,
-	)
-	if err != nil {
-		cMsg := C.CString(fmt.Sprintf("wildcat_txn_new_range_iterator failed: %v", err))
-		C.print_error(cMsg)
-		C.free(unsafe.Pointer(cMsg))
-		return 0
-	}
-	return C.ulong(registerIterator(iter))
-}
-
-//export wildcat_txn_new_prefix_iterator
-func wildcat_txn_new_prefix_iterator(txnId C.long, prefix *C.char, asc C.int) C.ulong {
-	h, ok := txnMap.Load(int64(txnId))
-	if !ok {
-		return 0
-	}
-	iter, err := h.(*txnHandle).txn.NewPrefixIterator(
-		C.GoBytes(unsafe.Pointer(prefix), C.int(C.strlen(prefix))),
-		asc != 0,
-	)
-	if err != nil {
-		cMsg := C.CString(fmt.Sprintf("wildcat_txn_new_prefix_iterator failed: %v", err))
-		C.print_error(cMsg)
-		C.free(unsafe.Pointer(cMsg))
-		return 0
-	}
-	return C.ulong(registerIterator(iter))
 }
 
 //export wildcat_txn_iterate_next

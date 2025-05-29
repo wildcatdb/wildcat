@@ -100,18 +100,18 @@ main()
     printf("Transaction started (ID: %ld)\n", txn_id);
 
     /* Put operations */
-    if (wildcat_txn_put(txn_id, "hello", "world") != 0) {
+    if (wildcat_txn_put((unsigned long)db_handle, txn_id, "hello", "world") != 0) {
         fprintf(stderr, "Failed to put hello->world\n");
-        (void)wildcat_txn_rollback(txn_id);
+        (void)wildcat_txn_rollback((unsigned long)db_handle,txn_id);
         (void)wildcat_close(db_handle);
         (void)cleanup_directory(db_path);
         return 1;
     }
     printf("Put: hello -> world\n");
 
-    if (wildcat_txn_put(txn_id, "foo", "bar") != 0) {
+    if (wildcat_txn_put((unsigned long)db_handle,txn_id, "foo", "bar") != 0) {
         fprintf(stderr, "Failed to put foo->bar\n");
-        (void)wildcat_txn_rollback(txn_id);
+        (void)wildcat_txn_rollback((unsigned long)db_handle,txn_id);
         (void)wildcat_close(db_handle);
         (void)cleanup_directory(db_path);
         return 1;
@@ -119,7 +119,7 @@ main()
     printf("Put: foo -> bar\n");
 
     /* Commit transaction */
-    if (wildcat_txn_commit(txn_id) != 0) {
+    if (wildcat_txn_commit((unsigned long)db_handle,txn_id) != 0) {
         fprintf(stderr, "Failed to commit transaction\n");
         (void)wildcat_close(db_handle);
         (void)cleanup_directory(db_path);
@@ -137,7 +137,7 @@ main()
         return 1;
     }
 
-    char *value = wildcat_txn_get(txn_id, "hello");
+    char *value = wildcat_txn_get((unsigned long)db_handle,txn_id, "hello");
     if (value) {
         printf("Get: hello -> %s\n", value);
         free(value);  /* Don't forget to free the returned string */
@@ -145,7 +145,7 @@ main()
         printf("Get: hello -> NOT FOUND\n");
     }
 
-    value = wildcat_txn_get(txn_id, "foo");
+    value = wildcat_txn_get((unsigned long)db_handle,txn_id, "foo");
     if (value) {
         printf("Get: foo -> %s\n", value);
         free(value);
@@ -153,7 +153,7 @@ main()
         printf("Get: foo -> NOT FOUND\n");
     }
 
-    (void)wildcat_txn_rollback(txn_id);  /* Read-only transaction, just rollback */
+    (void)wildcat_txn_rollback((unsigned long)db_handle,txn_id);  /* Read-only transaction, just rollback */
     printf("\n");
 
     /* === Batch Operations === */
@@ -174,9 +174,9 @@ main()
             snprintf(key, sizeof(key), "key%d", i);
             snprintf(val, sizeof(val), "value%d", i);
 
-            if (wildcat_txn_put(txn_id, key, val) != 0) {
+            if (wildcat_txn_put((unsigned long)db_handle,txn_id, key, val) != 0) {
                 fprintf(stderr, "Failed to put %s->%s\n", key, val);
-                wildcat_txn_rollback(txn_id);
+                wildcat_txn_rollback((unsigned long)db_handle,txn_id);
                 (void)wildcat_close(db_handle);
                 (void)cleanup_directory(db_path);
                 return 1;
@@ -185,7 +185,7 @@ main()
         }
     }
 
-    if (wildcat_txn_commit(txn_id) != 0) {
+    if (wildcat_txn_commit((unsigned long)db_handle,txn_id) != 0) {
         fprintf(stderr, "Failed to commit batch transaction\n");
         (void)wildcat_close(db_handle);
         (void)cleanup_directory(db_path);
@@ -204,10 +204,10 @@ main()
     }
 
     /* Create iterator (ascending=1) */
-    unsigned long iter_id = wildcat_txn_new_iterator(txn_id, 1);
+    unsigned long iter_id = wildcat_txn_new_iterator((unsigned long)db_handle,txn_id, 1);
     if (iter_id == 0) {
         fprintf(stderr, "Failed to create iterator\n");
-        (void)wildcat_txn_rollback(txn_id);
+        (void)wildcat_txn_rollback((unsigned long)db_handle,txn_id);
         (void)wildcat_close(db_handle);
         (void)cleanup_directory(db_path);
         return 1;
@@ -216,21 +216,20 @@ main()
     printf("Iterating through all keys:\n");
     /* The iterator is already positioned at the first element after creation */
     /* Check if it's valid and iterate */
-    if (wildcat_txn_iter_valid(iter_id)) {
-        do {
-            char *key = wildcat_iterator_key(iter_id);
-            char *val = wildcat_iterator_value(iter_id);
+    do {
+        char *key = wildcat_iterator_key(iter_id);
+        char *val = wildcat_iterator_value(iter_id);
 
-            if (key && val) {
-                printf("  %s -> %s\n", key, val);
-                free(key);
-                free(val);
-            }
-        } while (wildcat_txn_iterate_next(iter_id) == 0);  /* 0 means valid/success */
-    }
+        if (key && val) {
+            printf("  %s -> %s\n", key, val);
+            free(key);
+            free(val);
+        }
+    } while (wildcat_txn_iterate_next(iter_id) == 0);  /* 0 means valid/success */
+
 
     (void)wildcat_iterator_free(iter_id);
-    (void)wildcat_txn_rollback(txn_id);
+    (void)wildcat_txn_rollback((unsigned long)db_handle,txn_id);
     printf("\n");
 
     /* === Delete Operation === */
@@ -243,16 +242,16 @@ main()
         return 1;
     }
 
-    if (wildcat_txn_delete(txn_id, "key5") != 0) {
+    if (wildcat_txn_delete((unsigned long)db_handle,txn_id, "key5") != 0) {
         fprintf(stderr, "Failed to delete key5\n");
-        wildcat_txn_rollback(txn_id);
+        wildcat_txn_rollback((unsigned long)db_handle,txn_id);
         (void)wildcat_close(db_handle);
         (void)cleanup_directory(db_path);
         return 1;
     }
     printf("Deleted key: key5\n");
 
-    if (wildcat_txn_commit(txn_id) != 0) {
+    if (wildcat_txn_commit((unsigned long)db_handle,txn_id) != 0) {
         fprintf(stderr, "Failed to commit delete transaction\n");
         (void)wildcat_close(db_handle);
         (void)cleanup_directory(db_path);
@@ -263,14 +262,14 @@ main()
     printf("=== Verify Deletion ===\n");
     txn_id = wildcat_begin_txn(db_handle);
     if (txn_id != -1) {
-        value = wildcat_txn_get(txn_id, "key5");
+        value = wildcat_txn_get((unsigned long)db_handle,txn_id, "key5");
         if (value == NULL) {
             printf("SUCCESS: key5 was successfully deleted\n");
         } else {
             printf("ERROR: key5 still exists with value: %s\n", value);
             free(value);
         }
-        (void)wildcat_txn_rollback(txn_id);
+        (void)wildcat_txn_rollback((unsigned long)db_handle,txn_id);
     }
     printf("\n");
 
@@ -300,7 +299,7 @@ main()
     txn_id = wildcat_begin_txn(db_handle);
     if (txn_id != -1) {
         /* Create range iterator from "key0" to "key5" (exclusive) */
-        unsigned long range_iter_id = wildcat_txn_new_range_iterator(txn_id, "key0", "key5", 1);
+        unsigned long range_iter_id = wildcat_txn_new_range_iterator((unsigned long)db_handle,txn_id, "key0", "key5", 1);
         if (range_iter_id != 0) {
             printf("Iterating through range [key0, key5):\n");
 
@@ -319,7 +318,7 @@ main()
         } else {
             printf("Failed to create range iterator\n");
         }
-        (void)wildcat_txn_rollback(txn_id);
+        (void)wildcat_txn_rollback((unsigned long)db_handle,txn_id);
     }
     printf("\n");
 
@@ -328,7 +327,7 @@ main()
     txn_id = wildcat_begin_txn(db_handle);
     if (txn_id != -1) {
         /* Create prefix iterator for keys starting with "key" */
-        unsigned long prefix_iter_id = wildcat_txn_new_prefix_iterator(txn_id, "key", 1);
+        unsigned long prefix_iter_id = wildcat_txn_new_prefix_iterator((unsigned long)db_handle,txn_id, "key", 1);
         if (prefix_iter_id != 0) {
             printf("Iterating through keys with prefix 'key':\n");
 
@@ -347,7 +346,7 @@ main()
         } else {
             printf("Failed to create prefix iterator\n");
         }
-        (void)wildcat_txn_rollback(txn_id);
+        (void)wildcat_txn_rollback((unsigned long)db_handle,txn_id);
     }
 
     /* Close database instance */
