@@ -18,6 +18,7 @@ package main
 /*
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 typedef enum {
     SYNC_NONE = 0,
@@ -51,15 +52,27 @@ typedef struct {
     long wal_append_backoff_ns;
     int sstable_btree_order;
 } wildcat_opts_t;
+
+static void print_error(const char* msg) {
+    fprintf(stderr, "WILDCAT ERROR: %s\n", msg);
+    fflush(stderr);
+}
 */
 import "C"
 
 import (
+	"fmt"
 	"github.com/wildcatdb/wildcat"
 	"os"
 	"sync"
 	"time"
 	"unsafe"
+)
+
+var (
+	dbMap     = sync.Map{} // map[uint64]*wildcat.DB
+	dbCounter uint64
+	dbMu      sync.Mutex
 )
 
 // store txn info per DB
@@ -84,6 +97,28 @@ var (
 	iterCounter uint64       // unique ID
 	iterMu      sync.Mutex
 )
+
+// Register a database and return its handle ID
+func registerDB(db *wildcat.DB) uint64 {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	dbCounter++
+	dbMap.Store(dbCounter, db)
+	return dbCounter
+}
+
+// Get database by handle ID
+func getDB(id uint64) *wildcat.DB {
+	if val, ok := dbMap.Load(id); ok {
+		return val.(*wildcat.DB)
+	}
+	return nil
+}
+
+// Remove database handle
+func removeDB(id uint64) {
+	dbMap.Delete(id)
+}
 
 // convert C options to Go Options
 func fromCOptions(copts *C.wildcat_opts_t) *wildcat.Options {
@@ -116,27 +151,36 @@ func fromCOptions(copts *C.wildcat_opts_t) *wildcat.Options {
 }
 
 //export wildcat_open
-func wildcat_open(opts *C.wildcat_opts_t) unsafe.Pointer {
+func wildcat_open(opts *C.wildcat_opts_t) C.ulong {
 	goOpts := fromCOptions(opts)
 	db, err := wildcat.Open(goOpts)
 	if err != nil {
-		return nil
+		cMsg := C.CString(fmt.Sprintf("wildcat_open failed: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
+		return 0
 	}
-	return unsafe.Pointer(db)
+	return C.ulong(registerDB(db))
 }
 
 //export wildcat_close
-func wildcat_close(ptr unsafe.Pointer) {
-	if ptr == nil {
+func wildcat_close(handle C.ulong) {
+	if handle == 0 {
 		return
 	}
-	db := (*wildcat.DB)(ptr)
-	_ = db.Close()
+	db := getDB(uint64(handle))
+	if db != nil {
+		_ = db.Close()
+		removeDB(uint64(handle))
+	}
 }
 
 //export wildcat_begin_txn
-func wildcat_begin_txn(ptr unsafe.Pointer) C.long {
-	db := (*wildcat.DB)(ptr)
+func wildcat_begin_txn(handle C.ulong) C.long {
+	db := getDB(uint64(handle))
+	if db == nil {
+		return -1
+	}
 	txn := db.Begin()
 	txnMap.Store(txn.Id, &txnHandle{db: db, txn: txn})
 	return C.long(txn.Id)
@@ -152,6 +196,9 @@ func wildcat_txn_put(txnId C.long, key *C.char, val *C.char) C.int {
 	err := txn.Put(C.GoBytes(unsafe.Pointer(key), C.int(C.strlen(key))),
 		C.GoBytes(unsafe.Pointer(val), C.int(C.strlen(val))))
 	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_put failed: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
 		return -1
 	}
 	return 0
@@ -166,6 +213,9 @@ func wildcat_txn_get(txnId C.long, key *C.char) *C.char {
 	txn := h.(*txnHandle).txn
 	val, err := txn.Get(C.GoBytes(unsafe.Pointer(key), C.int(C.strlen(key))))
 	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_get failed: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
 		return nil
 	}
 	return C.CString(string(val))
@@ -194,15 +244,21 @@ func wildcat_txn_rollback(txnId C.long) C.int {
 }
 
 //export wildcat_stats
-func wildcat_stats(ptr unsafe.Pointer) *C.char {
-	db := (*wildcat.DB)(ptr)
+func wildcat_stats(handle C.ulong) *C.char {
+	db := getDB(uint64(handle))
+	if db == nil {
+		return nil
+	}
 	stats := db.Stats()
 	return C.CString(stats)
 }
 
 //export wildcat_force_flush
-func wildcat_force_flush(ptr unsafe.Pointer) C.int {
-	db := (*wildcat.DB)(ptr)
+func wildcat_force_flush(handle C.ulong) C.int {
+	db := getDB(uint64(handle))
+	if db == nil {
+		return -1
+	}
 	err := db.ForceFlush()
 	return boolToInt(err == nil)
 }
@@ -216,6 +272,9 @@ func wildcat_txn_delete(txnId C.long, key *C.char) C.int {
 	txn := h.(*txnHandle).txn
 	err := txn.Delete(C.GoBytes(unsafe.Pointer(key), C.int(C.strlen(key))))
 	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_delete failed: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
 		return -1
 	}
 	return 0
@@ -234,9 +293,12 @@ func wildcat_txn_new_iterator(txnId C.long, asc C.int) C.ulong {
 	}
 	iter, err := h.(*txnHandle).txn.NewIterator(asc != 0)
 	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_new_iterator failed: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
 		return 0
 	}
-	return registerIterator(iter)
+	return C.ulong(registerIterator(iter))
 }
 
 //export wildcat_txn_new_range_iterator
@@ -251,9 +313,12 @@ func wildcat_txn_new_range_iterator(txnId C.long, start, end *C.char, asc C.int)
 		asc != 0,
 	)
 	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_new_range_iterator failed: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
 		return 0
 	}
-	return registerIterator(iter)
+	return C.ulong(registerIterator(iter))
 }
 
 //export wildcat_txn_new_prefix_iterator
@@ -267,9 +332,12 @@ func wildcat_txn_new_prefix_iterator(txnId C.long, prefix *C.char, asc C.int) C.
 		asc != 0,
 	)
 	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_txn_new_prefix_iterator failed: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
 		return 0
 	}
-	return registerIterator(iter)
+	return C.ulong(registerIterator(iter))
 }
 
 //export wildcat_txn_iterate_next
@@ -333,7 +401,7 @@ func boolToInt(ok bool) C.int {
 	return -1
 }
 
-func registerIterator(mi *wildcat.MergeIterator) C.ulong {
+func registerIterator(mi *wildcat.MergeIterator) uint64 {
 	handle := &iteratorHandle{iter: mi}
 	handle.key, handle.value, _, handle.valid = mi.Next()
 
@@ -341,7 +409,7 @@ func registerIterator(mi *wildcat.MergeIterator) C.ulong {
 	defer iterMu.Unlock()
 	iterCounter++
 	iterMap.Store(iterCounter, handle)
-	return C.ulong(iterCounter)
+	return iterCounter
 }
 
 func main() {

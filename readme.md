@@ -556,22 +556,76 @@ go build -buildmode=c-shared -o libwildcat.so wildcat_c.go
 ```
 
 ### C API
+For C example check `c/example.c` in the repository.
+
+### Linux instructions
+Once you've built your shared library, you can use the below commands.
+```bash
+sudo cp libwildcat.so /usr/local/lib/
+sudo cp libwildcat.h /usr/local/include/
+sudo ldconfig
+```
+
+Now you can include header
+```c
+#include <wildcat.h>
+```
+
+Then you can link against the library when compiling.  Below is an example compiling `example.c` in repository.
+```bash
+gcc -o wildcat_example c/example.c -L. -lwildcat -lpthread
+```
+
+#### Options
+```c
+typedef struct {
+    char* directory;
+    long write_buffer_size;
+    int sync_option;
+    long sync_interval_ns;
+    int level_count;
+    int level_multiplier;
+    int block_manager_lru_size;
+    double block_manager_lru_evict_ratio;
+    double block_manager_lru_access_weight;
+    int permission;
+    int bloom_filter;
+    int max_compaction_concurrency;
+    long compaction_cooldown_ns;
+    int compaction_batch_size;
+    double compaction_size_ratio;
+    int compaction_size_threshold;
+    double compaction_score_size_weight;
+    double compaction_score_count_weight;
+    long flusher_interval_ns;
+    long compactor_interval_ns;
+    double bloom_fpr;
+    int wal_append_retry;
+    long wal_append_backoff_ns;
+    int sstable_btree_order;
+} wildcat_opts_t;
+```
+
+#### Sync Options
 ```c
 typedef enum {
     SYNC_NONE = 0,
     SYNC_ALWAYS,
     SYNC_INTERVAL
 } sync_option_t;
+```
 
-extern void* wildcat_open(wildcat_opts_t* opts);
-extern void wildcat_close(void* ptr);
-extern long int wildcat_begin_txn(void* ptr);
+#### C API Functions
+```c
+extern long unsigned int wildcat_open(wildcat_opts_t* opts);
+extern void wildcat_close(long unsigned int handle);
+extern long int wildcat_begin_txn(long unsigned int handle);
 extern int wildcat_txn_put(long int txnId, char* key, char* val);
 extern char* wildcat_txn_get(long int txnId, char* key);
 extern int wildcat_txn_commit(long int txnId);
 extern int wildcat_txn_rollback(long int txnId);
-extern char* wildcat_stats(void* ptr);
-extern int wildcat_force_flush(void* ptr);
+extern char* wildcat_stats(long unsigned int handle);
+extern int wildcat_force_flush(long unsigned int handle);
 extern int wildcat_txn_delete(long int txnId, char* key);
 extern void wildcat_txn_free(long int txnId);
 extern long unsigned int wildcat_txn_new_iterator(long int txnId, int asc);
