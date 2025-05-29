@@ -1044,6 +1044,7 @@ func (idgs *IDGeneratorState) loadState() error {
 	idgs.db.txnIdGenerator = reloadIDGenerator(idgs.lastTxnID)
 	idgs.db.walIdGenerator = reloadIDGenerator(idgs.lastWalID)
 	idgs.db.sstIdGenerator = reloadIDGenerator(idgs.lastSstID)
+
 	idgs.db.log(fmt.Sprintf("Loaded ID generator state: %d %d %d", idgs.lastSstID, idgs.lastWalID, idgs.lastTxnID))
 
 	return nil
