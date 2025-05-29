@@ -17,7 +17,7 @@ package tree
 
 import (
 	"fmt"
-	"github.com/guycipher/wildcat/blockmanager"
+	"github.com/wildcatdb/wildcat/blockmanager"
 	"math/rand"
 	"os"
 	"runtime"

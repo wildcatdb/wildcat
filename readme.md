@@ -82,7 +82,7 @@ Wildcat supports opening multiple `*wildcat.DB` instances in parallel, each oper
 ### Import
 ```go
 import (
-    "github.com/guycipher/wildcat"
+    "github.com/wildcatdb/wildcat"
 )
 ```
 
@@ -370,23 +370,27 @@ err := db.Update(func(txn *wildcat.Txn) error {
 
 OR
 ```go
-// Begin a transaction
-txn := db.Begin()
-
 // Perform batch operations
 for i := 0; i < 1000; i++ {
+    // Begin a transaction
+    txn := db.Begin()
+
     key := []byte(fmt.Sprintf("key%d", i))
     value := []byte(fmt.Sprintf("value%d", i))
 
     if err := txn.Put(key, value); err != nil {
         txn.Rollback()
         // Handle error
-        return err
+        return
+    }
+
+    // Commit the transaction
+    err = txn.Commit()
+    if err != nil {
+        // Handle error
+        return
     }
 }
-
-// Commit the transaction
-err := txn.Commit()
 ```
 
 ### Transaction Recovery

@@ -18,8 +18,8 @@ package wildcat
 import (
 	"bytes"
 	"container/heap"
-	"github.com/guycipher/wildcat/skiplist"
-	"github.com/guycipher/wildcat/tree"
+	"github.com/wildcatdb/wildcat/skiplist"
+	"github.com/wildcatdb/wildcat/tree"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )

@@ -17,10 +17,10 @@ package wildcat
 
 import (
 	"fmt"
-	"github.com/guycipher/wildcat/blockmanager"
-	"github.com/guycipher/wildcat/queue"
-	"github.com/guycipher/wildcat/skiplist"
-	"github.com/guycipher/wildcat/tree"
+	"github.com/wildcatdb/wildcat/blockmanager"
+	"github.com/wildcatdb/wildcat/queue"
+	"github.com/wildcatdb/wildcat/skiplist"
+	"github.com/wildcatdb/wildcat/tree"
 	"os"
 	"sync/atomic"
 	"time"

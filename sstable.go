@@ -17,9 +17,9 @@ package wildcat
 
 import (
 	"bytes"
-	"github.com/guycipher/wildcat/blockmanager"
-	"github.com/guycipher/wildcat/bloomfilter"
-	"github.com/guycipher/wildcat/tree"
+	"github.com/wildcatdb/wildcat/blockmanager"
+	"github.com/wildcatdb/wildcat/bloomfilter"
+	"github.com/wildcatdb/wildcat/tree"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"os"

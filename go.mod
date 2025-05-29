@@ -1,4 +1,4 @@
-module github.com/guycipher/wildcat
+module github.com/wildcatdb/wildcat
 
 go 1.24
 

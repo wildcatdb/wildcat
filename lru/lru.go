@@ -16,7 +16,7 @@
 package lru
 
 import (
-	"github.com/guycipher/wildcat/queue"
+	"github.com/wildcatdb/wildcat/queue"
 	"math"
 	"runtime"
 	"sync/atomic"

@@ -18,9 +18,9 @@ package wildcat
 import (
 	"errors"
 	"fmt"
-	"github.com/guycipher/wildcat/blockmanager"
-	"github.com/guycipher/wildcat/lru"
-	"github.com/guycipher/wildcat/skiplist"
+	"github.com/wildcatdb/wildcat/blockmanager"
+	"github.com/wildcatdb/wildcat/lru"
+	"github.com/wildcatdb/wildcat/skiplist"
 	"math"
 	"os"
 	"sort"

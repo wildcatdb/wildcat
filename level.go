@@ -17,8 +17,8 @@ package wildcat
 
 import (
 	"fmt"
-	"github.com/guycipher/wildcat/blockmanager"
-	"github.com/guycipher/wildcat/tree"
+	"github.com/wildcatdb/wildcat/blockmanager"
+	"github.com/wildcatdb/wildcat/tree"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"os"
 	"sort"

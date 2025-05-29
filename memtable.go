@@ -17,9 +17,9 @@ package wildcat
 
 import (
 	"fmt"
-	"github.com/guycipher/wildcat/blockmanager"
-	"github.com/guycipher/wildcat/bloomfilter"
-	"github.com/guycipher/wildcat/skiplist"
+	"github.com/wildcatdb/wildcat/blockmanager"
+	"github.com/wildcatdb/wildcat/bloomfilter"
+	"github.com/wildcatdb/wildcat/skiplist"
 	"os"
 	"sync/atomic"
 	"time"

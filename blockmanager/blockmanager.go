@@ -19,7 +19,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"github.com/guycipher/wildcat/queue"
+	"github.com/wildcatdb/wildcat/queue"
 	"hash/crc32"
 	"os"
 	"sync"
