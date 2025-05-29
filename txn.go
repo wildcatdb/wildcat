@@ -126,6 +126,7 @@ func (txn *Txn) Delete(key []byte) error {
 func (txn *Txn) Commit() error {
 	txn.mutex.Lock()
 	defer txn.mutex.Unlock()
+	defer txn.remove()
 
 	if txn.Committed {
 		return nil // Already committed
