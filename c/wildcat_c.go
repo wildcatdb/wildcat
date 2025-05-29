@@ -55,7 +55,7 @@ typedef struct {
 import "C"
 
 import (
-	"github.com/guycipher/wildcat"
+	"github.com/wildcatdb/wildcat"
 	"os"
 	"sync"
 	"time"
