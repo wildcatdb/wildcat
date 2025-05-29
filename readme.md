@@ -116,6 +116,7 @@ By default Wildcat uses 6 levels, so you will see directories like this:
 ├── L5
 ├── L6
 1.wal
+idgstate
 ```
 The `L1`, `L2`, etc. directories are used for storing SSTables(immutable btrees) at different levels of the LSM tree. The `1.wal` file is the **current** Write-Ahead Log (WAL) file tied to the **current** memtable.
 When a memtable reaches a configured write buffer size, it is enqueued for flushing to disk and becomes immutable. The WAL file is then rotated, and a new one is created for subsequent writes.
@@ -123,6 +124,8 @@ When a memtable reaches a configured write buffer size, it is enqueued for flush
 Mind you there can be many WAL files pending flush, and they will be named `2.wal`, `3.wal`, etc. as they are created. The WAL files are used to ensure durability and recoverability of transactions.
 
 When the flusher completes a flush operation an immutable memtable becomes an sstable at L1.
+
+The idgstate file holds sstable, wal, and txn id state.  So when a restart occurs we can recover last known id's and continue monotonically increasing id's for SSTables, WALs, and transactions.
 
 ### Advanced Configuration
 Wildcat provides several configuration options for fine-tuning.
