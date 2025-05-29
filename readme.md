@@ -39,6 +39,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - [Version and Compatibility](#version-and-compatibility)
 - [Basic Usage](#basic-usage)
   - [Opening a Wildcat DB instance](#opening-a-wildcat-db-instance)
+  - [Directory Structure](#directory-structure)
   - [Advanced Configuration](#advanced-configuration)
   - [Simple Key-Value Operations](#simple-key-value-operations)
   - [Manual Transaction Management](#manual-transaction-management)
@@ -102,6 +103,26 @@ if err != nil {
 }
 defer db.Close()
 ```
+
+### Directory Structure
+When you open a Wildcat instance at a configured directory your structure will look like this initially based on configured levels.
+By default Wildcat uses 6 levels, so you will see directories like this:
+```
+/path/to/db/
+├── L1
+├── L2
+├── L3
+├── L4
+├── L5
+├── L6
+1.wal
+```
+The `L1`, `L2`, etc. directories are used for storing SSTables(immutable btrees) at different levels of the LSM tree. The `1.wal` file is the **current** Write-Ahead Log (WAL) file tied to the **current** memtable.
+When a memtable reaches a configured write buffer size, it is enqueued for flushing to disk and becomes immutable. The WAL file is then rotated, and a new one is created for subsequent writes.
+
+Mind you there can be many WAL files pending flush, and they will be named `2.wal`, `3.wal`, etc. as they are created. The WAL files are used to ensure durability and recoverability of transactions.
+
+When the flusher completes a flush operation an immutable memtable becomes an sstable at L1.
 
 ### Advanced Configuration
 Wildcat provides several configuration options for fine-tuning.
