@@ -79,9 +79,17 @@ func (db *DB) GetTxn(id int64) (*Txn, error) {
 		return nil, fmt.Errorf("transaction not found")
 	}
 
-	for _, txn := range *txns {
+	low, high := 0, len(*txns)-1
+	for low <= high {
+		mid := low + (high-low)/2
+		txn := (*txns)[mid]
+
 		if txn.Id == id {
 			return txn, nil
+		} else if txn.Id < id {
+			high = mid - 1
+		} else {
+			low = mid + 1
 		}
 	}
 
