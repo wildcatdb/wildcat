@@ -72,7 +72,6 @@ import (
 var (
 	dbMap     = sync.Map{} // map[uint64]*wildcat.DB
 	dbCounter uint64
-	dbMu      sync.Mutex
 )
 
 // Removed txnHandle struct and txnMap - no longer needed!
