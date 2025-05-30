@@ -380,7 +380,8 @@ func TestOpenNewFile(t *testing.T) {
 
 	// Check that we have Allotment number of blocks
 	// Convert the queue to a slice to count elements
-	count := 16
+	count := 16 // The block manager's default allotment is 16 blocks thus
+	// we expect 16 blocks in the allocation table
 	for count > -1 {
 		bm.allocationTable.Dequeue()
 		count--
@@ -1702,7 +1703,7 @@ func TestUpdateDuringConcurrentRead(t *testing.T) {
 		t.Logf("Had %d read errors during concurrent update (may be acceptable)", errorReads)
 	}
 
-	// Most critical: no inconsistent/corrupted data
+	// Most critical we have no inconsistent/corrupted data
 	if inconsistentReads > 0 {
 		t.Errorf("Found %d reads with inconsistent data. First example: %s",
 			inconsistentReads, firstInconsistentData)
