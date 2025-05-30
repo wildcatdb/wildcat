@@ -71,6 +71,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
     - [Lock-Free Queue](#lock-free-queue)
     - [BTree](#btree)
     - [SkipList](#skiplist)
+    - [ID Generator System Integration](#id-generator-system-integration)
 - [Motivation](#motivation)
 - [Contributing](#contributing)
 
@@ -1665,7 +1666,7 @@ iter.Peek()    // Non-destructive current value inspection
 - **Level generation** Probabilistic level assignment with geometric distribution
 - **Version chains** Per-key linked lists with atomic head pointers
 
-### ID Generator Systen Integration
+### ID Generator System Integration
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
 │                    ID Generator System Integration                         │
