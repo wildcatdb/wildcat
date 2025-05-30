@@ -44,6 +44,9 @@ func TestWriteHeader(t *testing.T) {
 	defer func(file *os.File) {
 		_ = file.Close()
 	}(file)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(testFilePath)
 
 	// Create a BlockManager with the file
 	bm := &BlockManager{
@@ -128,6 +131,9 @@ func TestReadHeader(t *testing.T) {
 	defer func(file *os.File) {
 		_ = file.Close()
 	}(file)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(testFilePath)
 
 	// Create a BlockManager with the file
 	bm := &BlockManager{
@@ -156,6 +162,9 @@ func TestReadHeader(t *testing.T) {
 	defer func(invalidF *os.File) {
 		_ = invalidF.Close()
 	}(invalidF)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(testFilePath)
 
 	// Create an invalid header
 	invalidHeader := Header{
@@ -206,6 +215,9 @@ func TestReadHeader(t *testing.T) {
 	defer func(invalidCRCF *os.File) {
 		_ = invalidCRCF.Close()
 	}(invalidCRCF)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(testFilePath)
 
 	// Create a valid header
 	validHeader := Header{
@@ -259,6 +271,9 @@ func TestReadHeader(t *testing.T) {
 	defer func(invalidVersionF *os.File) {
 		_ = invalidVersionF.Close()
 	}(invalidVersionF)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(testFilePath)
 
 	// Create a header with invalid version
 	invalidVersionHeader := Header{
@@ -316,6 +331,9 @@ func TestHeaderRoundTrip(t *testing.T) {
 	defer func(file *os.File) {
 		_ = file.Close()
 	}(file)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(testFilePath)
 
 	// Create a BlockManager with the file
 	bm := &BlockManager{
@@ -343,6 +361,9 @@ func TestHeaderRoundTrip(t *testing.T) {
 	defer func(reopenedFile *os.File) {
 		_ = reopenedFile.Close()
 	}(reopenedFile)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(testFilePath)
 
 	// Create a new BlockManager with the reopened file
 	reopenedBM := &BlockManager{
@@ -550,6 +571,10 @@ func TestReopenFile(t *testing.T) {
 			t.Fatalf("Failed to close file: %v", err)
 		}
 	}
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
 
 	// Second session: reopen file and read data
 	{
@@ -1061,6 +1086,10 @@ func TestPartialBlockWriteRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
 
 	header := Header{
 		MagicNumber: MagicNumber,
@@ -1779,6 +1808,10 @@ func TestIteratorWithCorruptedBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to reopen file: %v", err)
 	}
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
 
 	headerSize := binary.Size(Header{})
 

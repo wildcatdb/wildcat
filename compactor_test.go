@@ -30,6 +30,9 @@ func TestCompactor_Basic(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert enough data to trigger multiple flushes
 	t.Log("Inserting data to trigger flushing...")
@@ -154,6 +157,9 @@ func TestCompactor_LeveledCompaction(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Helper function to list SSTables in a level
 	countSSTables := func(levelNum int) int {
@@ -283,6 +289,9 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create multiple SSTables with similar sizes in L1
 	// Size-tiered compaction looks for similarly sized tables
@@ -437,6 +446,9 @@ func TestCompactor_CompactionQueue(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert enough data to create SSTables
 	for i := 0; i < 200; i++ {
@@ -583,6 +595,9 @@ func TestCompactor_ConcurrentCompactions(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Override max concurrency for testing
 	db.compactor.maxConcurrency = 3

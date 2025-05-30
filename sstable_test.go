@@ -37,6 +37,9 @@ func TestSSTable_BasicOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert enough data to trigger a flush to SSTable
 	numEntries := 100
@@ -163,6 +166,9 @@ func TestSSTable_ConcurrentAccess(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert some initial data to ensure we have at least one SSTable
 	for i := 0; i < 100; i++ {
@@ -360,6 +366,9 @@ func TestSSTable_MVCCWithMultipleVersions(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a single key with multiple versions
 	key := []byte("mvcc_key")
@@ -487,6 +496,9 @@ func TestSSTable_SimpleDeleteWithDelay(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert a key
 	key := []byte("delay_test_key")
@@ -586,6 +598,9 @@ func TestSSTable_SimpleDeleteWithDelay(t *testing.T) {
 	defer func(db2 *DB) {
 		_ = db2.Close()
 	}(db2)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Verify key is still deleted after restart
 	err = db2.Update(func(txn *Txn) error {

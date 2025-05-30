@@ -29,6 +29,9 @@ func TestMemtable_BasicOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Test basic write operations
 	testData := map[string]string{
@@ -123,6 +126,9 @@ func TestMemtable_ConcurrentOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Number of concurrent goroutines - reduced for test stability
 	const numGoroutines = 5
@@ -223,6 +229,9 @@ func TestMemtable_MVCC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Key to test MVCC with
 	key := []byte("mvcc_key")
@@ -330,6 +339,9 @@ func TestMemtable_LargeValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a smaller but still substantial value (128KB instead of 1MB)
 	largeValue := make([]byte, 128*1024)
@@ -400,6 +412,9 @@ func TestMemtable_Replay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert just 5 keys for an even simpler test
 	for i := 1; i <= 5; i++ {
@@ -486,6 +501,9 @@ func TestMemtable_Replay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to reopen database: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Verify deleted key is still deleted
 	err = db2.Update(func(txn *Txn) error {
@@ -555,6 +573,9 @@ func TestMemtable_UncommittedTransactions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Begin a transaction but don't commit it
 	txn := db.Begin()
@@ -607,6 +628,9 @@ func TestMemtable_UncommittedTransactions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to reopen database: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Check that committed data is accessible
 	var result []byte
