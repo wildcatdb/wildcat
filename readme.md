@@ -651,6 +651,7 @@ extern int wildcat_txn_iter_valid(long unsigned int id);
 extern char* wildcat_iterator_key(long unsigned int id);
 extern char* wildcat_iterator_value(long unsigned int id);
 extern void wildcat_iterator_free(long unsigned int id);
+extern int wildcat_sync(long unsigned int handle);
 ```
 
 ## Overview

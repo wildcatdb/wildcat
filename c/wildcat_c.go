@@ -449,6 +449,22 @@ func wildcat_iterator_free(id C.ulong) {
 	iterMap.Delete(uint64(id))
 }
 
+//export wildcat_sync
+func wildcat_sync(handle C.ulong) C.int {
+	db := getDB(uint64(handle))
+	if db == nil {
+		return -1
+	}
+	err := db.Sync()
+	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_sync failed: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
+		return -1
+	}
+	return 0
+}
+
 func boolToInt(ok bool) C.int {
 	if ok {
 		return 0
