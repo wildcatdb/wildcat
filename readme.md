@@ -156,6 +156,7 @@ opts := &wildcat.Options{
     WalAppendBackoff:            128 * time.Microsecond,  // WAL append retry backoff
     BlockManagerLRUEvictRatio:   0.20,                    // LRU eviction ratio
     BlockManagerLRUAccesWeight:  0.8,                     // LRU access weight
+    STDOutLogging: false,                                 // Log to stdout instead of channel
 }
 ```
 
@@ -187,6 +188,7 @@ opts := &wildcat.Options{
 22. **WalAppendBackoff** Backoff duration for WAL append retries
 23. **BlockManagerLRUEvictRatio** Ratio for LRU eviction. Determines what percentage of the cache to evict when cleanup is needed.
 24. **BlockManagerLRUAccesWeight** Weight for LRU access eviction. Balances how much to prioritize access frequency vs. age when deciding what to evict.
+25. **STDOutLogging** If true, logs will be printed to stdout instead of the log channel.  Log channel will be ignored if provided.
 
 ### Simple Key-Value Operations
 The easiest way to interact with Wildcat is through the Update method, which handles transactions automatically.  This means it runs begin, commit, and rollback for you, allowing you to focus on the operations themselves.

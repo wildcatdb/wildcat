@@ -105,6 +105,7 @@ type Options struct {
 	WalAppendRetry             int           // Number of retries for WAL append
 	WalAppendBackoff           time.Duration // Backoff duration for WAL append
 	SSTableBTreeOrder          int           // Order of the B-tree for SSTables
+	STDOutLogging              bool          // Enable logging to standard output (default is false and if set, channel is ignored)
 }
 
 // DB represents the main Wildcat structure
@@ -810,6 +811,10 @@ func populateMemtableFromTxns(memt *Memtable, txnMap map[int64]*Txn, includeUnco
 // log logs a message to the log channel
 func (db *DB) log(msg string) {
 	if db.opts.LogChannel != nil {
+		if db.opts.STDOutLogging {
+			fmt.Println(msg) // Print to stdout if STDOutLogging is enabled, is concurrent safe
+			return
+		}
 		select {
 		case db.opts.LogChannel <- msg:
 		default:
