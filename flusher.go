@@ -82,10 +82,11 @@ func (flusher *Flusher) queueMemtable() error {
 	// Push the current memtable to the immutable queue
 	flusher.immutable.Enqueue(flusher.db.memtable.Load().(*Memtable))
 
+	flusher.db.log(fmt.Sprintf("Flusher: new active memtable created with WAL %s", newMemtable.wal.path))
+
 	// Update the current memtable to the new one
 	flusher.db.memtable.Store(newMemtable)
 
-	flusher.db.log(fmt.Sprintf("Flusher: new active memtable created with WAL %s", newMemtable.wal.path))
 	return nil
 }
 
