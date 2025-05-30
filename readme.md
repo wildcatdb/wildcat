@@ -116,13 +116,13 @@ By default Wildcat uses 6 levels, so you will see directories like this:
 ├── L4
 ├── L5
 ├── L6
-1.wal
+0.wal
 idgstate
 ```
-The `L1`, `L2`, etc. directories are used for storing SSTables(immutable btrees) at different levels of the LSM tree. The `1.wal` file is the **current** Write-Ahead Log (WAL) file tied to the **current** memtable.
+The `L1`, `L2`, etc. directories are used for storing SSTables(immutable btrees) at different levels of the LSM tree. The `0.wal` file is the **current** Write-Ahead Log (WAL) file tied to the **current** memtable.
 When a memtable reaches a configured write buffer size, it is enqueued for flushing to disk and becomes immutable. The WAL file is then rotated, and a new one is created for subsequent writes.
 
-Mind you there can be many WAL files pending flush, and they will be named `2.wal`, `3.wal`, etc. as they are created. The WAL files are used to ensure durability and recoverability of transactions.
+Mind you there can be many WAL files pending flush, and they will be named `1.wal`, `2.wal`, etc. as they are created. The WAL files are used to ensure durability and recoverability of transactions.
 
 When the flusher completes a flush operation an immutable memtable becomes an sstable at L1.
 
@@ -1664,6 +1664,138 @@ iter.Peek()    // Non-destructive current value inspection
 - **Node structure** Atomic forward pointers array + backward pointer
 - **Level generation** Probabilistic level assignment with geometric distribution
 - **Version chains** Per-key linked lists with atomic head pointers
+
+### ID Generator Systen Integration
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                    ID Generator System Integration                         │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  Database Startup Flow:                                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ 1. Open Database Directory                                          │   │
+│  │    │                                                                │   │
+│  │    ▼                                                                │   │
+│  │ 2. Check for idgstate file                                          │   │
+│  │    │                                                                │   │
+│  │    ├── File Exists ──────────┐                                      │   │
+│  │    │                         │                                      │   │
+│  │    └── File Missing ─────────┼─────▶ Initialize Default IDs        │   │
+│  │                              │       (all start at 0)               │   │
+│  │                              ▼                                      │   │
+│  │ 3. Load ID State: "1234 567 89012"                                  │   │
+│  │    │                                                                │   │
+│  │    ▼                                                                │   │
+│  │ 4. Create ID Generators:                                            │   │
+│  │    • sstIdGenerator = reloadIDGenerator(1234)                       │   │
+│  │    • walIdGenerator = reloadIDGenerator(567)                        │   │
+│  │    • txnIdGenerator = reloadIDGenerator(89012)                      │   │
+│  │    • txnTSGenerator = newIDGeneratorWithTimestamp()                 │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  ID Generator Usage Throughout System:                                     │
+│                                                                            │
+│  ┌─────────────────┐    nextID()    ┌─────────────────────────────────────┐│
+│  │ Transaction     │ ─────────────▶│ txnIdGenerator                      ││
+│  │ Creation        │                │ Returns: 89013, 89014, 89015...     ││
+│  │ (db.Begin())    │                └─────────────────────────────────────┘│
+│  └─────────────────┘                                                       │
+│           │                                                                │
+│           ▼                                                                │
+│  ┌─────────────────┐    nextID()    ┌─────────────────────────────────────┐│
+│  │ Transaction     │ ─────────────▶│ txnTSGenerator                      ││
+│  │ Timestamp       │                │ Returns: time.Now().UnixNano()      ││
+│  │ Assignment      │                │ Example: 1704067200123456789        ││
+│  └─────────────────┘                └─────────────────────────────────────┘│
+│                                                                            │
+│  ┌─────────────────┐    nextID()    ┌─────────────────────────────────────┐│
+│  │ WAL Rotation    │ ─────────────▶│ walIdGenerator                      ││
+│  │ (Memtable       │                │ Returns: 568, 569, 570...           ││
+│  │  Flush)         │                │ Creates: 568.wal, 569.wal...        ││
+│  └─────────────────┘                └─────────────────────────────────────┘│
+│                                                                            │
+│  ┌─────────────────┐    nextID()    ┌─────────────────────────────────────┐│
+│  │ SSTable         │ ─────────────▶│ sstIdGenerator                      ││
+│  │ Creation        │                │ Returns: 1235, 1236, 1237...        ││
+│  │ (Flush/Compact) │                │ Creates: sst_1235.klog/.vlog        ││
+│  └─────────────────┘                └─────────────────────────────────────┘│
+│                                                                            │
+│  Component Interactions:                                                   │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                                                                     │   │
+│  │ ┌─────────────┐  generates IDs for  ┌─────────────────────────────┐ │   │
+│  │ │   Flusher   │ ─────────────────▶ │ WAL Files: 568.wal, 569.wal │ │   │
+│  │ │ Background  │                     │ SSTables: sst_1235.*        │ │   │
+│  │ │  Process    │                     └─────────────────────────────┘ │   │
+│  │ └─────────────┘                                                     │   │
+│  │                                                                     │   │
+│  │ ┌─────────────┐  generates IDs for  ┌─────────────────────────────┐ │   │
+│  │ │ Compactor   │ ─────────────────▶ │ New SSTables: sst_1237.*    │ │   │
+│  │ │ Background  │                     │ Merged from: sst_1235.*     │ │   │
+│  │ │  Process    │                     │             sst_1236.*      │ │   │
+│  │ └─────────────┘                     └─────────────────────────────┘ │   │
+│  │                                                                     │   │
+│  │ ┌─────────────┐  generates IDs for  ┌─────────────────────────────┐ │   │
+│  │ │Transaction  │ ─────────────────▶ │ TxnID: 89013                │ │   │
+│  │ │ Clients     │                     │ Timestamp: 1704067200123... │ │   │
+│  │ │ (db.Begin())│                     │ WAL Entry in: 568.wal       │ │   │
+│  │ └─────────────┘                     └─────────────────────────────┘ │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  Persistence and Recovery:                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Database Shutdown:                                                  │   │
+│  │ ┌─────────────────────────────────────────────────────────────────┐ │   │
+│  │ │ func (db *DB) Close() error {                                   │ │   │
+│  │ │   // ... other cleanup ...                                      │ │   │
+│  │ │                                                                 │ │   │
+│  │ │   // Save ID generator state                                    │ │   │
+│  │ │   err := db.idgs.saveState()                                    │ │   │
+│  │ │   if err != nil {                                               │ │   │
+│  │ │     return fmt.Errorf("failed to save ID state: %w", err)       │ │   │
+│  │ │   }                                                             │ │   │
+│  │ │   return nil                                                    │ │   │
+│  │ │ }                                                               │ │   │
+│  │ └─────────────────────────────────────────────────────────────────┘ │   │
+│  │                                                                     │   │
+│  │ File Write Process:                                                 │   │
+│  │ ┌─────────────────────────────────────────────────────────────────┐ │   │
+│  │ │ Current State: sstId=1237, walId=569, txnId=89015               │ │   │
+│  │ │                                                                 │ │   │
+│  │ │ Write to idgstate: "1237 569 89015"                             │ │   │
+│  │ │ Sync file to disk for durability                                │ │   │
+│  │ └─────────────────────────────────────────────────────────────────┘ │   │
+│  │                                                                     │   │
+│  │ Database Restart:                                                   │   │
+│  │ ┌─────────────────────────────────────────────────────────────────┐ │   │
+│  │ │ Read idgstate: "1237 569 89015"                                 │ │   │
+│  │ │                                                                 │ │   │
+│  │ │ Initialize generators:                                          │ │   │
+│  │ │ • sstIdGenerator starts at 1238                                 │ │   │
+│  │ │ • walIdGenerator starts at 570                                  │ │   │
+│  │ │ • txnIdGenerator starts at 89016                                │ │   │
+│  │ │                                                                 │ │   │
+│  │ │ Result: No ID conflicts, seamless continuation                  │ │   │
+│  │ └─────────────────────────────────────────────────────────────────┘ │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  ID Namespace Separation:                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Each generator maintains its own sequence:                          │   │
+│  │                                                                     │   │
+│  │ SSTables: sst_1234.klog, sst_1235.klog, sst_1236.klog...            │   │
+│  │ WAL Files: 567.wal, 568.wal, 569.wal...                             │   │
+│  │ Transactions: ID=89012, ID=89013, ID=89014...                       │   │
+│  │                                                                     │   │
+│  │ Benefits:                                                           │   │
+│  │ • Clear file naming patterns                                        │   │
+│  │ • No cross-component ID conflicts                                   │   │
+│  │ • Easy debugging and log analysis                                   │   │
+│  │ • Predictable file system layout                                    │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+```
 
 ### Motivation
 My name is Alex Gaetano Padula, and I've spent the past several years fully immersed in one thing.. databases and storage engines. Not frameworks. Not trends. Just the raw, unforgiving internals of how data lives, moves, and survives.
