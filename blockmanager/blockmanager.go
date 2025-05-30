@@ -71,6 +71,7 @@ type BlockManager struct {
 	syncInterval    time.Duration   // Interval for background sync (if applicable)
 	closeChan       chan struct{}   // Channel to signal closure of the background sync
 	wg              *sync.WaitGroup // WaitGroup to wait for background sync to finish
+	alottmentFlag   int32           // Atomic flag to prevent multiple goroutines from appending blocks simultaneously
 }
 
 // Iterator is used to traverse the blocks in the file
@@ -350,18 +351,17 @@ func (bm *BlockManager) allocateBlock() (uint64, error) {
 		// This ensures multiple goroutines won't all try to append blocks simultaneously
 
 		// Create a flag to track if we've started appending blocks
-		appendingFlag := int32(0)
 
 		// Try to set the flag from 0 to 1
-		if atomic.CompareAndSwapInt32(&appendingFlag, 0, 1) {
+		if atomic.CompareAndSwapInt32(&bm.alottmentFlag, 0, 1) {
 			// We successfully set the flag, so we're the one to append blocks
 			if err := bm.appendFreeBlocks(); err != nil {
 				// Reset the flag and return the error
-				atomic.StoreInt32(&appendingFlag, 0)
+				atomic.StoreInt32(&bm.alottmentFlag, 0)
 				return 0, err
 			}
 			// Reset the flag
-			atomic.StoreInt32(&appendingFlag, 0)
+			atomic.StoreInt32(&bm.alottmentFlag, 0)
 		} else {
 			// Someone else is appending blocks, let's wait a tiny bit
 			// This is better than spinning aggressively
@@ -379,13 +379,13 @@ func (bm *BlockManager) allocateBlock() (uint64, error) {
 			// Check again and maybe append more blocks
 			if bm.allocationTable.IsEmpty() {
 				// If it's still empty, try to append more blocks
-				appendingFlag := int32(0)
-				if atomic.CompareAndSwapInt32(&appendingFlag, 0, 1) {
+
+				if atomic.CompareAndSwapInt32(&bm.alottmentFlag, 0, 1) {
 					if err := bm.appendFreeBlocks(); err != nil {
-						atomic.StoreInt32(&appendingFlag, 0)
+						atomic.StoreInt32(&bm.alottmentFlag, 0)
 						return 0, err
 					}
-					atomic.StoreInt32(&appendingFlag, 0)
+					atomic.StoreInt32(&bm.alottmentFlag, 0)
 				} else {
 					// Someone else is appending blocks, wait a bit
 					time.Sleep(time.Microsecond)
