@@ -51,6 +51,7 @@ typedef struct {
     int wal_append_retry;
     long wal_append_backoff_ns;
     int sstable_btree_order;
+    int stdout_logging;
 } wildcat_opts_t;
 
 static void print_error(const char* msg) {
@@ -136,6 +137,7 @@ func fromCOptions(copts *C.wildcat_opts_t) *wildcat.Options {
 		WalAppendRetry:             int(copts.wal_append_retry),
 		WalAppendBackoff:           time.Duration(copts.wal_append_backoff_ns),
 		SSTableBTreeOrder:          int(copts.sstable_btree_order),
+		STDOutLogging:              copts.stdout_logging != 0,
 	}
 }
 
