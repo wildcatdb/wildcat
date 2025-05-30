@@ -619,6 +619,7 @@ typedef struct {
     int wal_append_retry;
     long wal_append_backoff_ns;
     int sstable_btree_order;
+    int stdout_logging;
 } wildcat_opts_t;
 ```
 
@@ -659,22 +660,191 @@ extern int wildcat_sync(long unsigned int handle);
 ## Overview
 
 ### MVCC Model
+Optimistic timestamp-based Multi-Version Concurrency Control (MVCC) with Last-Write-Wins (otmvcc-lww).
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│                                                                           │
+│  Transaction 1 (TS: 1000)        Transaction 2 (TS: 2000)                 │
+│  ┌─────────────────┐             ┌─────────────────┐                      │
+│  │   ReadSet       │             │   ReadSet       │                      │
+│  │  key1 -> 800    │             │  key2 -> 1500   │                      │
+│  │  key2 -> 900    │             │                 │                      │
+│  └─────────────────┘             └─────────────────┘                      │
+│  ┌─────────────────┐             ┌─────────────────┐                      │
+│  │   WriteSet      │             │   WriteSet      │                      │
+│  │  key3 -> val3   │             │  key1 -> val1'  │                      │
+│  └─────────────────┘             └─────────────────┘                      │
+│  ┌─────────────────┐             ┌─────────────────┐                      │
+│  │   DeleteSet     │             │   DeleteSet     │                      │
+│  │  key4 -> true   │             │                 │                      │
+│  └─────────────────┘             └─────────────────┘                      │
+│                                                                           │
+│                     Version Chain for key1                                │
+│                                                                           │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                 │
+│  │ Version 3    │    │ Version 2    │    │ Version 1    │                 │
+│  │ TS: 2000     │──▶│ TS: 1200     │──▶│ TS: 800      │                 │
+│  │ Data: val1'  │    │ Data: val1b  │    │ Data: val1a  │                 │
+│  │ Type: WRITE  │    │ Type: WRITE  │    │ Type: WRITE  │                 │
+│  └──────────────┘    └──────────────┘    └──────────────┘                 │
+│                                                                           │
+│  Read at TS=1500: Gets Version 2 (val1b)                                  │
+│  Read at TS=2500: Gets Version 3 (val1')                                  │
+│                                                                           │     
+└───────────────────────────────────────────────────────────────────────────┘                                                   
+```
+
 - Each key stores a timestamped version chain. The timestamps used are physical nanosecond timestamps (derived from `time.Now().UnixNano())`, providing a simple yet effective global ordering for versions.
 - Transactions read the latest version ≤ their timestamp.
 - Writes are buffered and atomically committed.
 - Delete operations are recorded as tombstones.
 
 ### WAL and Durability
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                                                                            │
+│  Active Memtable                    Immutable Memtables                    │
+│  ┌─────────────────┐                ┌─────────────────┐                    │
+│  │    SkipList     │                │    SkipList     │                    │
+│  │   (32MB default)│                │   (flushing)    │                    │
+│  │                 │                │                 │                    │
+│  │ key1->val1 @TS  │                │ key2->val2 @TS  │                    │
+│  │ key3->val3 @TS  │                │ key4->val4 @TS  │                    │
+│  └─────────────────┘                └─────────────────┘                    │
+│           │                                   │                            │
+│           │ WAL Append                        │ WAL Append                 │
+│           ▼                                   ▼                            │
+│  ┌─────────────────┐                ┌─────────────────┐                    │
+│  │     3.wal       │                │     2.wal       │                    │
+│  │                 │                │                 │                    │
+│  │ [TXN_ENTRY_1]   │                │ [TXN_ENTRY_5]   │                    │
+│  │ [TXN_ENTRY_2]   │                │ [TXN_ENTRY_6]   │                    │
+│  │ [TXN_COMMIT_1]  │                │ [TXN_COMMIT_5]  │                    │
+│  │ [TXN_ENTRY_3]   │                │                 │                    │
+│  └─────────────────┘                └─────────────────┘                    │
+│                                                                            │
+│  WAL Entry Format:                                                         │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ TxnID | Timestamp | ReadSet | WriteSet | DeleteSet | Committed      │   │
+│  │  i64  |    i64    |  Map    |   Map    |    Map    |   bool         │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  Recovery Process:                                                         │
+│  1.wal → 2.wal → 3.wal (chronological order)                               │
+│  Consolidate transactions by ID, apply latest state                        │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
 - Shared WAL per memtable; transactions append full state.
 - WAL replay restores all committed and in-flight transactions.
 - WALs rotate when memtables flush.
 
 ### Memtable Lifecycle
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                                                                            │
+│  ┌─────────────────┐     Size >= 32MB     ┌─────────────────┐              │
+│  │ Active Memtable │ ───────────────────▶│ Swap Operation  │              │
+│  │                 │                      │                 │              │
+│  │ SkipList + WAL  │                      │ Create new      │              │
+│  │                 │                      │ Active memtable │              │
+│  └─────────────────┘                      └─────────────────┘              │
+│                                                     │                      │
+│                                                     ▼                      │
+│  ┌─────────────────┐     Enqueue for Flush  ┌─────────────────┐            │
+│  │ Immutable Queue │ ◀─────────────────────│ Old Memtable    │            │
+│  │                 │                        │                 │            │
+│  │ [Memtable 1]    │                        │ Now Immutable   │            │
+│  │ [Memtable 2]    │                        │ Ready for flush │            │
+│  │ [Memtable 3]    │                        └─────────────────┘            │
+│  └─────────────────┘                                                       │
+│          │                                                                 │
+│          │ Background Flusher (1ms interval)                               │
+│          ▼                                                                 │
+│  ┌─────────────────┐                                                       │
+│  │ Flush Process   │                                                       │
+│  │                 │                                                       │
+│  │ 1. Create KLog  │  ────┐                                                │
+│  │ 2. Create VLog  │      │                                                │
+│  │ 3. Iterate Skip │      │   ┌─────────────────┐                          │
+│  │ 4. Write BTree  │      └─▶│    SSTable      │                          │
+│  │ 5. Update L1    │          │                 │                          │
+│  └─────────────────┘          │ sst_123.klog    │                          │
+│                               │ sst_123.vlog    │                          │
+│                               │ Level: 1        │                          │
+│                               └─────────────────┘                          │
+│                                                                            │
+│  Flusher State Machine:                                                    │
+│  ┌─────────┐     ┌──────────┐     ┌─────────┐     ┌─────────┐              │
+│  │ Waiting │───▶│ Swapping │───▶│Flushing │───▶│Complete │              │
+│  └─────────┘     └──────────┘     └─────────┘     └─────────┘              │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
 - Active memtable is swapped atomically when full.
 - Immutable memtables are flushed in background.
 - Skip list implementation with MVCC version chains for concurrent access.
 
 ### SSTables and Compaction
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│  DEFAULT OPTS                                                              │
+│  L1 (64MB)     L2 (640MB)     L3 (6.4GB)     L4 (64GB)                     │
+│  ┌─────────┐   ┌─────────┐    ┌─────────┐     ┌─────────┐                  │
+│  │ SST_1   │   │ SST_5   │    │ SST_9   │     │ SST_15  │                  │
+│  │ Range:  │   │ Range:  │    │ Range:  │     │ Range:  │                  │
+│  │ [a,f]   │   │ [a,c]   │    │ [a,b]   │     │ [a,a]   │                  │
+│  └─────────┘   └─────────┘    └─────────┘     └─────────┘                  │
+│  ┌─────────┐   ┌─────────┐    ┌─────────┐     ┌─────────┐                  │
+│  │ SST_2   │   │ SST_6   │    │ SST_10  │     │ SST_16  │                  │
+│  │ Range:  │   │ Range:  │    │ Range:  │     │ Range:  │                  │
+│  │ [g,m]   │   │ [d,h]   │    │ [c,g]   │     │ [b,f]   │                  │
+│  └─────────┘   └─────────┘    └─────────┘     └─────────┘                  │
+│  ┌─────────┐   ┌─────────┐    ┌─────────┐                                  │
+│  │ SST_3   │   │ SST_7   │    │ SST_11  │     Size-Tiered (L1-L2)          │
+│  │ Range:  │   │ Range:  │    │ Range:  │     Leveled (L3+)                │
+│  │ [n,s]   │   │ [i,o]   │    │ [h,m]   │                                  │
+│  └─────────┘   └─────────┘    └─────────┘                                  │
+│  ┌─────────┐   ┌─────────┐    ┌─────────┐                                  │
+│  │ SST_4   │   │ SST_8   │    │ SST_12  │                                  │
+│  │ Range:  │   │ Range:  │    │ Range:  │                                  │
+│  │ [t,z]   │   │ [p,z]   │    │ [n,z]   │                                  │
+│  └─────────┘   └─────────┘    └─────────┘                                  │
+│                                                                            │
+│                         Compaction Process                                 │
+│                                                                            │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Compaction Scheduler (250ms interval default)                       │   │
+│  │                                                                     │   │
+│  │ Score = (levelSize/capacity)*0.8 + (sstCount/threshold)*0.2         │   │
+│  │                                                                     │   │
+│  │ If score > 1.0: Schedule compaction job                             │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                  │                                         │
+│                                  ▼                                         │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Compaction Job Queue (Priority by Score)                            │   │
+│  │                                                                     │   │
+│  │ [Job1: L1→L2, Score: 2.1, SSTables: [SST_1, SST_2]]                 │   │
+│  │ [Job2: L2→L3, Score: 1.8, SSTables: [SST_5, SST_9, SST_10]]         │   │
+│  │ [Job3: L3→L4, Score: 1.2, SSTables: [SST_11, SST_15]]               │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                  │                                         │
+│                                  ▼                                         │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Concurrent Execution (Max 4 jobs)                                   │   │
+│  │                                                                     │   │
+│  │ Worker 1: Merging SST_1 + SST_2 → SST_new                           │   │
+│  │ Worker 2: Merging SST_5 + SST_9 + SST_10 → SST_new2                 │   │
+│  │ Worker 3: Idle                                                      │   │
+│  │ Worker 4: Idle                                                      │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
 - Immutable SSTables are organized into levels.
 - L1–L2 use size-tiered compaction.
 - L3+ use leveled compaction by key range.
@@ -683,6 +853,61 @@ extern int wildcat_sync(long unsigned int handle);
 - Cooldown period enforced between compactions to prevent resource thrashing.
 - Compaction filters out redundant tombstones based on timestamp and overlapping range.
 - A tombstone is dropped if it's older than the oldest active read and no longer needed in higher levels.
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                         SSTable Structure                                  │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  SSTable Metadata:                                                         │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ ID: 123 | Min: "apple" | Max: "zebra" | Size: 64MB                  │   │
+│  │ EntryCount: 50000 | Level: 1 | BloomFilter: Present                 │   │
+│  │ Timestamp: 1609459200000 (latest entry)                             │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  File Layout:                                                              │
+│                                                                            │
+│  sst_123.klog (BTree for Keys)         sst_123.vlog (Values)               │
+│  ┌─────────────────────────┐          ┌─────────────────────────┐          │
+│  │       BTree Root        │          │    Block Manager        │          │
+│  │      (Block ID: 1)      │          │                         │          │
+│  │                         │          │ Block 1: [value_data_1] │          │
+│  │ ┌─────────────────────┐ │          │ Block 2: [value_data_2] │          │
+│  │ │ Internal Node       │ │          │ Block 3: [value_data_3] │          │
+│  │ │                     │ │          │ Block 4: [value_data_4] │          │
+│  │ │ Keys: [m, s]        │ │          │        ...              │          │
+│  │ │ Children: [2,3,4]   │ │          │ Block N: [value_data_N] │          │
+│  │ └─────────────────────┘ │          └─────────────────────────┘          │
+│  │                         │                                               │
+│  │ ┌─────────────────────┐ │          KLog Entry Format:                   │
+│  │ │ Leaf Node (Block 2) │ │          ┌─────────────────────────────────┐  │
+│  │ │                     │ │          │ struct KLogEntry {              │  │
+│  │ │ apple → Block 1     │ │          │   Key: []byte                   │  │
+│  │ │ cat   → Block 2     │ │          │   Timestamp: int64              │  │
+│  │ │ dog   → Block 3     │ │────────▶│   ValueBlockID: int64           │  │
+│  │ │ ...                 │ │          │ }                               │  │
+│  │ └─────────────────────┘ │          │                                 │  │
+│  │                         │          │ Special: ValueBlockID = -1      │  │
+│  │ ┌─────────────────────┐ │          │ indicates deletion tombstone    │  │
+│  │ │ Leaf Node (Block 3) │ │          └─────────────────────────────────┘  │
+│  │ │                     │ │                                               │
+│  │ │ mouse → Block 4     │ │          Bloom Filter (Optional):             │
+│  │ │ rat   → Block 5     │ │          ┌─────────────────────────────────┐  │
+│  │ │ snake → Block 6     │ │          │ Double Hashing (FNV-1a + FNV)   │  │
+│  │ │ ...                 │ │          │ False Positive Rate: 0.01       │  │
+│  │ └─────────────────────┘ │          │ Auto-sized based on entries     │  │
+│  └─────────────────────────┘          └─────────────────────────────────┘  │
+│                                                                            │
+│  Read Path:                                                                │
+│  1. Range Check (Min/Max keys)                                             │
+│  2. Bloom Filter Check (if enabled)                                        │
+│  3. BTree Search in KLog                                                   │
+│  4. Value Retrieval from VLog                                              │
+│  5. MVCC Timestamp Filtering                                               │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+```
 
 ### SSTable Metadata
 Each SSTable tracks the following main meta details:
@@ -731,6 +956,75 @@ score = (levelSize / capacity) * sizeWeight + (sstableCount / threshold) * count
 - **Cleanup** Old SSTable files removed after successful compaction
 
 ### Concurrency Model
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                                                                            │
+│  Lock-Free Read Path:                                                      │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Reader Thread 1                Reader Thread 2                      │   │
+│  │                                                                     │   │
+│  │ txn1.Get("key") ──┐            txn2.Get("key") ──┐                  │   │
+│  │                   │                              │                  │   │
+│  │                   ▼                              ▼                  │   │
+│  │ ┌─────────────────────────────────────────────────────────────────┐ │   │
+│  │ │               Lock-Free SkipList                                │ │   │
+│  │ │                                                                 │ │   │
+│  │ │ Node: "key" ──▶ Version Chain                                  │ │   │
+│  │ │ ┌──────────┐   ┌──────────┐   ┌──────────┐                      │ │   │
+│  │ │ │TS: 3000  │─▶│TS: 2000  │─▶│TS: 1000  │                      │ │   │
+│  │ │ │Val: v3   │   │Val: v2   │   │Val: v1   │                      │ │   │
+│  │ │ │Type:WRITE│   │Type:WRITE│   │Type:WRITE│                      │ │   │
+│  │ │ └──────────┘   └──────────┘   └──────────┘                      │ │   │
+│  │ └─────────────────────────────────────────────────────────────────┘ │   │
+│  │                   │                              │                  │   │
+│  │ Read at TS=2500 ──┘            Read at TS=1500 ──┘                  │   │
+│  │ Returns: v2                     Returns: v2                         │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  Atomic Write Path:                                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Writer Thread 1              Writer Thread 2                        │   │
+│  │                                                                     │   │
+│  │ txn1.Put("key", "val4")      txn2.Put("key", "val5")                │   │
+│  │          │                            │                             │   │
+│  │          ▼                            ▼                             │   │
+│  │ ┌─────────────────┐          ┌─────────────────┐                    │   │
+│  │ │ WriteSet Buffer │          │ WriteSet Buffer │                    │   │
+│  │ │ key -> val4     │          │ key -> val5     │                    │   │
+│  │ └─────────────────┘          └─────────────────┘                    │   │
+│  │          │                            │                             │   │
+│  │          │ Commit @ TS=4000           │ Commit @ TS=5000            │   │
+│  │          ▼                            ▼                             │   │
+│  │ ┌─────────────────────────────────────────────────────────────┐     │   │
+│  │ │ Atomic Version Chain Update (CAS Operations)                │     │   │
+│  │ │                                                             │     │   │
+│  │ │ ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐   │     │   │
+│  │ │ │TS: 5000  │─▶│TS: 4000  │─▶│TS: 3000  │─▶│TS: 2000  │   │     │   │
+│  │ │ │Val: v5   │   │Val: v4   │   │Val: v3   │   │Val: v2   │   │     │   │
+│  │ │ │Type:WRITE│   │Type:WRITE│   │Type:WRITE│   │Type:WRITE│   │     │   │
+│  │ │ └──────────┘   └──────────┘   └──────────┘   └──────────┘   │     │   │
+│  │ └─────────────────────────────────────────────────────────────┘     │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  Background Operations:                                                    │
+│  ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐           │
+│  │ Flusher Gorout..│   │Compactor Threads│   │ Sync Goroutine  │           │
+│  │                 │   │                 │   │                 │           │
+│  │ • Flush queue   │   │ • Job scheduler │   │ • Periodic sync │           │
+│  │ • Memtable swap │   │ • Merge SSTables│   │ • WAL durability│           │
+│  │ • Background    │   │ • Level manage  │   │ • Configurable  │           │
+│  │   processing    │   │ • Concurrent    │   │   intervals     │           │
+│  └─────────────────┘   └─────────────────┘   └─────────────────┘           │
+│                                                                            │
+│  Isolation Guarantees:                                                     │
+│  • Read Committed: Only see committed data                                 │
+│  • Snapshot Isolation: Consistent view at transaction start                │
+│  • No Dirty Reads: Timestamp-based visibility                              │
+│  • Repeatable Reads: Same data throughout transaction                      │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
 - Wildcat uses lock-free structures where possible (e.g., atomic value swaps for memtables, atomic lru, queues, and more)
 - Read and write operations are designed to be non-blocking.
 - WAL appends are retried with backoff and allow concurrent writes.
@@ -767,6 +1061,85 @@ Recovery process consists of several steps
 ### Block Manager
 Wildcat's block manager provides a low-level, atomic high-performance file I/O with sophisticated features.
 
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        Block Manager Architecture                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  File Layout:                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ Header (32B)                                                        │    │
+│  │ ┌─────────────────────────────────────────────────────────────────┐ │    │
+│  │ │ CRC | Magic | Version | BlockSize | Allotment                   │ │    │
+│  │ │ u32 | u32   | u32     | u32       | u64                         │ │    │
+│  │ │ ... | WILD  | 1       | 512       | 16                          │ │    │
+│  │ └─────────────────────────────────────────────────────────────────┘ │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Block Structure (512 bytes each):                                          │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ Block Header (32B)                                                  │    │
+│  │ ┌─────────────────────────────────────────────────────────────────┐ │    │
+│  │ │ CRC | BlockID | DataSize | NextBlock                            │ │    │
+│  │ │ u32 | u64     | u64      | u64                                  │ │    │
+│  │ └─────────────────────────────────────────────────────────────────┘ │    │
+│  │                                                                     │    │
+│  │ Data Section (480B)                                                 │    │
+│  │ ┌─────────────────────────────────────────────────────────────────┐ │    │
+│  │ │ [User Data - up to 480 bytes]                                   │ │    │
+│  │ │ [Remaining space zeroed out]                                    │ │    │
+│  │ └─────────────────────────────────────────────────────────────────┘ │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Block Chaining (for large data):                                           │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ Block 5                Block 8                Block 12              │    │
+│  │ ┌─────────────┐        ┌─────────────┐        ┌─────────────┐       │    │
+│  │ │ NextBlock=8 │──────▶│ NextBlock=12│──────▶│ NextBlock=-1│       │    │
+│  │ │ Data[0:480] │        │ Data[480:960│        │ Data[960:N] │       │    │
+│  │ └─────────────┘        └─────────────┘        └─────────────┘       │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Allocation Management:                                                     │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                   Lock-Free Allocation Queue                        │    │
+│  │                                                                     │    │
+│  │ ┌─────┐    ┌─────┐    ┌─────┐    ┌─────┐    ┌─────┐                 │    │
+│  │ │ 15  │──▶│ 23  │──▶│ 31  │──▶│ 47  │──▶│ 52  │                 │    │
+│  │ └─────┘    └─────┘    └─────┘    └─────┘    └─────┘                 │    │
+│  │   ▲                                                                 │    │
+│  │   │ Atomic Dequeue/Enqueue (Michael & Scott Algorithm)              │    │
+│  │   │                                                                 │    │
+│  │ When empty: Append 16 new blocks atomically                         │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  I/O Operations (Direct System Calls):                                      │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ pread(fd, buf, count, offset)  - Atomic positioned read             │    │
+│  │ pwrite(fd, buf, count, offset) - Atomic positioned write            │    │
+│  │                                                                     │    │
+│  │ Benefits:                                                           │    │
+│  │ • No file pointer races between threads                             │    │
+│  │ • Position-independent operations                                   │    │
+│  │ • Better performance than seek+read/write                           │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Sync Options:                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ SyncNone: No fsync calls (fastest, least durable)                   │    │
+│  │ SyncFull: fdatasync after every write (safest, slower)              │    │
+│  │ SyncPartial: Background fdatasync at intervals (balanced)           │    │
+│  │                                                                     │    │
+│  │ Background Sync Process:                                            │    │
+│  │ ┌─────────────────┐                                                 │    │
+│  │ │ Sync Goroutine  │ ─── Timer ───▶ fdatasync(fd)                   │    │
+│  │ │ (SyncPartial)   │ ◀── 16ns ────  Configurable                    │    │
+│  │ └─────────────────┘                                                 │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
 #### Core
 - **Direct I/O** Uses pread/pwrite system calls for atomic, position-independent operations
 - **Block chaining** Supports multi-block data with automatic chain management
@@ -793,6 +1166,83 @@ Wildcat's block manager provides a low-level, atomic high-performance file I/O w
 ### LRU Cache
 Wildcat uses a sophisticated lock-free LRU cache for block manager handles.
 
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          Lock-Free LRU Cache                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Node Structure:                                                            │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ struct Node {                                                       │    │
+│  │   key: interface{}                                                  │    │
+│  │   value: *ValueWrapper  (atomic pointer)                            │    │
+│  │   accessCnt: uint64     (atomic counter)                            │    │
+│  │   timestamp: int64      (nanosecond precision)                      │    │
+│  │   next: *Node          (atomic pointer)                             │    │
+│  │   prev: *Node          (atomic pointer)                             │    │
+│  │   onEvict: EvictionCallback                                         │    │
+│  │   markedForEviction: int32  (atomic flag)                           │    │
+│  │ }                                                                   │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Cache Layout:                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                        Doubly Linked List                           │    │
+│  │                                                                     │    │
+│  │ ┌─────────┐      ┌─────────┐      ┌─────────┐      ┌─────────┐      │    │
+│  │ │Sentinel │◀──▶│ Node A  │◀──▶│ Node B  │◀──▶│ Node C  │      │    │
+│  │ │(Header) │      │Access:15│      │Access:8 │      │Access:3 │      │    │
+│  │ └─────────┘      └─────────┘      └─────────┘      └─────────┘      │    │
+│  │      ▲                                                    ▲         │    │
+│  │      │                                                    │         │    │
+│  │   head (atomic)                                      tail (atomic)  │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Eviction Algorithm:                                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ Score = accessWeight * accessCount + timeWeight * age               │    │
+│  │                                                                     │    │
+│  │ Default: accessWeight = 0.8, timeWeight = 0.2                       │    │
+│  │                                                                     │    │
+│  │ Eviction Triggers:                                                  │    │
+│  │ • Load factor >= 95% (capacity * 0.95)                              │    │
+│  │ • Emergency: Load factor >= 100%                                    │    │
+│  │                                                                     │    │
+│  │ Eviction Process:                                                   │    │
+│  │ 1. Mark nodes for eviction (atomic CAS)                             │    │
+│  │ 2. Enqueue to eviction queue                                        │    │
+│  │ 3. Background processing removes from list                          │    │
+│  │ 4. Call eviction callbacks                                          │    │
+│  │ 5. Reuse nodes for new entries                                      │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Anti-Thrashing Mechanisms:                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ • Lazy Eviction: Only evict when near capacity                      │    │
+│  │ • Smart Scoring: Balance access frequency vs age                    │    │
+│  │ • Node Reuse: Recycle evicted nodes for new entries                 │    │
+│  │ • Progress Tracking: Detect and recover from stuck states           │    │
+│  │ • Emergency Recovery: Repair corrupted pointers                     │    │
+│  │                                                                     │    │
+│  │ Stuck State Detection:                                              │    │
+│  │ if (now - lastProgress > 10ms && stuckCounter > 5) {                │    │
+│  │   emergencyRecovery();  // Clear queues, repair pointers            │    │
+│  │ }                                                                   │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Concurrent Operations:                                                     │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ Thread 1: Get("key1")           Thread 2: Put("key2", val)          │    │
+│  │     │                                 │                             │    │
+│  │     ▼                                 ▼                             │    │
+│  │ Lock-free traversal             Atomic tail append                  │    │
+│  │ Atomic access count++           CAS retry with backoff              │    │
+│  │ No blocking                     Automatic tail repair               │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
 #### Advanced Features
 - **Lock-free design** Atomic operations with lazy eviction
 - **Anti-thrashing** Smart eviction with access pattern analysis
@@ -816,6 +1266,104 @@ evictionScore = accessWeight * accessCount + timeWeight * age
 - **Resource cleanup** Automatic resource management with eviction callbacks
 
 ### Lock-Free Queue
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Michael & Scott Lock-Free Queue                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Queue Structure:                                                           │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ struct Node {                                                       │    │
+│  │   value: interface{}                                                │    │
+│  │   next: unsafe.Pointer  // *Node (atomic)                           │    │
+│  │ }                                                                   │    │
+│  │                                                                     │    │
+│  │ struct Queue {                                                      │    │
+│  │   head: unsafe.Pointer  // *Node (atomic)                           │    │
+│  │   tail: unsafe.Pointer  // *Node (atomic)                           │    │
+│  │ }                                                                   │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Queue Layout:                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                                                                     │    │
+│  │ ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────┐            │    │
+│  │ │Sentinel │──▶│ Node 1  │──▶│ Node 2  │──▶│ Node 3  │───▶ NULL  │    │
+│  │ │(Empty)  │    │Value: A │    │Value: B │    │Value: C │            │    │
+│  │ └─────────┘    └─────────┘    └─────────┘    └─────────┘            │    │
+│  │      ▲                                             ▲                │    │
+│  │      │                                             │                │    │
+│  │   head (atomic)                                tail (atomic)        │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Enqueue Algorithm:                                                         │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ loop {                                                              │    │
+│  │   tail = atomic.LoadPointer(&q.tail)                                │    │
+│  │   next = atomic.LoadPointer(&tail.next)                             │    │
+│  │                                                                     │    │
+│  │   if tail == atomic.LoadPointer(&q.tail) {  // Consistency check    │    │
+│  │     if next == nil {                                                │    │
+│  │       // Try to link new node at end                                │    │
+│  │       if atomic.CAS(&tail.next, nil, newNode) {                     │    │
+│  │         // Success! Try to swing tail                               │    │
+│  │         atomic.CAS(&q.tail, tail, newNode)                          │    │
+│  │         break                                                       │    │
+│  │       }                                                             │    │
+│  │     } else {                                                        │    │
+│  │       // Tail is lagging, try to advance it                         │    │
+│  │       atomic.CAS(&q.tail, tail, next)                               │    │
+│  │     }                                                               │    │
+│  │   }                                                                 │    │
+│  │ }                                                                   │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Dequeue Algorithm:                                                         │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ loop {                                                              │    │
+│  │   head = atomic.LoadPointer(&q.head)                                │    │
+│  │   tail = atomic.LoadPointer(&q.tail)                                │    │
+│  │   next = atomic.LoadPointer(&head.next)                             │    │
+│  │                                                                     │    │
+│  │   if head == atomic.LoadPointer(&q.head) {  // Consistency check    │    │
+│  │     if head == tail {                                               │    │
+│  │       if next == nil {                                              │    │
+│  │         return nil  // Queue is empty                               │    │
+│  │       }                                                             │    │
+│  │       // Tail is falling behind, advance it                         │    │
+│  │       atomic.CAS(&q.tail, tail, next)                               │    │
+│  │     } else {                                                        │    │
+│  │       // Read value before CAS                                      │    │
+│  │       value = next.value                                            │    │
+│  │       // Try to swing head to next node                             │    │
+│  │       if atomic.CAS(&q.head, head, next) {                          │    │
+│  │         return value  // Success!                                   │    │
+│  │       }                                                             │    │
+│  │     }                                                               │    │
+│  │   }                                                                 │    │
+│  │ }                                                                   │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  ABA Problem Prevention:                                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ • Consistent reads using double-checking                            │    │
+│  │ • Memory ordering guarantees with atomic operations                 │    │
+│  │ • Hazard pointers through consistent state verification             │    │
+│  │ • No explicit memory reclamation (GC handles cleanup)               │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Performance Characteristics:                                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ • Wait-free for readers (no blocking)                               │    │
+│  │ • Lock-free for writers (progress guaranteed)                       │    │
+│  │ • High throughput under contention                                  │    │
+│  │ • Scalable to many threads                                          │    │
+│  │ • O(1) enqueue/dequeue operations                                   │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
 - **Michael & Scott algorithm** Industry-standard lock-free queue design
 - **ABA problem prevention** Proper pointer management and consistency checks
 - **Memory ordering** Atomic operations ensure proper synchronization
@@ -823,6 +1371,98 @@ evictionScore = accessWeight * accessCount + timeWeight * age
 
 ### BTree
 Wildcat's BTree provides the foundation for SSTable key storage with advanced features for range queries and bidirectional iteration.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       Immutable BTree Structure                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  BTree Layout (Order = 10):                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                          Root Node (Block 1)                        │    │
+│  │ ┌─────────────────────────────────────────────────────────────────┐ │    │
+│  │ │ Keys: [j, s]                                                    │ │    │
+│  │ │ Children: [Block2, Block3, Block4]                              │ │    │
+│  │ │ IsLeaf: false                                                   │ │    │
+│  │ └─────────────────────────────────────────────────────────────────┘ │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                 │                    │                    │                 │
+│                 ▼                    ▼                    ▼                 │
+│  ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐  │
+│  │   Leaf Block 2      │  │   Leaf Block 3      │  │   Leaf Block 4      │  │
+│  │ ┌─────────────────┐ │  │ ┌─────────────────┐ │  │ ┌─────────────────┐ │  │
+│  │ │Keys:[a,c,f,h,i] │ │  │ │Keys:[k,m,p,r]   │ │  │ │Keys:[t,v,x,z]   │ │  │
+│  │ │Values:[v1...v5] │ │  │ │Values:[v6...v9] │ │  │ │Values:[v10..v13]│ │  │
+│  │ │NextLeaf: Block3 │ │  │ │NextLeaf: Block4 │ │  │ │NextLeaf: -1     │ │  │
+│  │ │PrevLeaf: -1     │ │  │ │PrevLeaf: Block2 │ │  │ │PrevLeaf: Block3 │ │  │
+│  │ └─────────────────┘ │  │ └─────────────────┘ │  │ └─────────────────┘ │  │
+│  └─────────────────────┘  └─────────────────────┘  └─────────────────────┘  │
+│                                                                             │
+│  Node Structure:                                                            │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ struct Node {                                                       │    │
+│  │   BlockID: int64                    // Storage location             │    │
+│  │   IsLeaf: bool                      // Node type                    │    │
+│  │   Keys: [][]byte                    // Sorted keys                  │    │
+│  │   Values: []interface{}             // Associated values            │    │
+│  │   Children: []int64                 // Child block IDs              │    │
+│  │   Parent: int64                     // Parent block ID              │    │
+│  │   NextLeaf: int64                   // Next leaf (for iteration)    │    │
+│  │   PrevLeaf: int64                   // Previous leaf (bidirectional)│    │
+│  │ }                                                                   │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Iterator Types:                                                            │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ Full Iterator:    ──────▶ [a,c,f,h,i,k,m,p,r,t,v,x,z]              │    │
+│  │                   ◀──────                                          │    │
+│  │                                                                     │    │
+│  │ Range Iterator:   ──────▶ [f,h,i,k,m,p] (f ≤ key < r)              │    │
+│  │                   ◀──────                                          │    │
+│  │                                                                     │    │
+│  │ Prefix Iterator:  ──────▶ [ka,kb,kc,kd] (prefix="k")               │    │
+│  │                   ◀──────                                          │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Insert Algorithm (Immutable - Copy-on-Write):                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ 1. Find leaf position for new key                                   │    │
+│  │ 2. If leaf has space: create new leaf with inserted key             │    │
+│  │ 3. If leaf is full: split into two leaves                           │    │
+│  │ 4. Propagate changes up the tree (create new internal nodes)        │    │
+│  │ 5. Update root if necessary                                         │    │
+│  │ 6. Update leaf link pointers for iteration                          │    │
+│  │                                                                     │    │
+│  │ Split Example (Order=4, Max keys=7):                                │    │
+│  │ Full Leaf: [a,b,c,d,e,f,g] → Split into:                            │    │
+│  │ Left: [a,b,c,d] Right: [e,f,g] Middle key 'd' goes to parent        │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Bidirectional Iteration:                                                   │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ Forward:  Leaf Block 2 ──next──▶ Leaf Block 3 ──next──▶ Block 4   │    │
+│  │ Backward: Leaf Block 2 ◀──prev── Leaf Block 3 ◀──prev── Block 4   │    │
+│  │                                                                     │    │
+│  │ Iterator State Machine:                                             │    │
+│  │ ┌─────────┐  Next/Prev  ┌─────────┐  Next/Prev  ┌─────────┐         │    │
+│  │ │ Block 2 │ ─────────▶ │ Block 3 │ ─────────▶ │ Block 4 │         │    │
+│  │ │ idx: 0  │ ◀───────── │ idx: 0  │ ◀───────── │ idx: 0  │         │    │
+│  │ └─────────┘             └─────────┘             └─────────┘         │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Metadata Storage:                                                          │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ struct Metadata {                                                   │    │
+│  │   RootBlockID: int64       // Current root location                 │    │
+│  │   Order: int               // Tree order (min degree)               │    │
+│  │   Extra: interface{}       // Custom metadata (e.g., SSTable info)  │    │
+│  │ }                                                                   │    │
+│  │                                                                     │    │
+│  │ Stored in reserved Block 2, BSON serialized                         │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
 #### Core
 - **Immutable design** Once written, BTrees are never modified, ensuring consistency
@@ -865,6 +1505,105 @@ iter.Valid()          // Check if positioned at valid entry
 
 ### SkipList
 Wildcat's SkipList serves as the core data structure for memtables, providing concurrent MVCC access with lock-free operations.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                     Lock-Free MVCC SkipList                                     │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  SkipList Structure (MaxLevel=16, p=0.25):                                      │
+│  ┌───────────────────────────────────────────────────────────────────────────┐  │
+│  │ Level 3: Header ──────────────────────────▶ Node(key=m) ───▶ NULL       │  │
+│  │                                                                           │  │
+│  │ Level 2: Header ─────────▶ Node(key=d) ───▶ Node(key=m) ──▶ NULL       │  │
+│  │                                                                           │  │
+│  │ Level 1: Header ─▶ Node(key=b) ─▶ Node(key=d) ─▶ Node(key=m) ▶        │  │
+│  │                                                                           │  │
+│  │ Level 0: Header ▶ Node(a) ▶ Node(b) ▶ Node(d) ▶ Node(f) ▶ Node(m) ▶ │  │
+│  │          (All)    ▲                                             ▲         │  │
+│  │                   │                                             │         │  │
+│  │               backward                                    backward        │  │
+│  │               pointers                                   pointers         │  │
+│  └───────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                 │
+│  Node Structure with MVCC:                                                      │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │ struct Node {                                                            │   │
+│  │   forward: [16]unsafe.Pointer   // Atomic pointers to next nodes         │   │
+│  │   backward: unsafe.Pointer      // Atomic pointer to prev node           │   │
+│  │   key: []byte                   // Search key                            │   │
+│  │   versions: unsafe.Pointer      // Atomic pointer to version chain       │   │
+│  │   mutex: sync.RWMutex          // Protects version chain updates         │   │
+│  │ }                                                                        │   │
+│  │                                                                          │   │
+│  │ struct ValueVersion {                                                    │   │
+│  │   Data: []byte                  // Value data                            │   │
+│  │   Timestamp: int64              // Version timestamp                     │   │
+│  │   Type: ValueVersionType        // WRITE or DELETE                       │   │
+│  │   Next: *ValueVersion          // Link to older version                  │   │
+│  │ }                                                                        │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  MVCC Version Chain Example:                                                    │
+│  ┌──────────────────────────────────────────────────────────────────────────┐   │
+│  │ Node(key="account")                                                      │   │
+│  │                                                                          │   │
+│  │ versions ─▶ ┌──────────────┐    ┌──────────────┐    ┌─────────────┐     │   │
+│  │              │ Timestamp:   │──▶│ Timestamp:   │──▶│ Timestamp:  │     │   │
+│  │              │ 3000         │    │ 2000         │    │ 1000        │     │   │
+│  │              │ Data: $500   │    │ Data: $300   │    │ Data: $100  │     │   │
+│  │              │ Type: WRITE  │    │ Type: WRITE  │    │ Type: WRITE │     │   │
+│  │              └──────────────┘    └──────────────┘    └─────────────┘     │   │
+│  │                                                                          │   │
+│  │ Read at TS=2500: Returns $300                                            │   │
+│  │ Read at TS=3500: Returns $500                                            │   │
+│  │ Read at TS=1500: Returns $100                                            │   │
+│  └──────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  Insert Algorithm:                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐        │
+│  │ 1. Search path from top level down to level 0                       │        │
+│  │ 2. If key exists: add new version to existing node                  │        │
+│  │ 3. If new key: create node with random level (geometric dist.)      │        │
+│  │ 4. Update forward pointers atomically with CAS                      │        │
+│  │ 5. Update backward pointers for level 0                             │        │
+│  │ 6. Retry on CAS failure (wait-free progress)                        │        │
+│  │                                                                     │        │
+│  │ Level generation: level = 1; while(rand() < 0.25 && level < 16)     │        │
+│  │                   level++; return level;                            │        │
+│  └─────────────────────────────────────────────────────────────────────┘        │
+│                                                                                 │
+│  Search Algorithm:                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐        │
+│  │ 1. Start at header, highest level                                   │        │
+│  │ 2. Move right while next.key < searchKey                            │        │
+│  │ 3. Drop down one level, repeat                                      │        │
+│  │ 4. At level 0, check for exact match                                │        │
+│  │ 5. Find visible version ≤ readTimestamp                             │        │
+│  │ 6. Return value if type=WRITE, nil if type=DELETE                   │        │
+│  │                                                                     │        │
+│  │ Time Complexity: O(log n) expected                                  │        │
+│  └─────────────────────────────────────────────────────────────────────┘        │
+│                                                                                 │
+│  Iterator Support:                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐        │
+│  │ • Forward: Use forward[0] pointers (level 0 chain)                  │        │
+│  │ • Backward: Use backward pointers (level 0 only)                    │        │
+│  │ • Range: Start/end bounds with timestamp filtering                  │        │
+│  │ • Prefix: Key prefix matching with early termination                │        │
+│  │ • Snapshot isolation: All iterators use consistent read timestamp   │        │
+│  └─────────────────────────────────────────────────────────────────────┘        │
+│                                                                                 │
+│  Memory Management:                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐        │
+│  │ • No explicit node deletion (append-only versions)                  │        │
+│  │ • Garbage collection handles cleanup of unreachable versions        │        │
+│  │ • Lock-free operations avoid memory ordering issues                 │        │
+│  │ • Atomic operations ensure consistency across all levels            │        │
+│  └─────────────────────────────────────────────────────────────────────┘        │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
 
 #### MVCC Architecture
 - **Version chains** Each key maintains a linked list of timestamped versions
