@@ -50,6 +50,8 @@ func (flusher *Flusher) queueMemtable() error {
 		return nil // Already swapping, no need to queue again
 	}
 
+	flusher.db.log("Flusher: queuing current memtable for flushing")
+
 	// Set the swapping flag to indicate that we are in the process of swapping
 	atomic.StoreInt32(&flusher.swapping, 1)
 	defer atomic.StoreInt32(&flusher.swapping, 0)
@@ -80,8 +82,12 @@ func (flusher *Flusher) queueMemtable() error {
 	// Push the current memtable to the immutable queue
 	flusher.immutable.Enqueue(flusher.db.memtable.Load().(*Memtable))
 
+	flusher.db.log(fmt.Sprintf("Flusher: queued memtable %s for flushing", flusher.db.memtable.Load().(*Memtable).wal.path))
+
 	// Update the current memtable to the new one
 	flusher.db.memtable.Store(newMemtable)
+
+	flusher.db.log(fmt.Sprintf("Flusher: new active memtable created with WAL %s", newMemtable.wal.path))
 	return nil
 }
 
@@ -121,6 +127,8 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 	maxTimestamp := time.Now().UnixNano() + 10000000000 // Far in the future
 	entryCount := memt.skiplist.Count(maxTimestamp)
 	deletionCount := memt.skiplist.DeleteCount(maxTimestamp)
+
+	flusher.db.log(fmt.Sprintf("Flushing memtable with %d entries and %d deletions", entryCount, deletionCount))
 
 	if entryCount == 0 && deletionCount == 0 {
 		flusher.db.log("Skipping flush for empty memtable")

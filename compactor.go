@@ -165,6 +165,8 @@ func (compactor *Compactor) scheduleSizeTieredCompaction(level *Level, levelNum 
 		return
 	}
 
+	compactor.db.log(fmt.Sprintf("Scheduling size-tiered compaction for level %d with score %.2f", levelNum, score))
+
 	// Filter out SSTables that active transactions might need
 	safeTables := compactor.filterSafeTablesForCompaction(*sstables)
 	if len(safeTables) < 2 {
