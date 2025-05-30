@@ -364,6 +364,7 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 
 	// Force a size-tiered compaction by manually scheduling it
 	if len(*sstables) >= db.opts.CompactionSizeThreshold {
+
 		// Sort tables by size to simulate size-tiered selection
 		sortedTables := make([]*SSTable, len(*sstables))
 		copy(sortedTables, *sstables)
@@ -669,33 +670,43 @@ func TestCompactor_ConcurrentCompactions(t *testing.T) {
 		}
 	}
 
-	// Queue multiple compaction jobs manually
-	db.compactor.scoreLock.Lock()
-	db.compactor.activeJobs = 0
-	db.compactor.compactionQueue = make([]*compactorJob, 0)
-
-	levels := db.levels.Load()
-	if levels != nil {
-		// For each level that has SSTables, create a job
-		for levelIdx := 0; levelIdx < len(*levels)-1; levelIdx++ {
-			level := (*levels)[levelIdx]
-			sstables := level.sstables.Load()
-
-			if sstables != nil && len(*sstables) >= 2 {
-				// Create a job for this level
-				db.compactor.compactionQueue = append(db.compactor.compactionQueue, &compactorJob{
-					level:       levelIdx + 1,
-					priority:    float64(levelIdx + 1), // Higher levels have higher priority
-					ssTables:    (*sstables)[:2],       // Use first two tables
-					targetLevel: levelIdx + 2,
-					inProgress:  false,
-				})
-			}
-		}
+	// Helper function to safely access compaction queue
+	safeQueueAccess := func(accessFunc func()) {
+		db.compactor.scoreLock.Lock()
+		defer db.compactor.scoreLock.Unlock()
+		accessFunc()
 	}
 
-	t.Logf("Queued %d compaction jobs for concurrent execution", len(db.compactor.compactionQueue))
-	db.compactor.scoreLock.Unlock()
+	// Queue multiple compaction jobs manually
+	var initialQueueSize int
+	safeQueueAccess(func() {
+		db.compactor.activeJobs = 0
+		db.compactor.compactionQueue = make([]*compactorJob, 0)
+
+		levels := db.levels.Load()
+		if levels != nil {
+
+			// For each level that has SSTables, create a job
+			for levelIdx := 0; levelIdx < len(*levels)-1; levelIdx++ {
+				level := (*levels)[levelIdx]
+				sstables := level.sstables.Load()
+
+				if sstables != nil && len(*sstables) >= 2 {
+					// Create a job for this level
+					db.compactor.compactionQueue = append(db.compactor.compactionQueue, &compactorJob{
+						level:       levelIdx + 1,
+						priority:    float64(levelIdx + 1), // Higher levels have higher priority
+						ssTables:    (*sstables)[:2],       // Use first two tables
+						targetLevel: levelIdx + 2,
+						inProgress:  false,
+					})
+				}
+			}
+		}
+		initialQueueSize = len(db.compactor.compactionQueue)
+	})
+
+	t.Logf("Queued %d compaction jobs for concurrent execution", initialQueueSize)
 
 	// Execute compactions concurrently
 	for i := 0; i < db.compactor.maxConcurrency; i++ {
@@ -705,7 +716,7 @@ func TestCompactor_ConcurrentCompactions(t *testing.T) {
 
 	// Check that we have the expected number of active jobs
 	activeJobs := atomic.LoadInt32(&db.compactor.activeJobs)
-	expectedActive := min(int32(len(db.compactor.compactionQueue)), int32(db.compactor.maxConcurrency))
+	expectedActive := min(int32(initialQueueSize), int32(db.compactor.maxConcurrency))
 
 	t.Logf("Active compaction jobs: %d (expected around %d based on queue size and concurrency)",
 		activeJobs, expectedActive)

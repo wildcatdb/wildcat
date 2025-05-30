@@ -299,6 +299,8 @@ func (compactor *Compactor) executeCompactions() {
 		return
 	}
 
+	compactor.scoreLock.Lock()
+
 	// Find the highest priority non-in-progress job
 	var selectedJob *compactorJob
 	var selectedIdx int
@@ -312,11 +314,15 @@ func (compactor *Compactor) executeCompactions() {
 	}
 
 	if selectedJob == nil {
+		compactor.scoreLock.Unlock()
 		return
 	}
 
 	// Mark the job as in progress
 	selectedJob.inProgress = true
+
+	compactor.scoreLock.Unlock()
+
 	atomic.AddInt32(&compactor.activeJobs, 1)
 
 	// Execute the compaction in a goroutine

@@ -53,18 +53,29 @@ func (db *DB) Begin() *Txn {
 		mutex:     sync.Mutex{},
 	}
 
-	// Add the transaction to the list of transactions, do a swap to make it atomic
-	txnList := db.txns.Load()
-	if txnList == nil {
-		txns := make([]*Txn, 0)
+	// Follow atomic patterns.. load -> copy -> modify -> store with retry loop
+	for {
+		txnList := db.txns.Load()
+		var newTxns []*Txn
 
-		txns = append(txns, txn)
-		db.txns.Store(&txns)
-	} else {
-		txns := *txnList
-		txns = append(txns, txn)
-		db.txns.Store(&txns)
+		if txnList == nil {
 
+			// No existing transactions, create new slice
+			newTxns = make([]*Txn, 1)
+			newTxns[0] = txn
+		} else {
+
+			// Create a completely new slice with new underlying array
+			newTxns = make([]*Txn, len(*txnList)+1)
+			copy(newTxns, *txnList)
+			newTxns[len(*txnList)] = txn
+		}
+
+		// Try to atomically swap - if it fails, retry
+		if db.txns.CompareAndSwap(txnList, &newTxns) {
+			break
+		}
+		// If CAS failed, someone else modified txns, so retry the entire operation
 	}
 
 	return txn
@@ -73,12 +84,15 @@ func (db *DB) Begin() *Txn {
 // GetTxn retrieves a transaction by ID.
 // Can be used on system recovery.  You can recover an incomplete transaction.
 func (db *DB) GetTxn(id int64) (*Txn, error) {
+
 	// Find the transaction by ID
 	txns := db.txns.Load()
 	if txns == nil {
 		return nil, fmt.Errorf("transaction not found")
 	}
 
+	// We use binary search but sequential search may also be fine, I will leave for now
+	// as it's faster than linear
 	low, high := 0, len(*txns)-1
 	for low <= high {
 		mid := low + (high-low)/2
@@ -608,25 +622,41 @@ func (txn *Txn) NewPrefixIterator(prefix []byte, asc bool) (*MergeIterator, erro
 
 // remove removes the transaction from the database
 func (txn *Txn) remove() {
-
-	// Clear all sets
 	txn.ReadSet = make(map[string]int64)
 	txn.WriteSet = make(map[string][]byte)
 	txn.DeleteSet = make(map[string]bool)
-
 	txn.Committed = false
 
-	// Remove from the transaction list
-	txns := txn.db.txns.Load()
-	if txns != nil {
+	// Follow atomic patterns.. load -> copy -> modify -> store
+	for {
+		txns := txn.db.txns.Load()
+		if txns == nil {
+			return
+		}
+
+		// Find the transaction to remove
+		foundIndex := -1
 		for i, t := range *txns {
 			if t.Id == txn.Id {
-				*txns = append((*txns)[:i], (*txns)[i+1:]...)
+				foundIndex = i
 				break
 			}
 		}
-		txn.db.txns.Store(txns)
 
+		if foundIndex == -1 {
+			return // Transaction not found
+		}
+
+		// Create a new slice without the found transaction
+		newTxns := make([]*Txn, len(*txns)-1)
+		copy(newTxns, (*txns)[:foundIndex])
+		copy(newTxns[foundIndex:], (*txns)[foundIndex+1:])
+
+		// Try to atomically swap - if it fails, retry
+		if txn.db.txns.CompareAndSwap(txns, &newTxns) {
+			break
+		}
+		// If CAS failed, someone else modified txns, so retry
 	}
 }
 
@@ -643,6 +673,7 @@ func (txn *Txn) appendWal() error {
 		walPath := txn.db.memtable.Load().(*Memtable).wal.path
 		wal, ok := txn.db.lru.Get(walPath)
 		if !ok {
+
 			// Open the WAL file
 			walBm, err := blockmanager.Open(walPath, os.O_WRONLY|os.O_APPEND,
 				txn.db.opts.Permission, blockmanager.SyncOption(txn.db.opts.SyncOption))
