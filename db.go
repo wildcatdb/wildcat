@@ -810,7 +810,11 @@ func populateMemtableFromTxns(memt *Memtable, txnMap map[int64]*Txn, includeUnco
 // log logs a message to the log channel
 func (db *DB) log(msg string) {
 	if db.opts.LogChannel != nil {
-		db.opts.LogChannel <- msg
+		select {
+		case db.opts.LogChannel <- msg:
+		default:
+			// Channel full or closed, skip logging..
+		}
 	}
 }
 

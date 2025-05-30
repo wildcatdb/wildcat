@@ -45,6 +45,8 @@ func (memtable *Memtable) replay(activeTxns *[]*Txn) error {
 	var walBm *blockmanager.BlockManager
 	var err error
 
+	memtable.db.log(fmt.Sprintf("Replaying WAL for memtable: %s", memtable.wal.path))
+
 	// Check if wal file in lru cache and add debug logging
 	walQueueEntry, ok := memtable.db.lru.Get(memtable.wal.path)
 	if !ok {
@@ -164,6 +166,8 @@ func (memtable *Memtable) createBloomFilter(entries int64) (*bloomfilter.BloomFi
 		return nil, err
 	}
 
+	memtable.db.log(fmt.Sprintf("Creating Bloom filter for memtable with %d entries", entries))
+
 	bf, err := bloomfilter.New(uint(entries), memtable.db.opts.BloomFilterFPR)
 	if err != nil {
 		return nil, err
@@ -186,6 +190,8 @@ func (memtable *Memtable) createBloomFilter(entries int64) (*bloomfilter.BloomFi
 			continue
 		}
 	}
+
+	memtable.db.log(fmt.Sprintf("Bloom filter created for memtable with %d entries", entries))
 
 	return bf, nil
 
