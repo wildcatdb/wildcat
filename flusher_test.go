@@ -42,6 +42,9 @@ func TestFlusher_QueueMemtable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Get the initial memtable
 	initialMemtable := db.memtable.Load().(*Memtable)
@@ -58,6 +61,9 @@ func TestFlusher_QueueMemtable(t *testing.T) {
 		_ = db.Close()
 		t.Fatalf("Failed to add data: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Force queue the memtable
 	err = db.flusher.queueMemtable()
@@ -134,6 +140,9 @@ func TestFlusher_MVCCWithMultipleVersions(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create a single key with multiple versions
 	key := []byte("mvcc_key")
@@ -258,6 +267,9 @@ func TestFlusher_ErrorHandling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Add some data
 	for i := 0; i < 10; i++ {
@@ -329,6 +341,9 @@ func TestFlusher_ErrorHandling(t *testing.T) {
 	defer func(db2 *DB) {
 		_ = db2.Close()
 	}(db2)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Verify we can read at least some of the keys
 	var readSuccessCount int
@@ -381,6 +396,9 @@ func TestFlusher_MultipleFlushesWithUpdates(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Write the same keys multiple times across different flushes
 	// This tests handling updates to the same keys in different SSTables
@@ -484,6 +502,9 @@ func TestFlusher_ConcurrentReadsWithFlush(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert test data and ensure it's fully committed before starting readers
 	const keyCount = 500
@@ -644,6 +665,9 @@ func TestFlusher_VariousKeySizes(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Test various key sizes
 	keySizes := []int{1, 10, 100, 1000}
@@ -765,6 +789,9 @@ func TestFlusher_RecoveryAfterCrash(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
 		}
+		defer func(path string) {
+			_ = os.RemoveAll(path)
+		}(dir)
 
 		// Insert some data with full transaction commits
 		for i := 0; i < 100; i++ {
@@ -841,6 +868,9 @@ func TestFlusher_RecoveryAfterCrash(t *testing.T) {
 	defer func(db2 *DB) {
 		_ = db2.Close()
 	}(db2)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Give recovery operations time to complete
 	time.Sleep(200 * time.Millisecond)
@@ -911,6 +941,9 @@ func TestFlusher_EmptyFlush(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Queue an empty memtable (no writes performed)
 	err = db.flusher.queueMemtable()

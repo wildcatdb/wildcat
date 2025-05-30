@@ -40,6 +40,9 @@ func TestTxn_BasicOperations(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Test basic transaction operations
 	txn := db.Begin()
@@ -146,6 +149,9 @@ func TestTxn_Rollback(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Write a key-value pair to the database
 	err = db.Update(func(txn *Txn) error {
@@ -222,6 +228,9 @@ func TestTxn_Isolation(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// First, insert a key
 	err = db.Update(func(txn *Txn) error {
@@ -306,6 +315,9 @@ func TestTxn_Update(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Test successful update
 	err = db.Update(func(txn *Txn) error {
@@ -385,6 +397,9 @@ func TestTxn_ConcurrentOperations(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Number of concurrent writers
 	const numWriters = 5
@@ -485,6 +500,9 @@ func TestTxn_WALRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Committed transaction
 	err = db.Update(func(txn *Txn) error {
@@ -534,6 +552,9 @@ func TestTxn_WALRecovery(t *testing.T) {
 	defer func(db2 *DB) {
 		_ = db2.Close()
 	}(db2)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Check committed transaction was recovered
 	var value []byte
@@ -603,6 +624,9 @@ func TestTxn_DeleteTimestamp(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert a key
 	key := []byte("timestamp_test_key")

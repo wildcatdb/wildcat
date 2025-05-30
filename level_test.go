@@ -35,6 +35,9 @@ func TestLevel_BasicOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert enough data to create SSTables in level 1
 	numEntries := 100
@@ -152,6 +155,10 @@ func TestLevel_Reopen(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to open database: %v", err)
 		}
+
+		defer func(path string) {
+			_ = os.RemoveAll(path)
+		}(dir)
 
 		// Insert data that will be flushed to SSTable
 		for i := 0; i < 50; i++ {
@@ -291,6 +298,9 @@ func TestLevel_SizeMethods(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Get the level 1
 	levels := db.levels.Load()
@@ -379,6 +389,9 @@ func TestLevel_ErrorHandling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Add some data and flush to create SSTable files
 	for i := 0; i < 50; i++ {
@@ -446,6 +459,9 @@ func TestLevel_ErrorHandling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to reopen database with corrupted level: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// The level.reopen method should skip the corrupted SSTable
 	levels := db2.levels.Load()

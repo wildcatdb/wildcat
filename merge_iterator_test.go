@@ -40,6 +40,9 @@ func TestMergeIterator_MVCC(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert initial data
 	err = db.Update(func(txn *Txn) error {
@@ -137,6 +140,9 @@ func TestMergeIterator_LargeScale(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert a large number of keys
 	numKeys := 20
@@ -233,6 +239,9 @@ func TestMergeIterator_Bidirectional(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert test data with predictable ordering
 	testKeys := []string{"a", "c", "e", "g", "i", "k", "m", "o", "q", "s"}
@@ -448,6 +457,9 @@ func TestMergeIterator_BidirectionalWithMVCC(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert initial data
 	err = db.Update(func(txn *Txn) error {
@@ -595,6 +607,9 @@ func TestMergeIterator_EdgeCases(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	t.Run("Empty Iterator", func(t *testing.T) {
 		txn := db.Begin()
@@ -725,6 +740,9 @@ func TestMergeIterator_BidirectionalMultipleSources(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert initial batch of data (will go to SSTable)
 	err = db.Update(func(txn *Txn) error {
@@ -994,6 +1012,9 @@ func TestMergeIterator_BidirectionalStressTest(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Create multiple batches with overlapping keys to stress test merging
 	numBatches := 5
@@ -1181,6 +1202,9 @@ func TestMergeIterator_RangeBasic(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert test data with predictable ordering
 	testKeys := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
@@ -1342,6 +1366,9 @@ func TestMergeIterator_RangeWithMVCC(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert initial data
 	err = db.Update(func(txn *Txn) error {
@@ -1482,6 +1509,9 @@ func TestMergeIterator_PrefixBasic(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert test data with different prefixes
 	testData := map[string]string{
@@ -1647,6 +1677,9 @@ func TestMergeIterator_PrefixWithMVCC(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert initial data with different prefixes
 	err = db.Update(func(txn *Txn) error {
@@ -1801,6 +1834,9 @@ func TestMergeIterator_RangeBidirectional(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert test data
 	testKeys := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
@@ -1914,6 +1950,9 @@ func TestMergeIterator_RangeMultipleSources(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert initial batch (will go to SSTable)
 	err = db.Update(func(txn *Txn) error {
@@ -2119,6 +2158,9 @@ func TestMergeIterator_PrefixMultipleSources(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	// Insert initial batch with different prefixes (will go to SSTable)
 	err = db.Update(func(txn *Txn) error {
@@ -2337,6 +2379,9 @@ func TestMergeIterator_RangeAndPrefixEdgeCases(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	t.Run("Empty Range Iterator", func(t *testing.T) {
 		txn := db.Begin()
