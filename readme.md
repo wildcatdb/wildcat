@@ -53,6 +53,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
   - [Log Channel](#log-channel)
   - [Database Statistics](#database-statistics)
   - [Force Flushing](#force-flushing)
+  - [Escalate Sync](#escalate-sync)
 - [Shared C Library](#shared-c-library)
 - [Overview](#overview)
     - [MVCC Model](#mvcc-model)
@@ -547,6 +548,16 @@ You can force a flush of current and immutable memtables to disk using the `Flus
 ```go
 // Force all memtables to flush to SSTables
 err := db.ForceFlush()
+if err != nil {
+    // Handle error
+}
+```
+
+### Escalate Sync
+If you have your sync option set to SyncNone and would like to control when the block manager syncs a WAL to disk, you can use the `EscalateSync` which syncs the current WAL to disk.
+```go
+// Escalate sync to ensure current WAL is written to disk
+err := db.Sync()
 if err != nil {
     // Handle error
 }
