@@ -873,6 +873,39 @@ func (db *DB) totalEntries() int64 {
 	return total
 }
 
+// Sync escalates the Fdatasync operation for the current memtable's write ahead log.  To only be used when sync option is set to SyncNone.
+func (db *DB) Sync() error {
+	if db == nil {
+		return errors.New("database is nil")
+	}
+
+	if db.opts.SyncOption != SyncNone {
+		return errors.New("sync option must be set to SyncNone to escalate syncs")
+	}
+
+	// Sync current memtable's WAL
+	if memt, ok := db.memtable.Load().(*Memtable); ok && memt.wal != nil {
+		// Get block manager for WAL from lru
+		bm, ok := db.lru.Get(memt.wal.path)
+		if !ok {
+			return fmt.Errorf("no block manager found for WAL at path %s", memt.wal.path)
+		}
+
+		if walBm, ok := bm.(*blockmanager.BlockManager); ok {
+
+			// Sync it up!!
+			if err := walBm.Sync(); err != nil {
+				return fmt.Errorf("failed to sync active memtable's WAL: %w", err)
+			}
+		} else {
+			return fmt.Errorf("expected BlockManager for WAL, got %T", bm)
+
+		}
+	}
+
+	return nil
+}
+
 // Stats returns a string with the current statistics of the Wildcat database
 func (db *DB) Stats() string {
 	if db == nil {

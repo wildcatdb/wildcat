@@ -1363,3 +1363,12 @@ func (bm *BlockManager) freeUnusedBlocks(blockIDs []uint64) error {
 
 	return nil
 }
+
+// Sync escalates the Fdatasync operation to ensure data integrity.  Only allowed when syncOption is SyncNone.
+func (bm *BlockManager) Sync() error {
+	if bm.syncOption != SyncNone {
+		return errors.New("escalate fsync is only allowed when syncOption is SyncNone")
+	}
+
+	return syscall.Fdatasync(int(bm.fd))
+}
