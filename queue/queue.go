@@ -30,6 +30,7 @@ type Node struct {
 type Queue struct {
 	head unsafe.Pointer // *Node
 	tail unsafe.Pointer // *Node
+	size int64          // Atomic counter
 }
 
 // New creates a new concurrent queue
@@ -73,6 +74,7 @@ func (q *Queue) Enqueue(value interface{}) {
 				if atomic.CompareAndSwapPointer(&tail.next, nil, nodePtr) {
 					// Enqueue is done, try to swing tail to the inserted node
 					atomic.CompareAndSwapPointer(&q.tail, tailPtr, nodePtr)
+					atomic.AddInt64(&q.size, 1)
 					return
 				}
 			} else {
@@ -109,7 +111,8 @@ func (q *Queue) Dequeue() interface{} {
 
 				// Try to swing Head to the next node
 				if atomic.CompareAndSwapPointer(&q.head, headPtr, nextPtr) {
-					return value // Dequeue is done
+					atomic.AddInt64(&q.size, -1) // Decrement counter
+					return value                 // Dequeue is done
 				}
 			}
 		}
@@ -148,4 +151,9 @@ func (q *Queue) ForEach(f func(item interface{}) bool) {
 		}
 		nextPtr = atomic.LoadPointer(&next.next)
 	}
+}
+
+// Size returns the number of items in the queue
+func (q *Queue) Size() int64 {
+	return atomic.LoadInt64(&q.size)
 }

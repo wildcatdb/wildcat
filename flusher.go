@@ -169,6 +169,12 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 		return fmt.Errorf("failed to open VLog block manager: %w", err)
 	}
 
+	// When the file becomes immutable we trim unused blocks
+	defer func() {
+		_, _ = klogBm.TrimUnusedBlocks()
+		_, _ = vlogBm.TrimUnusedBlocks()
+	}()
+
 	// We create a new bloom filter if enabled and add it to sstable meta
 	if flusher.db.opts.BloomFilter {
 

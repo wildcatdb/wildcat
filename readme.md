@@ -1119,7 +1119,7 @@ Wildcat's block manager provides a low-level, atomic high-performance file I/O w
 │  │   ▲                                                                 │    │
 │  │   │ Atomic Dequeue/Enqueue (Michael & Scott Algorithm)              │    │
 │  │   │                                                                 │    │
-│  │ When empty: Append 16 new blocks atomically                         │    │
+│  │ When half empty: Append 128 new blocks atomically                   │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                                                             │
 │  I/O Operations (Direct System Calls):                                      │
@@ -1146,6 +1146,8 @@ Wildcat's block manager provides a low-level, atomic high-performance file I/O w
 │  │ └─────────────────┘                                                 │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                                                             │
+│  When the block manager is made immutable empty blocks are truncated from   │
+│  end of file.                                                               │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
