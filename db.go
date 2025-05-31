@@ -44,7 +44,7 @@ const (
 const (
 	SSTablePrefix    = "sst_"     // Prefix for SSTable files
 	LevelPrefix      = "l"        // Prefix for level directories i.e. "l1", "l2", etc.
-	WALFileExtension = ".wal"     // Extension for Write Ahead Log files <timestamp>.wal
+	WALFileExtension = ".wal"     // Extension for Write Ahead Log files <id>.wal
 	KLogExtension    = ".klog"    // Extension for KLog files
 	VLogExtension    = ".vlog"    // Extension for VLog files
 	IDGSTFileName    = "idgstate" // Filename for ID generator state
@@ -72,7 +72,7 @@ const (
 	DefaultCompactionScoreCountWeight  = 0.2             // Default weight for count-based score
 	DefaultFlusherTickerInterval       = 1 * time.Millisecond
 	DefaultCompactorTickerInterval     = 250 * time.Millisecond // Default interval for compactor ticker
-	DefaultBloomFilterProbability      = 0.01                   // Default probability for Bloom filter
+	DefaultBloomFilterFPR              = 0.01                   // Default false positive rate for Bloom filter
 	DefaultWALAppendRetry              = 10                     // Default number of retries for WAL append
 	DefaultWALAppendBackoff            = 128 * time.Microsecond // Default backoff duration for WAL append
 	DefaultSSTableBTreeOrder           = 10                     // Default order of the B-tree for SSTables
@@ -158,7 +158,7 @@ func Open(opts *Options) (*DB, error) {
 		opts:           opts,                                                                                                      // Set the options
 		txns:           atomic.Pointer[[]*Txn]{},                                                                                  // Atomic pointer to transactions
 		closeCh:        make(chan struct{}),                                                                                       // Channel for closing the database
-		txnTSGenerator: newIDGeneratorWithTimestamp(),                                                                             // ID generator for monotonic generation
+		txnTSGenerator: newIDGeneratorWithTimestamp(),                                                                             // We use timestamp generator for monotonic generation (1579134612000000004, next ID will be 1579134612000000005)
 	}
 
 	// Initialize flusher and compactor
@@ -330,7 +330,7 @@ func (opts *Options) setDefaults() {
 	}
 
 	if opts.BloomFilterFPR <= 0 {
-		opts.BloomFilterFPR = DefaultBloomFilterProbability
+		opts.BloomFilterFPR = DefaultBloomFilterFPR
 	}
 
 	if opts.WalAppendRetry <= 0 {
@@ -823,7 +823,7 @@ func (db *DB) log(msg string) {
 	}
 }
 
-// ForceFlush forces the flush of all memtables and immutable memtables
+// ForceFlush forces the flush of main current memtable and immutable memtables in flusher queue
 func (db *DB) ForceFlush() error {
 	if db == nil {
 		return errors.New("database is nil")
@@ -861,6 +861,12 @@ func (db *DB) totalEntries() int64 {
 	// Count entries in the active memtable
 	if activeMemt, ok := db.memtable.Load().(*Memtable); ok {
 		total += int64(activeMemt.skiplist.Count(time.Now().UnixNano() + 10000000000))
+	}
+
+	// We need to check if we have a flushing memtable
+	fmem := db.flusher.flushing.Load()
+	if fmem != nil {
+		total += int64(fmem.skiplist.Count(time.Now().UnixNano() + 10000000000))
 	}
 
 	// Count entries in immutable memtables

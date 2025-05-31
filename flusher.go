@@ -112,6 +112,11 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 	entryCount := memt.skiplist.Count(maxTimestamp)
 	deletionCount := memt.skiplist.DeleteCount(maxTimestamp)
 
+	// We defer clearing db.flusher.flushing
+	defer func() {
+		flusher.flushing.Store(nil)
+	}()
+
 	flusher.db.log(fmt.Sprintf("Flushing memtable with %d entries and %d deletions", entryCount, deletionCount))
 
 	if entryCount == 0 && deletionCount == 0 {
