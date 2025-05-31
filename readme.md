@@ -29,6 +29,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - Key value separation optimization (`.klog` for keys, `.vlog` for values, klog entries point to vlog entries)
 - Tombstone-aware compaction with retention based on active transaction windows
 - Transaction recovery with incomplete transactions are preserved and accessible after crashes
+- Keys and values are opaque sequences of bytes
 
 ## Overview
 <div>
@@ -792,28 +793,38 @@ Optimistic timestamp-based Multi-Version Concurrency Control (MVCC) with Last-Wr
 ### SSTables and Compaction
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
-│  DEFAULT OPTS                                                              │
 │  L1 (64MB)     L2 (640MB)     L3 (6.4GB)     L4 (64GB)                     │
 │  ┌─────────┐   ┌─────────┐    ┌─────────┐     ┌─────────┐                  │
 │  │ SST_1   │   │ SST_5   │    │ SST_9   │     │ SST_15  │                  │
 │  │ Range:  │   │ Range:  │    │ Range:  │     │ Range:  │                  │
-│  │ [a,f]   │   │ [a,c]   │    │ [a,b]   │     │ [a,a]   │                  │
+│  │[apple,  │   │[apple,  │    │[apple,  │     │[apple,  │                  │
+│  │ fish]   │   │ cat]    │    │ bird]   │     │ ant]    │                  │
 │  └─────────┘   └─────────┘    └─────────┘     └─────────┘                  │
 │  ┌─────────┐   ┌─────────┐    ┌─────────┐     ┌─────────┐                  │
 │  │ SST_2   │   │ SST_6   │    │ SST_10  │     │ SST_16  │                  │
 │  │ Range:  │   │ Range:  │    │ Range:  │     │ Range:  │                  │
-│  │ [g,m]   │   │ [d,h]   │    │ [c,g]   │     │ [b,f]   │                  │
+│  │[grape,  │   │[dog,    │    │[car,    │     │[bat,    │                  │
+│  │ mouse]  │   │ house]  │    │ garden] │     │ fox]    │                  │
 │  └─────────┘   └─────────┘    └─────────┘     └─────────┘                  │
 │  ┌─────────┐   ┌─────────┐    ┌─────────┐                                  │
 │  │ SST_3   │   │ SST_7   │    │ SST_11  │     Size-Tiered (L1-L2)          │
 │  │ Range:  │   │ Range:  │    │ Range:  │     Leveled (L3+)                │
-│  │ [n,s]   │   │ [i,o]   │    │ [h,m]   │                                  │
+│  │[night,  │   │[ice,    │    │[hat,    │                                  │
+│  │ stone]  │   │ ocean]  │    │ moon]   │                                  │
 │  └─────────┘   └─────────┘    └─────────┘                                  │
 │  ┌─────────┐   ┌─────────┐    ┌─────────┐                                  │
 │  │ SST_4   │   │ SST_8   │    │ SST_12  │                                  │
 │  │ Range:  │   │ Range:  │    │ Range:  │                                  │
-│  │ [t,z]   │   │ [p,z]   │    │ [n,z]   │                                  │
+│  │[tree,   │   │[paper,  │    │[nest,   │                                  │
+│  │ zebra]  │   │ zoo]    │    │ zoo]    │                                  │
 │  └─────────┘   └─────────┘    └─────────┘                                  │
+│                                                                            │
+│  KEY CHARACTERISTICS:                                                      │
+│  • Each SSTable stores keys in sorted order internally                     │
+│  • Range = [smallest_key, largest_key] in that SSTable                     │
+│  • L1-L2: Overlapping ranges allowed (size-tiered compaction)              │
+│  • L3+: Non-overlapping ranges enforced (leveled compaction)               │
+│  • Bloom filters help skip SSTables during point queries                   │
 │                                                                            │
 │                         Compaction Process                                 │
 │                                                                            │
@@ -823,25 +834,20 @@ Optimistic timestamp-based Multi-Version Concurrency Control (MVCC) with Last-Wr
 │  │ Score = (levelSize/capacity)*0.8 + (sstCount/threshold)*0.2         │   │
 │  │                                                                     │   │
 │  │ If score > 1.0: Schedule compaction job                             │   │
+│  │ - Merge overlapping key ranges                                      │   │
+│  │ - Resolve duplicate keys (newest wins)                              │   │
+│  │ - Apply tombstones for deletions                                    │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                  │                                         │
 │                                  ▼                                         │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │ Compaction Job Queue (Priority by Score)                            │   │
+│  │ Example Compaction: L1→L2                                           │   │
 │  │                                                                     │   │
-│  │ [Job1: L1→L2, Score: 2.1, SSTables: [SST_1, SST_2]]                 │   │
-│  │ [Job2: L2→L3, Score: 1.8, SSTables: [SST_5, SST_9, SST_10]]         │   │
-│  │ [Job3: L3→L4, Score: 1.2, SSTables: [SST_11, SST_15]]               │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                  │                                         │
-│                                  ▼                                         │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │ Concurrent Execution (Max 4 jobs)                                   │   │
+│  │ Input: SST_1[apple,fish] + SST_2[grape,mouse]                       │   │
+│  │ Output: SST_new[apple,mouse] (merged and sorted)                    │   │
 │  │                                                                     │   │
-│  │ Worker 1: Merging SST_1 + SST_2 → SST_new                           │   │
-│  │ Worker 2: Merging SST_5 + SST_9 + SST_10 → SST_new2                 │   │
-│  │ Worker 3: Idle                                                      │   │
-│  │ Worker 4: Idle                                                      │   │
+│  │ Key merge process:                                                  │   │
+│  │ apple, fish, grape, mouse → apple, fish, grape, mouse               │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -864,7 +870,7 @@ Optimistic timestamp-based Multi-Version Concurrency Control (MVCC) with Last-Wr
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
 │  │ ID: 123 | Min: "apple" | Max: "zebra" | Size: 64MB                  │   │
 │  │ EntryCount: 50000 | Level: 1 | BloomFilter: Present                 │   │
-│  │ Timestamp: 1609459200000 (latest entry)                             │   │
+│  │ Timestamp: 1609459200000 (latest timestamp based on entries)        │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                            │
 │  File Layout:                                                              │
@@ -1095,10 +1101,10 @@ Wildcat's block manager provides a low-level, atomic high-performance file I/O w
 │  Block Chaining (for large data):                                           │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │ Block 5                Block 8                Block 12              │    │
-│  │ ┌─────────────┐        ┌─────────────┐        ┌─────────────┐       │    │
-│  │ │ NextBlock=8 │──────▶│ NextBlock=12│──────▶│ NextBlock=-1│       │    │
-│  │ │ Data[0:480] │        │ Data[480:960│        │ Data[960:N] │       │    │
-│  │ └─────────────┘        └─────────────┘        └─────────────┘       │    │
+│  │ ┌─────────────┐        ┌──────────────┐        ┌─────────────┐      │    │
+│  │ │ NextBlock=8 │──────▶│ NextBlock=12 │──────▶│ NextBlock=-1│      │    │
+│  │ │ Data[0:480] │        │ Data[480:960]│        │ Data[960:N] │      │    │
+│  │ └─────────────┘        └──────────────┘        └─────────────┘      │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                                                             │
 │  Allocation Management:                                                     │
