@@ -73,6 +73,8 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
     - [BTree](#btree)
     - [SkipList](#skiplist)
     - [ID Generator System Integration](#id-generator-system-integration)
+    - [Bloom Filter](#bloom-filter)
+    - [Merge Iterator](#merge-iterator)
 - [Motivation](#motivation)
 - [Contributing](#contributing)
 
@@ -1799,6 +1801,377 @@ iter.Peek()    // Non-destructive current value inspection
 │  │ • No cross-component ID conflicts                                   │   │
 │  │ • Easy debugging and log analysis                                   │   │
 │  │ • Predictable file system layout                                    │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Bloom Filter
+Wildcat's Bloom Filter is a probabilistic data structure used to quickly check if a key is possibly present in a set, with a configurable false positive rate.
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                          Wildcat Bloom Filter                              │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  Bloom Filter Structure:                                                   │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ struct BloomFilter {                                                │   │
+│  │   Bitset: []int8        // Array of int8s, each storing 8 bits      │   │
+│  │   Size: uint            // Total number of bits in the filter       │   │
+│  │   hashFunc1: FNV-1a     // First hash function (FNV-1a)             │   │
+│  │   hashFunc2: FNV        // Second hash function (FNV)               │   │
+│  │   hashCount: uint       // Number of hash functions (k)             │   │
+│  │ }                                                                   │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  Double Hashing Strategy:                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                                                                     │   │
+│  │ Input: "apple"                                                      │   │
+│  │                                                                     │   │
+│  │ ┌─────────────────┐         ┌─────────────────┐                     │   │
+│  │ │   FNV-1a Hash   │         │    FNV Hash     │                     │   │
+│  │ │ h1 = 12345678   │         │ h2 = 87654321   │                     │   │
+│  │ └─────────────────┘         └─────────────────┘                     │   │
+│  │                                                                     │   │
+│  │ Double Hashing Formula: h_i(x) = (h1 + i * h2) mod m                │   │
+│  │                                                                     │   │
+│  │ For k=4 hash functions:                                             │   │
+│  │ • h_0 = (12345678 + 0 * 87654321) % 1024 = 678                      │   │
+│  │ • h_1 = (12345678 + 1 * 87654321) % 1024 = 321                      │   │
+│  │ • h_2 = (12345678 + 2 * 87654321) % 1024 = 964                      │   │
+│  │ • h_3 = (12345678 + 3 * 87654321) % 1024 = 607                      │   │
+│  │                                                                     │   │
+│  │ Positions to set: [678, 321, 964, 607]                              │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  Bitset Layout (1024 bits using int8 array):                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                                                                     │   │
+│  │ Bitset[0]     Bitset[1]     Bitset[2]     ...     Bitset[127]       │   │
+│  │ ┌─────────┐   ┌─────────┐   ┌─────────┐           ┌─────────┐       │   │
+│  │ │7 6 5 4 3│   │7 6 5 4 3│   │7 6 5 4 3│    ...    │7 6 5 4 3│       │   │
+│  │ │2 1 0    │   │2 1 0    │   │2 1 0    │           │2 1 0    │       │   │
+│  │ │0 1 0 1 0│   │1 0 0 1 1│   │0 0 1 0 1│           │1 1 0 0 1│       │   │
+│  │ │1 0 1    │   │0 1 0    │   │1 0 0    │           │0 0 1    │       │   │
+│  │ └─────────┘   └─────────┘   └─────────┘           └─────────┘       │   │
+│  │ Bits 0-7      Bits 8-15     Bits 16-23           Bits 1016-1023     │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  Add Operation Flow:                                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ func Add(data []byte):                                              │   │
+│  │                                                                     │   │
+│  │ 1. Calculate h1, h2 = getTwoHashes(data)                            │   │
+│  │    │                                                                │   │
+│  │    ▼                                                                │   │
+│  │ 2. For i = 0 to hashCount-1:                                        │   │
+│  │    │   position = (h1 + i*h2) % size                                │   │
+│  │    │   bitset[position/8] |= 1 << (position%8)                      │   │
+│  │    │                                                                │   │
+│  │    ▼                                                                │   │
+│  │ 3. Example for position 678:                                        │   │
+│  │    │   byteIndex = 678 / 8 = 84                                     │   │
+│  │    │   bitIndex = 678 % 8 = 6                                       │   │
+│  │    │   bitset[84] |= 1 << 6  // Set bit 6                           │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  Contains Operation Flow:                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ func Contains(data []byte) bool:                                    │   │
+│  │                                                                     │   │
+│  │ 1. Calculate h1, h2 = getTwoHashes(data)                            │   │
+│  │    │                                                                │   │
+│  │    ▼                                                                │   │
+│  │ 2. For i = 0 to hashCount-1:                                        │   │
+│  │    │   position = (h1 + i*h2) % size                                │   │
+│  │    │   if bitset[position/8] & (1 << (position%8)) == 0:            │   │
+│  │    │       return false  // Definitely NOT in set                   │   │
+│  │    │                                                                │   │
+│  │    ▼                                                                │   │
+│  │ 3. return true  // MIGHT be in set (possible false positive)        │   │
+│  │                                                                     │   │
+│  │ False Positive Cases:                                               │   │
+│  │ • All k bits set by different keys                                  │   │
+│  │ • Probability: (1 - e^(-k*n/m))^k                                   │   │
+│  │ • Never false negatives (if in set, always returns true)            │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  Optimal Parameter Calculation:                                           │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Input Parameters:                                                   │   │
+│  │ • expectedItems (n): 10,000                                         │   │
+│  │ • falsePositiveRate (p): 0.01 (1%)                                  │   │
+│  │                                                                     │   │
+│  │ Optimal Size (m):                                                   │   │
+│  │ m = ceil(-n * ln(p) / (ln(2))²)                                     │   │
+│  │ m = ceil(-10000 * ln(0.01) / 0.480)                                 │   │
+│  │ m = ceil(95,851) = 95,851 bits                                      │   │
+│  │                                                                     │   │
+│  │ Optimal Hash Count (k):                                             │   │
+│  │ k = ceil(m/n * ln(2))                                               │   │
+│  │ k = ceil(95851/10000 * 0.693)                                       │   │
+│  │ k = ceil(6.64) = 7 hash functions                                   │   │
+│  │                                                                     │   │
+│  │ Safety Adjustments:                                                 │   │
+│  │ • For p < 0.01: Add 20% extra space (95,851 * 1.2 = 115,021)        │   │
+│  │ • Round to next odd number: 115,023 (better distribution)           │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  Hash Function Details:                                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ getTwoHashes(data []byte) (uint64, uint64):                         │   │
+│  │                                                                     │   │
+│  │ h1 = FNV-1a(data)     // Fast, good distribution                    │   │
+│  │ h2 = FNV(data)        // Different algorithm, independent           │   │
+│  │                                                                     │   │
+│  │ Small Data Mixing (len < 8 bytes):                                  │   │
+│  │ h2 = h2 ^ (h1 >> 13) ^ (h1 << 37)  // Prevent similarity            │   │
+│  │                                                                     │   │
+│  │ Coprime Guarantee:                                                  │   │
+│  │ if h2 % m == 0:                                                     │   │
+│  │     h2++  // Ensure h2 is not divisible by m                        │   │
+│  │                                                                     │   │
+│  │ Benefits:                                                           │   │
+│  │ • Independent hash values reduce clustering                         │   │
+│  │ • Good distribution across all bit positions                        │   │
+│  │ • Maintains mathematical properties of double hashing               │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  SSTable Integration:                                                      │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Read Path Optimization:                                             │   │
+│  │                                                                     │   │
+│  │ 1. Query: Get("somekey")                                            │   │
+│  │    │                                                                │   │
+│  │    ▼                                                                │   │
+│  │ 2. Range Check: key ∈ [minKey, maxKey] ?                            │   │
+│  │    │                            │                                   │   │
+│  │    │ No                         │ Yes                               │   │
+│  │    └──────────▶ Skip SSTable   │                                   │   │
+│  │                                 ▼                                   │   │
+│  │ 3. Bloom Filter: Contains(key) ?                                    │   │
+│  │    │                            │                                   │   │
+│  │    │ False (99% accurate)       │ True (maybe)                      │   │
+│  │    └──────────▶ Skip SSTable   │                                   │   │
+│  │                                 ▼                                   │   │
+│  │ 4. BTree Search (expensive)                                         │   │
+│  │    │                                                                │   │
+│  │    ├─────────▶ Key Found                                           │   │
+│  │    └─────────▶ False Positive (~1%)                                │   │
+│  │                                                                     │   │
+│  │ Performance Impact:                                                 │   │
+│  │ • 99% of negative lookups skip expensive BTree search               │   │
+│  │ • Memory overhead: ~10-15 bits per key                              │   │
+│  │ • Lookup time: O(k) vs O(log n) for BTree                           │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Merge Iterator
+Wildcat's merge iterator allows efficient merging of multiple data sources, such as memtables and SSTables, while maintaining the correct order of keys based on their timestamps. This iterator is designed to handle both active and immutable data sources seamlessly.
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                        Wildcat Merge Iterator                              │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  Complete Data Source Hierarchy:                                           │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                                                                     │   │
+│  │ ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐       │   │
+│  │ │ Active Memtable │  │Immutable Queue  │  │Flushing Memtable│       │   │
+│  │ │                 │  │                 │  │                 │       │   │
+│  │ │ SkipList        │  │ [Memtable_3]    │  │ Memtable_1      │       │   │
+│  │ │ 64MB (current)  │  │ [Memtable_2]    │  │ (single atomic  │       │   │
+│  │ │ TS: 5000-6000   │  │ Ready to flush  │  │  pointer)       │       │   │
+│  │ │                 │  │ TS: 3000-4000   │  │ TS: 1000-2000   │       │   │
+│  │ └─────────────────┘  │ TS: 4000-5000   │  │ Being flushed   │       │   │
+│  │                      └─────────────────┘  └─────────────────┘       │   │
+│  │                               │                     │               │   │
+│  │                               ▼                     ▼               │   │
+│  │                      Still Readable         Still Readable          │   │
+│  │                      (Queued)              (atomic.Pointer)         │   │
+│  │                                                                     │   │
+│  │ ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐       │   │
+│  │ │   L1 SSTables   │  │   L2 SSTables   │  │   L3+ SSTables  │       │   │
+│  │ │                 │  │                 │  │                 │       │   │
+│  │ │ sst_1.klog      │  │ sst_10.klog     │  │ sst_50.klog     │       │   │
+│  │ │ sst_2.klog      │  │ sst_11.klog     │  │ sst_51.klog     │       │   │
+│  │ │ sst_3.klog      │  │ sst_12.klog     │  │ sst_52.klog     │       │   │
+│  │ │                 │  │                 │  │                 │       │   │
+│  │ └─────────────────┘  └─────────────────┘  └─────────────────┘       │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  Flusher State Management:                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ struct Flusher {                                                    │   │
+│  │   immutable: *queue.Queue             // Multiple queued memtables  │   │
+│  │   flushing: atomic.Pointer[Memtable]  // Single active flush        │   │
+│  │   swapping: int32                     // Atomic swap flag           │   │
+│  │ }                                                                   │   │
+│  │                                                                     │   │
+│  │ Flush Process:                                                      │   │
+│  │ ┌───────────────────────────────────────────────────────────────┐   │   │
+│  │ │ 1. Dequeue from immutable queue                               │   │   │
+│  │ │ 2. Set flushing.Store(memtable)                               │   │   │
+│  │ │ 3. Flush memtable to SSTable                                  │   │   │
+│  │ │ 4. Clear flushing.Store(nil)                                  │   │   │
+│  │ │ 5. Process next queued memtable                               │   │   │
+│  │ └───────────────────────────────────────────────────────────────┘   │   │
+│  │                                                                     │   │
+│  │ Only ONE memtable can be flushing at a time                         │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  MergeIterator Source Management:                                          │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ func NewMergeIterator(iterators []*iterator, ts int64) {            │   │
+│  │                                                                     │   │
+│  │   Sources included in merge:                                        │   │
+│  │   ┌───────────────────────────────────────────────────────────────┐ │   │
+│  │   │ 1. Active Memtable Iterator                                   │ │   │
+│  │   │    └─ skiplist.Iterator (current writes)                      │ │   │
+│  │   │                                                               │ │   │
+│  │   │ 2. Immutable Memtable Iterators (multiple from queue)         │ │   │
+│  │   │    ├─ skiplist.Iterator (queued_memtable_1)                   │ │   │
+│  │   │    ├─ skiplist.Iterator (queued_memtable_2)                   │ │   │
+│  │   │    └─ skiplist.Iterator (queued_memtable_3)                   │ │   │
+│  │   │                                                               │ │   │
+│  │   │ 3. Flushing Memtable Iterator (single, if exists)             │ │   │
+│  │   │    └─ skiplist.Iterator (currently_being_flushed)             │ │   │
+│  │   │                                                               │ │   │
+│  │   │ 4. SSTable Iterators (multiple levels)                        │ │   │
+│  │   │    ├─ tree.Iterator (L1: sst_1, sst_2, sst_3)                 │ │   │
+│  │   │    ├─ tree.Iterator (L2: sst_10, sst_11, sst_12)              │ │   │
+│  │   │    └─ tree.Iterator (L3+: sst_50, sst_51, sst_52)             │ │   │
+│  │   └───────────────────────────────────────────────────────────────┘ │   │
+│  │ }                                                                   │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  Real-World Merge Scenario:                                                │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Query: Get("user123") at read_timestamp = 4500                      │   │
+│  │                                                                     │   │
+│  │ Data Distribution Across Sources:                                   │   │
+│  │                                                                     │   │
+│  │ Active Memtable (TS: 5000-6000):                                    │   │
+│  │ ├─ user123 → "current_data" @ TS=5500                               │   │
+│  │ └─ user456 → "other_data" @ TS=5200                                 │   │
+│  │                                                                     │   │
+│  │ Immutable Queue - Memtable_3 (TS: 4000-5000):                       │   │
+│  │ ├─ user123 → "old_data" @ TS=4200                                   │   │
+│  │ └─ user789 → "some_data" @ TS=4100                                  │   │
+│  │                                                                     │   │
+│  │ Immutable Queue - Memtable_2 (TS: 3000-4000):                       │   │
+│  │ ├─ user123 → "older_data" @ TS=3500                                 │   │
+│  │ └─ user999 → "test_data" @ TS=3200                                  │   │
+│  │                                                                     │   │
+│  │ Flushing Memtable_1 (TS: 1000-2000):                                │   │
+│  │ ├─ user123 → "ancient_data" @ TS=1500                               │   │
+│  │ └─ user000 → "first_data" @ TS=1200                                 │   │
+│  │                                                                     │   │
+│  │ L1 SSTable_001:                                                     │   │
+│  │ ├─ user123 → "archived_data" @ TS=800                               │   │
+│  │ └─ user555 → "legacy_data" @ TS=600                                 │   │
+│  │                                                                     │   │
+│  │ Merge Resolution:                                                   │   │
+│  │ ┌───────────────────────────────────────────────────────────────┐   │   │
+│  │ │ 1. Heap contains all "user123" entries:                       │   │   │
+│  │ │    - Active: "current_data" @ TS=5500                         │   │   │
+│  │ │    - Immutable_3: "old_data" @ TS=4200                        │   │   │
+│  │ │    - Immutable_2: "older_data" @ TS=3500                      │   │   │
+│  │ │    - Flushing: "ancient_data" @ TS=1500                       │   │   │
+│  │ │    - L1: "archived_data" @ TS=800                             │   │   │
+│  │ │                                                               │   │   │
+│  │ │ 2. MVCC Filtering (read_ts = 4500):                           │   │   │
+│  │ │    - TS=5500 > 4500 → Skip (too new)                          │   │   │
+│  │ │    - TS=4200 ≤ 4500 → RETURN "old_data"                       │   │   │
+│  │ │    - Skip remaining older versions                            │   │   │
+│  │ │                                                               │   │   │
+│  │ │ 3. Result: "old_data" from Immutable Memtable_3               │   │   │
+│  │ └───────────────────────────────────────────────────────────────┘   │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  Single Flushing Memtable Lifecycle:                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Timeline of Flush Operations:                                       │   │
+│  │                                                                     │   │
+│  │ T1: Active Memtable reaches 64MB                                    │   │
+│  │     ├─ queueMemtable() called                                       │   │
+│  │     ├─ Current active → Immutable queue                             │   │
+│  │     └─ New active memtable created                                  │   │
+│  │                                                                     │   │
+│  │ T2: Background flusher picks up queued memtable                     │   │
+│  │     ├─ immutableMemt := flusher.immutable.Dequeue()                 │   │
+│  │     ├─ flusher.flushing.Store(immutableMemt)                        │   │
+│  │     └─ Start flush process to SSTable                               │   │
+│  │                                                                     │   │
+│  │ T3: During flush, memtable remains readable                         │   │
+│  │     ├─ MergeIterator includes flushing memtable                     │   │
+│  │     ├─ MVCC queries see consistent data                             │   │
+│  │     └─ No blocking of read operations                               │   │
+│  │                                                                     │   │
+│  │ T4: Flush completes successfully                                    │   │
+│  │     ├─ SSTable added to L1                                          │   │
+│  │     ├─ WAL file deleted                                             │   │
+│  │     ├─ flusher.flushing.Store(nil)                                  │   │
+│  │     └─ Next queued memtable can be processed                        │   │
+│  │                                                                     │   │
+│  │ Key Insight: Sequential flush processing prevents resource          │   │
+│  │ contention while maintaining read availability                      │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  Heap Priority During Single Flush:                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Scenario: Only Memtable_1 being flushed                             │   │
+│  │                                                                     │   │
+│  │ Iterator Heap State:                                                │   │
+│  │ ┌────────────────────────────────────────────────────────────────┐  │   │
+│  │ │ Min-Heap (Ascending):                                          │  │   │
+│  │ │                                                                │  │   │
+│  │ │ ┌─────────────┐  ┌─────────────┐  ┌─────────────┐              │  │   │
+│  │ │ │key: "apple" │  │key: "apple" │  │key: "apple" │              │  │   │
+│  │ │ │ts: 5200     │  │ts: 4100     │  │ts: 2100     │              │  │   │
+│  │ │ │src: Active  │  │src: Immut_Q │  │src: Flushing│              │  │   │
+│  │ │ │priority: 1  │  │priority: 2  │  │priority: 3  │              │  │   │
+│  │ │ └─────────────┘  └─────────────┘  └─────────────┘              │  │   │
+│  │ │                                                                │  │   │
+│  │ │ Priority Rules:                                                │  │   │
+│  │ │ 1. Lexicographic key ordering                                  │  │   │
+│  │ │ 2. Same key: newest timestamp first                            │  │   │
+│  │ │ 3. Same key + timestamp: source priority                       │  │   │
+│  │ │    (Active > Immutable > Flushing > SSTables)                  │  │   │
+│  │ └────────────────────────────────────────────────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  Iterator Exhaustion and State Changes:                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Dynamic Source Management:                                          │   │
+│  │                                                                     │   │
+│  │ Case 1: Flushing Completes During Iteration                         │   │
+│  │ ┌───────────────────────────────────────────────────────────────┐   │   │
+│  │ │ • flushing.Store(nil) called                                  │   │   │
+│  │ │ • Flushing iterator becomes exhausted naturally               │   │   │
+│  │ │ • New SSTable appears in L1                                   │   │   │
+│  │ │ • MergeIterator continues with remaining sources              │   │   │
+│  │ │ • No interruption to ongoing queries                          │   │   │
+│  │ └───────────────────────────────────────────────────────────────┘   │   │
+│  │                                                                     │   │
+│  │ Case 2: New Memtable Swap During Iteration                          │   │
+│  │ ┌───────────────────────────────────────────────────────────────┐   │   │
+│  │ │ • Active memtable swapped to immutable queue                  │   │   │
+│  │ │ • New active memtable created                                 │   │   │
+│  │ │ • Existing iterators remain valid on old sources              │   │   │
+│  │ │ • New queries see updated source hierarchy                    │   │   │
+│  │ └───────────────────────────────────────────────────────────────┘   │   │
+│  │                                                                     │   │
+│  │ Case 3: Queue Processing                                            │   │
+│  │ ┌───────────────────────────────────────────────────────────────┐   │   │
+│  │ │ • Only one memtable flushed at a time                         │   │   │
+│  │ │ • Others remain in immutable queue                            │   │   │
+│  │ │ • All queued memtables remain readable                        │   │   │
+│  │ │ • Sequential processing ensures resource control              │   │   │
+│  │ └───────────────────────────────────────────────────────────────┘   │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
