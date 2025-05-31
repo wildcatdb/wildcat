@@ -351,7 +351,7 @@ func (bm *BlockManager) appendFreeBlocks() error {
 
 // allocateBlock allocates a block ID from the allocation table.
 func (bm *BlockManager) allocateBlock() (uint64, error) {
-	threshold := int64(Allotment / 2) // Allocate when 25% remain
+	threshold := int64(Allotment / 2) // Allocate when 50% remain
 
 	// Check if we need to allocate proactively
 	if bm.allocationTable.Size() <= threshold {
