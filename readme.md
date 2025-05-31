@@ -118,7 +118,7 @@ By default Wildcat uses 6 levels, so you will see directories like this:
 ├── L4
 ├── L5
 ├── L6
-0.wal
+1.wal
 idgstate
 ```
 The `L1`, `L2`, etc. directories are used for storing SSTables(immutable btrees) at different levels of the LSM tree. The `1.wal` file is the **current** Write-Ahead Log (WAL) file tied to the **current** memtable.
@@ -135,7 +135,7 @@ Wildcat provides several configuration options for fine-tuning.
 ```go
 opts := &wildcat.Options{
     Directory:                   "/path/to/database",     // Directory for database files
-    WriteBufferSize:             32 * 1024 * 1024,        // 32MB memtable size
+    WriteBufferSize:             64 * 1024 * 1024,        // 64MB memtable size
     SyncOption:                  wildcat.SyncFull,        // Full sync for maximum durability
     SyncInterval:                128 * time.Millisecond,  // Only set when using SyncPartial
     LevelCount:                  7,                       // Number of LSM levels
@@ -709,7 +709,7 @@ Optimistic timestamp-based Multi-Version Concurrency Control (MVCC) with Last-Wr
 │  Active Memtable                    Immutable Memtables                    │
 │  ┌─────────────────┐                ┌─────────────────┐                    │
 │  │    SkipList     │                │    SkipList     │                    │
-│  │   (32MB default)│                │   (flushing)    │                    │
+│  │   (64MB default)│                │   (flushing)    │                    │
 │  │                 │                │                 │                    │
 │  │ key1->val1 @TS  │                │ key2->val2 @TS  │                    │
 │  │ key3->val3 @TS  │                │ key4->val4 @TS  │                    │
@@ -747,7 +747,7 @@ Optimistic timestamp-based Multi-Version Concurrency Control (MVCC) with Last-Wr
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
 │                                                                            │
-│  ┌─────────────────┐     Size >= 32MB     ┌─────────────────┐              │
+│  ┌─────────────────┐     Size >= 64MB     ┌─────────────────┐              │
 │  │ Active Memtable │ ───────────────────▶│ Swap Operation  │              │
 │  │                 │                      │                 │              │
 │  │ SkipList + WAL  │                      │ Create new      │              │
