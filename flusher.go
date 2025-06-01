@@ -246,6 +246,8 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 
 	}
 
+	flusher.db.log(fmt.Sprintf("Finished flushing memtable to SSTable %d", sstable.Id))
+
 	// Now we close the klog and vlog temp files and rename them
 	// This means the files are finalized
 	_ = klogBm.Close()
@@ -262,6 +264,8 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 
 	// Delete original memtable wal
 	_ = os.Remove(memt.wal.path)
+
+	flusher.db.log(fmt.Sprintf("SSTable %d flushed successfully, and finalized KLog: %s, VLog: %s", sstable.Id, klogFinalPath, vlogFinalPath))
 
 	// Reopen the KLog and VLog block managers with final paths
 	klogBm, err = blockmanager.Open(klogFinalPath, os.O_RDONLY, flusher.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption))

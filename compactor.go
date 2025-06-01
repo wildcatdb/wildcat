@@ -314,6 +314,8 @@ func (compactor *Compactor) executeCompactions() {
 
 	// Execute the compaction in a goroutine
 	go func(job *compactorJob, idx int) {
+		compactor.db.log(fmt.Sprintf("Starting compaction job for level %d with %d SSTables", job.level, len(job.ssTables)))
+
 		defer func() {
 			atomic.AddInt32(&compactor.activeJobs, -1)
 
@@ -396,6 +398,8 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 		_ = os.Remove(vlogTmpPath)
 		return fmt.Errorf("failed to merge SSTables: %w", err)
 	}
+
+	compactor.db.log(fmt.Sprintf("Merged %d SSTables into new SSTable %d", len(sstables), newSSTable.Id))
 
 	// Add the new SSTable to the target level
 	targetLevelPtr := (*compactor.db.levels.Load())[targetLevel-1]
@@ -487,6 +491,8 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 		return fmt.Errorf("failed to rename VLog file: %w", err)
 	}
 
+	compactor.db.log(fmt.Sprintf("Renamed temporary files to final names: KLog=%s, VLog=%s", klogFinalPath, vlogFinalPath))
+
 	// Reopen the final KLog and VLog block managers
 	klogBm, err = blockmanager.Open(klogFinalPath, os.O_RDONLY, compactor.db.opts.Permission,
 		blockmanager.SyncOption(compactor.db.opts.SyncOption), compactor.db.opts.SyncInterval)
@@ -507,6 +513,7 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 			_ = bm.Close()
 		}
 	})
+
 	compactor.db.lru.Put(vlogFinalPath, vlogBm, func(key, value interface{}) {
 		// Close the block manager when evicted from LRU
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
