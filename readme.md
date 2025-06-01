@@ -132,6 +132,9 @@ When the flusher completes a flush operation an immutable memtable becomes an ss
 
 The idgstate file holds sstable, wal, and txn id state.  So when a restart occurs we can recover last known id's and continue monotonically increasing id's for SSTables, WALs, and transactions.
 
+### Temporary files
+You may see `.tmp` files within level directories.  These are temporary block manager files which are renamed after finalization of a flusher or compactor process.  On start up of a crash say we don't want to persist partial files so their removed based on that extension.  Partial files can cause inconsistencies in the database and unnecessary disk space.
+
 ### Advanced Configuration
 Wildcat provides several configuration options for fine-tuning.
 ```go

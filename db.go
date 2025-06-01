@@ -42,12 +42,13 @@ const (
 
 // Prefixes, filenames, extensions constants
 const (
-	SSTablePrefix    = "sst_"     // Prefix for SSTable files
-	LevelPrefix      = "l"        // Prefix for level directories i.e. "l1", "l2", etc.
-	WALFileExtension = ".wal"     // Extension for Write Ahead Log files <id>.wal
-	KLogExtension    = ".klog"    // Extension for KLog files
-	VLogExtension    = ".vlog"    // Extension for VLog files
-	IDGSTFileName    = "idgstate" // Filename for ID generator state
+	SSTablePrefix     = "sst_"     // Prefix for SSTable files
+	LevelPrefix       = "l"        // Prefix for level directories i.e. "l1", "l2", etc.
+	WALFileExtension  = ".wal"     // Extension for Write Ahead Log files <id>.wal
+	KLogExtension     = ".klog"    // Extension for KLog files
+	VLogExtension     = ".vlog"    // Extension for VLog files
+	IDGSTFileName     = "idgstate" // Filename for ID generator state
+	TempFileExtension = ".tmp"     // Temporary file extension for intermediate files
 )
 
 // Defaults
