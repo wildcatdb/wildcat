@@ -31,7 +31,7 @@ import (
 const MagicNumber = uint32(0x57494C44)        // "WILD"
 const Version = uint32(1)                     // Version of the file format
 const BlockSize = uint32(512)                 // Smaller the better, faster in our tests
-const Allotment = uint64(128)                 // How many blocks we can allot at once to the file.  We allocate this many blocks once allocationTable is empty
+const Allotment = uint64(64)                  // How many blocks we can allot at once to the file.  We allocate this many blocks once allocationTable is empty
 const EndOfChain = uint64(0xFFFFFFFFFFFFFFFF) // Marker for end of blockchain (overflowed block)
 
 // SyncOption defines the synchronization options for the file
@@ -354,7 +354,7 @@ func (bm *BlockManager) allocateBlock() (uint64, error) {
 	threshold := int64(Allotment / 2) // Allocate when 50% remain
 
 	// Check if we need to allocate proactively
-	if bm.allocationTable.Size() <= threshold {
+	if bm.allocationTable.Size() == threshold {
 		// We need to append blocks, but we need to ensure only one goroutine does this
 		// We'll use atomic CAS operations for this
 
@@ -1382,117 +1382,4 @@ func (bm *BlockManager) Sync() error {
 	}
 
 	return syscall.Fdatasync(int(bm.fd))
-}
-
-// TrimUnusedBlocks removes unused blocks from the end of the file
-func (bm *BlockManager) TrimUnusedBlocks() (uint64, error) {
-	// Get current file size
-	fileInfo, err := bm.file.Stat()
-	if err != nil {
-		return 0, err
-	}
-
-	fileSize := fileInfo.Size()
-	headerSize := binary.Size(Header{})
-	if headerSize < 0 {
-		return 0, errors.New("failed to calculate header size")
-	}
-
-	// Calculate current number of blocks
-	dataSize := fileSize - int64(headerSize)
-	totalBlocks := uint64(dataSize / int64(BlockSize))
-
-	if totalBlocks == 0 {
-		return 0, nil // No blocks to trim
-	}
-
-	blockHeaderSize := binary.Size(BlockHeader{})
-	headerBuf := make([]byte, blockHeaderSize)
-
-	// Find the last used block by scanning from the end
-	lastUsedBlock := uint64(0)
-
-	for blockID := totalBlocks; blockID >= 1; blockID-- {
-		// Calculate position for this block
-		position := int64(headerSize) + int64(blockID-1)*int64(BlockSize)
-
-		// Read the block header
-		_, err := pread(bm.fd, headerBuf, position)
-		if err != nil {
-			// If we can't read the block, skip it
-			continue
-		}
-
-		// Decode the header
-		var blockHeader BlockHeader
-		if err := binary.Read(bytes.NewReader(headerBuf), binary.LittleEndian, &blockHeader); err != nil {
-			continue
-		}
-
-		// Verify the CRC
-		expectedCRC := blockHeader.CRC
-		blockHeader.CRC = 0
-		headerWithoutCRC := new(bytes.Buffer)
-		if err := binary.Write(headerWithoutCRC, binary.LittleEndian, &blockHeader); err != nil {
-			continue
-		}
-		calculatedCRC := crc32.ChecksumIEEE(headerWithoutCRC.Bytes())
-
-		// Skip blocks with invalid CRC
-		if expectedCRC != calculatedCRC {
-			continue
-		}
-
-		// A block is considered used if it has data
-		if blockHeader.DataSize > 0 {
-			lastUsedBlock = blockID
-			break
-		}
-	}
-
-	// If no used blocks found, we can trim everything except the header
-	if lastUsedBlock == 0 {
-		// Keep at least one block for future use
-		lastUsedBlock = 1
-	}
-
-	// Calculate new file size
-	newFileSize := int64(headerSize) + int64(lastUsedBlock)*int64(BlockSize)
-
-	// If the new size is the same as current, nothing to trim
-	if newFileSize >= fileSize {
-		return 0, nil
-	}
-
-	// Remove free blocks from allocation table that will be trimmed
-	tempQueue := queue.New()
-	for !bm.allocationTable.IsEmpty() {
-		blockIDInterface := bm.allocationTable.Dequeue()
-		if blockIDInterface != nil {
-			blockID, ok := blockIDInterface.(uint64)
-			if ok && blockID <= lastUsedBlock {
-				// Keep this block in the allocation table
-				tempQueue.Enqueue(blockID)
-			}
-			// Blocks > lastUsedBlock are discarded
-		}
-	}
-
-	// Replace allocation table with filtered one
-	bm.allocationTable = tempQueue
-
-	// Truncate the file
-	if err := bm.file.Truncate(newFileSize); err != nil {
-		return 0, err
-	}
-
-	// Sync if required
-	if bm.syncOption == SyncFull {
-		_ = syscall.Fdatasync(int(bm.fd))
-	}
-
-	// Calculate number of blocks trimmed
-	blocksTrimmed := totalBlocks - lastUsedBlock
-
-	return blocksTrimmed, nil
 }

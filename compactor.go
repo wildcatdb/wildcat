@@ -393,10 +393,6 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 		return fmt.Errorf("failed to merge SSTables: %w", err)
 	}
 
-	// When the file becomes immutable we trim unused blocks
-	_, _ = klogBm.TrimUnusedBlocks()
-	_, _ = vlogBm.TrimUnusedBlocks()
-
 	// Add the new SSTable to the target level
 	targetLevelPtr := (*compactor.db.levels.Load())[targetLevel-1]
 	currSSTables := targetLevelPtr.sstables.Load()

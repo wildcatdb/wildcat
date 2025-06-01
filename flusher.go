@@ -99,6 +99,7 @@ func (flusher *Flusher) backgroundProcess() {
 
 			// Flush the immutable memtable to disk
 			err := flusher.flushMemtable(immutableMemt.(*Memtable))
+
 			if err != nil {
 				continue
 			}
@@ -168,12 +169,6 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 	if err != nil {
 		return fmt.Errorf("failed to open VLog block manager: %w", err)
 	}
-
-	// When the file becomes immutable we trim unused blocks
-	defer func() {
-		_, _ = klogBm.TrimUnusedBlocks()
-		_, _ = vlogBm.TrimUnusedBlocks()
-	}()
 
 	// We create a new bloom filter if enabled and add it to sstable meta
 	if flusher.db.opts.BloomFilter {
