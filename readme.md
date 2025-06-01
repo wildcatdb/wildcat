@@ -41,6 +41,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - [Basic Usage](#basic-usage)
   - [Opening a Wildcat DB instance](#opening-a-wildcat-db-instance)
   - [Directory Structure](#directory-structure)
+  - [Temporary files](#temporary-files)
   - [Advanced Configuration](#advanced-configuration)
   - [Simple Key-Value Operations](#simple-key-value-operations)
   - [Manual Transaction Management](#manual-transaction-management)
@@ -114,12 +115,12 @@ When you open a Wildcat instance at a configured directory your structure will l
 By default Wildcat uses 6 levels, so you will see directories like this:
 ```
 /path/to/db/
-├── L1
-├── L2
-├── L3
-├── L4
-├── L5
-├── L6
+├── l1
+├── l2
+├── l3
+├── l4
+├── l5
+├── l6
 1.wal
 idgstate
 ```
@@ -134,6 +135,11 @@ The idgstate file holds sstable, wal, and txn id state.  So when a restart occur
 
 ### Temporary files
 You may see `.tmp` files within level directories.  These are temporary block manager files which are renamed after finalization of a flusher or compactor process.  On start up of a crash say we don't want to persist partial files so their removed based on that extension.  Partial files can cause inconsistencies in the database and unnecessary disk space.
+
+```
+l1/sst_343.klog.tmp > l1/sst_343.klog (once finalized)
+l1/sst_343.vlog.tmp > l1/sst_343.klog (once finalized)
+```
 
 ### Advanced Configuration
 Wildcat provides several configuration options for fine-tuning.
