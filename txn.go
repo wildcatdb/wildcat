@@ -97,6 +97,15 @@ func (db *DB) GetTxn(id int64) (*Txn, error) {
 
 // Put adds key-value pair to database
 func (txn *Txn) Put(key []byte, value []byte) error {
+
+	if len(key) == 0 {
+		return fmt.Errorf("key cannot be empty")
+	}
+
+	if len(value) == 0 {
+		return fmt.Errorf("value cannot be empty")
+	}
+
 	txn.mutex.Lock()
 	defer txn.mutex.Unlock()
 
@@ -114,6 +123,10 @@ func (txn *Txn) Put(key []byte, value []byte) error {
 
 // Delete removes a key from database
 func (txn *Txn) Delete(key []byte) error {
+	if len(key) == 0 {
+		return fmt.Errorf("key cannot be empty")
+	}
+
 	txn.mutex.Lock()
 	defer txn.mutex.Unlock()
 
