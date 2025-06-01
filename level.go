@@ -41,6 +41,15 @@ func (l *Level) reopen() error {
 			continue
 		}
 
+		// If we find a file with TempFileExtension we remove it
+		if strings.HasSuffix(file.Name(), TempFileExtension) {
+			tempFilePath := fmt.Sprintf("%s%s", l.path, file.Name())
+			if err := os.Remove(tempFilePath); err != nil {
+				l.db.log(fmt.Sprintf("Warning: Failed to remove temporary file %s: %v", tempFilePath, err))
+			}
+			continue
+		}
+
 		// Extract SSTable ID from the filename
 		if !strings.HasPrefix(file.Name(), SSTablePrefix) {
 			continue

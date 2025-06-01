@@ -156,16 +156,24 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 	sstable.Timestamp = latestTs
 
 	// We create new sstable files (.klog and .vlog) here
-	klogPath := fmt.Sprintf("%s%s1%s%s%d%s", flusher.db.opts.Directory, LevelPrefix, string(os.PathSeparator), SSTablePrefix, sstable.Id, KLogExtension)
-	vlogPath := fmt.Sprintf("%s%s1%s%s%d%s", flusher.db.opts.Directory, LevelPrefix, string(os.PathSeparator), SSTablePrefix, sstable.Id, VLogExtension)
+
+	// We have a temp and final path
+	// We use a temp path in case of system crash
+	// When we reopen the system we can check if the temp file exists, if so we delete it
+	// This would be a flush that was not finalized thus an existing WAL exists and possibly corrupt levels
+	vlogTmpPath := fmt.Sprintf("%s%s1%s%s%d%s%s", flusher.db.opts.Directory, LevelPrefix, string(os.PathSeparator), SSTablePrefix, sstable.Id, VLogExtension, TempFileExtension)
+	vlogFinalPath := fmt.Sprintf("%s%s1%s%s%d%s", flusher.db.opts.Directory, LevelPrefix, string(os.PathSeparator), SSTablePrefix, sstable.Id, VLogExtension)
+
+	klogTmpPath := fmt.Sprintf("%s%s1%s%s%d%s%s", flusher.db.opts.Directory, LevelPrefix, string(os.PathSeparator), SSTablePrefix, sstable.Id, KLogExtension, TempFileExtension)
+	klogFinalPath := fmt.Sprintf("%s%s1%s%s%d%s", flusher.db.opts.Directory, LevelPrefix, string(os.PathSeparator), SSTablePrefix, sstable.Id, KLogExtension)
 
 	// Klog stores an immutable btree, vlog stores the values
-	klogBm, err := blockmanager.Open(klogPath, os.O_RDWR|os.O_CREATE, memt.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption), flusher.db.opts.SyncInterval)
+	klogBm, err := blockmanager.Open(klogTmpPath, os.O_RDWR|os.O_CREATE, memt.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption), flusher.db.opts.SyncInterval)
 	if err != nil {
 		return fmt.Errorf("failed to open KLog block manager: %w", err)
 	}
 
-	vlogBm, err := blockmanager.Open(vlogPath, os.O_RDWR|os.O_CREATE, memt.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption), flusher.db.opts.SyncInterval)
+	vlogBm, err := blockmanager.Open(vlogTmpPath, os.O_RDWR|os.O_CREATE, memt.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption), flusher.db.opts.SyncInterval)
 	if err != nil {
 		return fmt.Errorf("failed to open VLog block manager: %w", err)
 	}
@@ -238,14 +246,42 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 
 	}
 
+	// Delete original memtable wal
+	_ = os.Remove(memt.wal.path)
+
+	// Now we close the klog and vlog temp files and rename them
+	// This means the files are finalized
+	_ = klogBm.Close()
+	err = os.Rename(klogTmpPath, klogFinalPath)
+	if err != nil {
+		return fmt.Errorf("failed to rename KLog file: %w", err)
+	}
+
+	_ = vlogBm.Close()
+	err = os.Rename(vlogTmpPath, vlogFinalPath)
+	if err != nil {
+		return fmt.Errorf("failed to rename VLog file: %w", err)
+	}
+
+	// Reopen the KLog and VLog block managers with final paths
+	klogBm, err = blockmanager.Open(klogFinalPath, os.O_RDONLY, flusher.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption))
+	if err != nil {
+		return fmt.Errorf("failed to open KLog block manager: %w", err)
+	}
+
+	vlogBm, err = blockmanager.Open(vlogFinalPath, os.O_RDONLY, flusher.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption))
+	if err != nil {
+		return fmt.Errorf("failed to open VLog block manager: %w", err)
+	}
+
 	// Add both KLog and VLog to the LRU cache
-	flusher.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
+	flusher.db.lru.Put(klogFinalPath, klogBm, func(key, value interface{}) {
 		// Close the block manager when evicted from LRU
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
 		}
 	})
-	flusher.db.lru.Put(vlogPath, vlogBm, func(key, value interface{}) {
+	flusher.db.lru.Put(vlogFinalPath, vlogBm, func(key, value interface{}) {
 		// Close the block manager when evicted from LRU
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
@@ -275,9 +311,6 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 
 	// Update the current size of the level
 	atomic.AddInt64(&level1.currentSize, sstable.Size)
-
-	// Delete original memtable wal
-	_ = os.Remove(memt.wal.path) // Could be no wal
 
 	flusher.db.log(fmt.Sprintf("SSTable %d added to level 1, min: %s, max: %s, entries: %d",
 		sstable.Id, string(sstable.Min), string(sstable.Max), entryCount))

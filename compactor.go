@@ -367,18 +367,22 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 	}
 
 	// Create new SSTable files for the compacted result
-	klogPath := fmt.Sprintf("%s%s%d%s%s%d%s", compactor.db.opts.Directory, LevelPrefix, targetLevel,
+	klogTmpPath := fmt.Sprintf("%s%s%d%s%s%d%s%s", compactor.db.opts.Directory, LevelPrefix, targetLevel,
+		string(os.PathSeparator), SSTablePrefix, newSSTable.Id, KLogExtension, TempFileExtension)
+	klogFinalPath := fmt.Sprintf("%s%s%d%s%s%d%s", compactor.db.opts.Directory, LevelPrefix, targetLevel,
 		string(os.PathSeparator), SSTablePrefix, newSSTable.Id, KLogExtension)
-	vlogPath := fmt.Sprintf("%s%s%d%s%s%d%s", compactor.db.opts.Directory, LevelPrefix, targetLevel,
+	vlogTmpPath := fmt.Sprintf("%s%s%d%s%s%d%s%s", compactor.db.opts.Directory, LevelPrefix, targetLevel,
+		string(os.PathSeparator), SSTablePrefix, newSSTable.Id, VLogExtension, TempFileExtension)
+	vlogFinalPath := fmt.Sprintf("%s%s%d%s%s%d%s", compactor.db.opts.Directory, LevelPrefix, targetLevel,
 		string(os.PathSeparator), SSTablePrefix, newSSTable.Id, VLogExtension)
 
-	klogBm, err := blockmanager.Open(klogPath, os.O_RDWR|os.O_CREATE, compactor.db.opts.Permission,
+	klogBm, err := blockmanager.Open(klogTmpPath, os.O_RDWR|os.O_CREATE, compactor.db.opts.Permission,
 		blockmanager.SyncOption(compactor.db.opts.SyncOption), compactor.db.opts.SyncInterval)
 	if err != nil {
 		return fmt.Errorf("failed to open KLog block manager: %w", err)
 	}
 
-	vlogBm, err := blockmanager.Open(vlogPath, os.O_RDWR|os.O_CREATE, compactor.db.opts.Permission,
+	vlogBm, err := blockmanager.Open(vlogTmpPath, os.O_RDWR|os.O_CREATE, compactor.db.opts.Permission,
 		blockmanager.SyncOption(compactor.db.opts.SyncOption), compactor.db.opts.SyncInterval)
 	if err != nil {
 		return fmt.Errorf("failed to open VLog block manager: %w", err)
@@ -388,8 +392,8 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 	err = compactor.mergeSSTables(sstables, klogBm, vlogBm, newSSTable)
 	if err != nil {
 		// Clean up on error
-		_ = os.Remove(klogPath)
-		_ = os.Remove(vlogPath)
+		_ = os.Remove(klogTmpPath)
+		_ = os.Remove(vlogTmpPath)
 		return fmt.Errorf("failed to merge SSTables: %w", err)
 	}
 
@@ -438,20 +442,6 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 		}
 	}
 
-	// Add KLog and VLog managers to LRU cache
-	compactor.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
-		// Close the block manager when evicted from LRU
-		if bm, ok := value.(*blockmanager.BlockManager); ok {
-			_ = bm.Close()
-		}
-	})
-	compactor.db.lru.Put(vlogPath, vlogBm, func(key, value interface{}) {
-		// Close the block manager when evicted from LRU
-		if bm, ok := value.(*blockmanager.BlockManager); ok {
-			_ = bm.Close()
-		}
-	})
-
 	// Clean up the old SSTable files
 	for _, table := range sstables {
 		oldKlogPath := fmt.Sprintf("%s%s%d%s%s%d%s", compactor.db.opts.Directory, LevelPrefix, sourceLevel,
@@ -478,6 +468,51 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 		_ = os.Remove(oldKlogPath)
 		_ = os.Remove(oldVlogPath)
 	}
+
+	// Close new KLog and VLog block managers
+	if err := klogBm.Close(); err != nil {
+		return fmt.Errorf("failed to close KLog block manager: %w", err)
+	}
+
+	if err := vlogBm.Close(); err != nil {
+		return fmt.Errorf("failed to close VLog block manager: %w", err)
+	}
+
+	// Rename the temporary files to final names
+	if err := os.Rename(klogTmpPath, klogFinalPath); err != nil {
+		return fmt.Errorf("failed to rename KLog file: %w", err)
+	}
+
+	if err := os.Rename(vlogTmpPath, vlogFinalPath); err != nil {
+		return fmt.Errorf("failed to rename VLog file: %w", err)
+	}
+
+	// Reopen the final KLog and VLog block managers
+	klogBm, err = blockmanager.Open(klogFinalPath, os.O_RDONLY, compactor.db.opts.Permission,
+		blockmanager.SyncOption(compactor.db.opts.SyncOption), compactor.db.opts.SyncInterval)
+	if err != nil {
+		return fmt.Errorf("failed to open final KLog block manager: %w", err)
+	}
+
+	vlogBm, err = blockmanager.Open(vlogFinalPath, os.O_RDONLY, compactor.db.opts.Permission,
+		blockmanager.SyncOption(compactor.db.opts.SyncOption), compactor.db.opts.SyncInterval)
+	if err != nil {
+		return fmt.Errorf("failed to open final VLog block manager: %w", err)
+	}
+
+	// Add KLog and VLog managers to LRU cache
+	compactor.db.lru.Put(klogFinalPath, klogBm, func(key, value interface{}) {
+		// Close the block manager when evicted from LRU
+		if bm, ok := value.(*blockmanager.BlockManager); ok {
+			_ = bm.Close()
+		}
+	})
+	compactor.db.lru.Put(vlogFinalPath, vlogBm, func(key, value interface{}) {
+		// Close the block manager when evicted from LRU
+		if bm, ok := value.(*blockmanager.BlockManager); ok {
+			_ = bm.Close()
+		}
+	})
 
 	compactor.db.log(fmt.Sprintf("Compaction complete: %d SSTables merged into new SSTable %d at level %d",
 		len(sstables), newSSTable.Id, targetLevel))
