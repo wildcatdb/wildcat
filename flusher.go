@@ -246,9 +246,6 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 
 	}
 
-	// Delete original memtable wal
-	_ = os.Remove(memt.wal.path)
-
 	// Now we close the klog and vlog temp files and rename them
 	// This means the files are finalized
 	_ = klogBm.Close()
@@ -262,6 +259,9 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 	if err != nil {
 		return fmt.Errorf("failed to rename VLog file: %w", err)
 	}
+
+	// Delete original memtable wal
+	_ = os.Remove(memt.wal.path)
 
 	// Reopen the KLog and VLog block managers with final paths
 	klogBm, err = blockmanager.Open(klogFinalPath, os.O_RDONLY, flusher.db.opts.Permission, blockmanager.SyncOption(flusher.db.opts.SyncOption))
