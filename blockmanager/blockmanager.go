@@ -31,7 +31,7 @@ import (
 const MagicNumber = uint32(0x57494C44)        // "WILD"
 const Version = uint32(1)                     // Version of the file format
 const BlockSize = uint32(512)                 // Smaller the better, faster in our tests
-const Allotment = uint64(16)                  // How many blocks we can allot at once to the file.  We allocate this many blocks once allocationTable is empty
+const Allotment = uint64(64)                  // How many blocks we can allot at once to the file.  We allocate this many blocks once allocationTable is empty
 const EndOfChain = uint64(0xFFFFFFFFFFFFFFFF) // Marker for end of blockchain (overflowed block)
 
 // SyncOption defines the synchronization options for the file
@@ -235,6 +235,15 @@ func (bm *BlockManager) readHeader() error {
 	if header.Version != Version {
 		return errors.New("unsupported version")
 	}
+	if header.BlockSize != BlockSize {
+		// The block size is fixed to block manager version, if we try to read a block unfamiliar to format there will
+		// be problems thus we check and error out if the block size is not what we expect
+		return errors.New("invalid block size")
+
+	}
+
+	// We don't care for Allotment in this context, can change on minor updates
+	// for optimization reasons, this is just the amount of blocks we append at once
 
 	return nil
 }
@@ -342,8 +351,10 @@ func (bm *BlockManager) appendFreeBlocks() error {
 
 // allocateBlock allocates a block ID from the allocation table.
 func (bm *BlockManager) allocateBlock() (uint64, error) {
-	// First, check if we have free blocks atomically
-	if bm.allocationTable.IsEmpty() {
+	threshold := int64(Allotment / 2) // Allocate when 50% remain
+
+	// Check if we need to allocate proactively
+	if bm.allocationTable.Size() == threshold {
 		// We need to append blocks, but we need to ensure only one goroutine does this
 		// We'll use atomic CAS operations for this
 

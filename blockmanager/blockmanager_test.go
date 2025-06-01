@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"github.com/wildcatdb/wildcat/queue"
 	"hash/crc32"
+	"log"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -165,6 +166,9 @@ func TestReadHeader(t *testing.T) {
 	defer func(path string) {
 		_ = os.RemoveAll(path)
 	}(testFilePath)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(invalidFile)
 
 	// Create an invalid header
 	invalidHeader := Header{
@@ -218,6 +222,9 @@ func TestReadHeader(t *testing.T) {
 	defer func(path string) {
 		_ = os.RemoveAll(path)
 	}(testFilePath)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(invalidCRCFile)
 
 	// Create a valid header
 	validHeader := Header{
@@ -274,6 +281,9 @@ func TestReadHeader(t *testing.T) {
 	defer func(path string) {
 		_ = os.RemoveAll(path)
 	}(testFilePath)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(invalidVersionFile)
 
 	// Create a header with invalid version
 	invalidVersionHeader := Header{
@@ -394,6 +404,10 @@ func TestOpenNewFile(t *testing.T) {
 		_ = bm.Close()
 	}(bm)
 
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
+
 	// Check if the allocation table has the expected initial blocks
 	if bm.allocationTable.IsEmpty() {
 		t.Fatalf("Allocation table should not be empty for a new file")
@@ -401,15 +415,17 @@ func TestOpenNewFile(t *testing.T) {
 
 	// Check that we have Allotment number of blocks
 	// Convert the queue to a slice to count elements
-	count := 16 // The block manager's default allotment is 16 blocks thus
+	count := uint64(0) // The block manager's default allotment is 16 blocks thus
 	// we expect 16 blocks in the allocation table
-	for count > -1 {
+	for !bm.allocationTable.IsEmpty() {
 		bm.allocationTable.Dequeue()
-		count--
+		count++
 
 	}
 
-	if count != -1 {
+	log.Println("Number of blocks in allocation table:", count)
+
+	if count != Allotment {
 		t.Fatalf("Expected %d blocks in allocation table, got %d", Allotment, count)
 	}
 }
@@ -427,6 +443,10 @@ func TestAppendSmallData(t *testing.T) {
 	defer func(bm *BlockManager) {
 		_ = bm.Close()
 	}(bm)
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
 
 	// Small data (less than one block)
 	data := []byte("This is a test data for small append")
@@ -465,6 +485,10 @@ func TestAppendLargeData(t *testing.T) {
 	defer func(bm *BlockManager) {
 		_ = bm.Close()
 	}(bm)
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
 
 	// Calculate size for data larger than one block
 	blockHeaderSize := 16 // Size of BlockHeader struct (4 uint32 fields)
@@ -509,6 +533,10 @@ func TestMultipleAppendsAndReads(t *testing.T) {
 	defer func(bm *BlockManager) {
 		_ = bm.Close()
 	}(bm)
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
 
 	// Test with multiple appends of different sizes
 	testData := [][]byte{
@@ -614,6 +642,10 @@ func TestAllotmentExhaustion(t *testing.T) {
 		_ = bm.Close()
 	}(bm)
 
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
+
 	// Small data to append
 	data := []byte("Small test data")
 
@@ -659,6 +691,10 @@ func TestInvalidBlockRead(t *testing.T) {
 		_ = bm.Close()
 	}(bm)
 
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
+
 	// Try to read from an invalid block ID
 	_, _, err = bm.Read(-1)
 	if err == nil {
@@ -686,6 +722,10 @@ func TestEmptyAppend(t *testing.T) {
 		_ = bm.Close()
 	}(bm)
 
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
+
 	// Try to append empty data
 	_, err = bm.Append([]byte{})
 	if err == nil {
@@ -707,6 +747,10 @@ func TestGetInitialBlockID(t *testing.T) {
 	defer func(bm *BlockManager) {
 		_ = bm.Close()
 	}(bm)
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
 
 	// Write a single block to the file
 	data := []byte("Test data for initial block")
@@ -737,6 +781,10 @@ func TestIterator(t *testing.T) {
 	defer func(bm *BlockManager) {
 		_ = bm.Close()
 	}(bm)
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFile.Name())
 
 	// Append some data to the BlockManager
 	data1 := []byte("Block 1 data")
@@ -840,6 +888,10 @@ func TestIteratorFromBlock(t *testing.T) {
 		_ = bm.Close()
 	}(bm)
 
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFile.Name())
+
 	// Append several blocks of data
 	testData := [][]byte{
 		[]byte("Block 1 data"),
@@ -895,6 +947,10 @@ func TestScanForFreeBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)
 	}
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
 
 	// Write some initial data blocks
 	data1 := []byte("First block data")
@@ -1014,6 +1070,14 @@ func TestScanForFreeBlocks(t *testing.T) {
 		t.Fatalf("Failed to open edge case file: %v", err)
 	}
 
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(edgeFilePath)
+
 	// Exhaust all initial free blocks by writing something to them
 	initialFreeBlocks := 0
 	for !edgeBm.allocationTable.IsEmpty() {
@@ -1125,6 +1189,10 @@ func TestPartialBlockWriteRecovery(t *testing.T) {
 		_ = bm.Close()
 	}(bm)
 
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
+
 	// Append some data to trigger recovery
 	data := []byte("Test data after partial block write")
 
@@ -1156,6 +1224,10 @@ func TestPowerOutageDuringHeaderWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
+
+	defer func() {
+		_ = os.RemoveAll(tempFilePath)
+	}()
 
 	header := Header{
 		MagicNumber: MagicNumber,
@@ -1194,6 +1266,10 @@ func TestUpdateSameSize(t *testing.T) {
 	defer func(bm *BlockManager) {
 		_ = bm.Close()
 	}(bm)
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
 
 	// Append initial data
 	originalData := []byte("This is the original data")
@@ -1236,6 +1312,10 @@ func TestUpdateSmallerData(t *testing.T) {
 		_ = bm.Close()
 
 	}(bm)
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
 
 	// Append large data that spans multiple blocks
 	blockHeaderSize := 16 // Size of BlockHeader struct
@@ -1284,6 +1364,10 @@ func TestUpdateLargerData(t *testing.T) {
 		_ = bm.Close()
 	}(bm)
 
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
+
 	// Append small initial data
 	smallData := []byte("Small data")
 	blockID, err := bm.Append(smallData)
@@ -1330,6 +1414,10 @@ func TestUpdateMultipleBlocks(t *testing.T) {
 	defer func(bm *BlockManager) {
 		_ = bm.Close()
 	}(bm)
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
 
 	// Create several blocks with different data
 	data1 := []byte("First block data")
@@ -1390,6 +1478,10 @@ func TestUpdateInvalidBlockID(t *testing.T) {
 		_ = bm.Close()
 	}(bm)
 
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
+
 	// Try to update non-existent block
 	newData := []byte("Update data")
 	_, err = bm.Update(999, newData)
@@ -1420,6 +1512,10 @@ func TestUpdatePreservesOtherData(t *testing.T) {
 	defer func(bm *BlockManager) {
 		_ = bm.Close()
 	}(bm)
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
 
 	// Create multiple entries
 	testEntries := [][]byte{
@@ -1490,6 +1586,10 @@ func TestConcurrentAppends(t *testing.T) {
 	defer func(bm *BlockManager) {
 		_ = bm.Close()
 	}(bm)
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
 
 	// Number of concurrent goroutines and operations per goroutine
 	numGoroutines := 10
@@ -1620,6 +1720,10 @@ func TestUpdateDuringConcurrentRead(t *testing.T) {
 	defer func(bm *BlockManager) {
 		_ = bm.Close()
 	}(bm)
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
 
 	// Create initial data
 	originalData := []byte("Original data that will be updated during concurrent reads")
@@ -1777,6 +1881,10 @@ func TestIteratorWithCorruptedBlocks(t *testing.T) {
 		t.Fatalf("Failed to open file: %v", err)
 	}
 
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
+
 	// Create some valid blocks
 	validData1 := []byte("Valid block 1 data")
 	validData2 := []byte("Valid block 2 data")
@@ -1904,6 +2012,10 @@ func BenchmarkUpdate(b *testing.B) {
 		_ = bm.Close()
 	}(bm)
 
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
+
 	// Prepare test data
 	originalData := make([]byte, 500)
 	updateData := make([]byte, 500)
@@ -1942,6 +2054,10 @@ func BenchmarkBlockManagerWriteSmall(b *testing.B) {
 		_ = bm.Close()
 	}(bm)
 
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tmpFile)
+
 	data := []byte("This is a small benchmark write block")
 
 	b.ResetTimer()
@@ -1962,6 +2078,10 @@ func BenchmarkBlockManagerWriteLarge(b *testing.B) {
 	defer func(bm *BlockManager) {
 		_ = bm.Close()
 	}(bm)
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tmpFile)
 
 	data := make([]byte, 4096*4) // 4 blocks worth
 	rand.Read(data)
@@ -1984,6 +2104,10 @@ func BenchmarkBlockManagerRead(b *testing.B) {
 	defer func(bm *BlockManager) {
 		_ = bm.Close()
 	}(bm)
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tmpFile)
 
 	// Prepare dataset
 	data := make([]byte, 512)
@@ -2021,6 +2145,10 @@ func BenchmarkBlockManagerWriteSmallParallel(b *testing.B) {
 	defer func(bm *BlockManager) {
 		_ = bm.Close()
 	}(bm)
+
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tmpFile)
 
 	data := []byte("Concurrent small write")
 

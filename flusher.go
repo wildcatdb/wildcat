@@ -99,6 +99,7 @@ func (flusher *Flusher) backgroundProcess() {
 
 			// Flush the immutable memtable to disk
 			err := flusher.flushMemtable(immutableMemt.(*Memtable))
+
 			if err != nil {
 				continue
 			}
