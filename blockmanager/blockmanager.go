@@ -83,6 +83,7 @@ type Iterator struct {
 
 // Open opens a file and initializes the BlockManager.
 func Open(filename string, flag int, perm os.FileMode, syncOpt SyncOption, duration ...time.Duration) (*BlockManager, error) {
+
 	file, err := os.OpenFile(filename, flag, perm)
 	if err != nil {
 		return nil, err
@@ -185,7 +186,7 @@ func (bm *BlockManager) writeHeader() error {
 	}
 
 	// Use pwrite to write at the beginning of the file (offset 0)
-	_, err := pwrite(bm.fd, buf.Bytes(), 0, bm.file)
+	_, err := pwrite(bm.fd, buf.Bytes(), 0)
 	return err
 }
 
@@ -201,7 +202,7 @@ func (bm *BlockManager) readHeader() error {
 	buf := make([]byte, headerSize)
 
 	// Read the header using pread
-	_, err := pread(bm.fd, buf, 0, bm.file)
+	_, err := pread(bm.fd, buf, 0)
 	if err != nil {
 		return err
 	}
@@ -332,7 +333,7 @@ func (bm *BlockManager) appendFreeBlocks() error {
 		position := int64(headerSize) + int64(newBlockID)*int64(BlockSize)
 
 		// Use pwrite to write the block at the calculated position
-		_, err := pwrite(bm.fd, blockBuffer, position, bm.file)
+		_, err := pwrite(bm.fd, blockBuffer, position)
 		if err != nil {
 			return err
 		}
@@ -456,7 +457,7 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 		position := int64(headerSize) + int64(i)*int64(BlockSize)
 
 		// Read the block header using pread
-		_, err := pread(bm.fd, headerBuf, position, bm.file)
+		_, err := pread(bm.fd, headerBuf, position)
 		if err != nil {
 			return err
 		}
@@ -517,7 +518,7 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 		position := int64(headerSize) + int64(i)*int64(BlockSize)
 
 		// Read the block header using pread
-		_, err := pread(bm.fd, headerBuf, position, bm.file)
+		_, err := pread(bm.fd, headerBuf, position)
 		if err != nil {
 			return err
 		}
@@ -694,7 +695,7 @@ func (bm *BlockManager) Append(data []byte) (int64, error) {
 		}
 
 		// Write the block to the file using atomic pwrite operation
-		_, err := pwrite(bm.fd, blockBuffer, position, bm.file)
+		_, err := pwrite(bm.fd, blockBuffer, position)
 		if err != nil {
 			return -1, err
 		}
@@ -740,7 +741,7 @@ func (bm *BlockManager) Read(blockID int64) ([]byte, int64, error) {
 		position := int64(headerSize) + int64(currentBlockID)*int64(BlockSize)
 
 		// Read the block using atomic pread operation
-		bytesRead, err := pread(bm.fd, blockBuffer, position, bm.file)
+		bytesRead, err := pread(bm.fd, blockBuffer, position)
 		if err != nil {
 			return nil, -1, err
 		}
@@ -967,7 +968,7 @@ func (it *Iterator) isValidBlock(blockID uint64) bool {
 
 	// Read block header
 	headerBuf := make([]byte, blockHeaderSize)
-	_, err := pread(it.blockManager.fd, headerBuf, position, it.blockManager.file)
+	_, err := pread(it.blockManager.fd, headerBuf, position)
 	if err != nil {
 		return false
 	}
@@ -1057,7 +1058,7 @@ func (it *Iterator) chainsToTarget(startBlock, targetBlock uint64) bool {
 		// Read the current block header to get the next block
 		position := int64(headerSize) + int64(currentBlock)*int64(BlockSize)
 		headerBuf := make([]byte, blockHeaderSize)
-		_, err := pread(it.blockManager.fd, headerBuf, position, it.blockManager.file)
+		_, err := pread(it.blockManager.fd, headerBuf, position)
 		if err != nil {
 			return false
 		}
@@ -1212,7 +1213,7 @@ func (bm *BlockManager) getBlockChain(startBlockID uint64) ([]uint64, error) {
 		position := int64(headerSize) + int64(currentBlockID)*int64(BlockSize)
 		headerBuf := make([]byte, blockHeaderSize)
 
-		_, err := pread(bm.fd, headerBuf, position, bm.file)
+		_, err := pread(bm.fd, headerBuf, position)
 		if err != nil {
 			return nil, err
 		}
@@ -1304,7 +1305,7 @@ func (bm *BlockManager) updateExistingBlocks(blockIDs []uint64, data []byte, blo
 		}
 
 		// Write block to file
-		_, err := pwrite(bm.fd, blockBuffer, position, bm.file)
+		_, err := pwrite(bm.fd, blockBuffer, position)
 		if err != nil {
 			return err
 		}
@@ -1357,7 +1358,7 @@ func (bm *BlockManager) freeUnusedBlocks(blockIDs []uint64) error {
 
 		// Write to file
 		position := int64(headerSize) + int64(blockID)*int64(BlockSize)
-		_, err := pwrite(bm.fd, blockBuffer, position, bm.file)
+		_, err := pwrite(bm.fd, blockBuffer, position)
 		if err != nil {
 			return err
 		}
