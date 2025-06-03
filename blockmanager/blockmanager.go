@@ -84,13 +84,13 @@ type Iterator struct {
 // Open opens a file and initializes the BlockManager.
 func Open(filename string, flag int, perm os.FileMode, syncOpt SyncOption, duration ...time.Duration) (*BlockManager, error) {
 
-	file, err := os.OpenFile(filename, flag, perm)
+	fd, err := OpenFile(filename, flag, uint32(perm))
 	if err != nil {
 		return nil, err
 	}
 
 	// Get the file descriptor for direct syscalls
-	fd := file.Fd()
+	file := NewFileFromFd(fd, filename)
 
 	// We get stats on the file and check if its empty
 	stats, err := file.Stat()
