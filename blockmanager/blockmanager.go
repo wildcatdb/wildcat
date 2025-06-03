@@ -24,7 +24,6 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -1369,7 +1368,7 @@ func (bm *BlockManager) freeUnusedBlocks(blockIDs []uint64) error {
 
 	// Sync if needed
 	if bm.syncOption == SyncFull {
-		_ = syscall.Fdatasync(int(bm.fd))
+		_ = Fdatasync(bm.fd)
 	}
 
 	return nil
