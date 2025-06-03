@@ -3,6 +3,10 @@
 
 package blockmanager
 
+import (
+	"os"
+)
+
 // pwrite performs an atomic write at a specific offset without needing to Seek first
 func pwrite(fd uintptr, data []byte, offset int64, f *os.File) (int, error) {
 	return f.WriteAt(data, offset)
