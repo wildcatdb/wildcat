@@ -3,7 +3,10 @@
 
 package blockmanager
 
-import "syscall"
+import (
+	"syscall"
+	"unsafe"
+)
 
 var (
 	kernel32           = syscall.NewLazyDLL("kernel32.dll")
