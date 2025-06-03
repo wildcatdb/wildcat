@@ -11,7 +11,7 @@ import (
 func OpenFile(name string, flags int, perm uint32) (uintptr, error) {
 	var access uint32
 	var creation uint32
-	var windowsFlags uint32 = syscall.FILE_FLAG_OVERLAPPED | windows.FILE_FLAG_RANDOM_ACCESS
+	var windowsFlags uint32 = windows.FILE_FLAG_RANDOM_ACCESS
 
 	// Map common Unix flags to Windows equivalents
 	switch flags & (windows.O_RDONLY | windows.O_WRONLY | windows.O_RDWR) {
