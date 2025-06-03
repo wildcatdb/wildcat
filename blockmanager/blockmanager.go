@@ -344,7 +344,7 @@ func (bm *BlockManager) appendFreeBlocks() error {
 
 	// Sync changes to disk
 	if bm.syncOption == SyncFull {
-		_ = syscall.Fdatasync(int(bm.fd))
+		_ = Fdatasync(bm.fd)
 	}
 	return nil
 }
@@ -702,7 +702,7 @@ func (bm *BlockManager) Append(data []byte) (int64, error) {
 	}
 
 	if bm.syncOption == SyncFull {
-		_ = syscall.Fdatasync(int(bm.fd))
+		_ = Fdatasync(bm.fd)
 	}
 
 	return int64(firstBlockID), nil
@@ -1313,7 +1313,7 @@ func (bm *BlockManager) updateExistingBlocks(blockIDs []uint64, data []byte, blo
 
 	// Sync if needed
 	if bm.syncOption == SyncFull {
-		_ = syscall.Fdatasync(int(bm.fd))
+		_ = Fdatasync(bm.fd)
 	}
 
 	return nil
@@ -1381,5 +1381,5 @@ func (bm *BlockManager) Sync() error {
 		return errors.New("escalate fsync is only allowed when syncOption is SyncNone")
 	}
 
-	return syscall.Fdatasync(int(bm.fd))
+	return Fdatasync(bm.fd)
 }
