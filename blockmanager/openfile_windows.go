@@ -66,10 +66,11 @@ func OpenFile(name string, flags int, perm uint32) (uintptr, error) {
 		windowsFlags,
 		0,
 	)
-
 	if err != nil {
 		return 0, err
 	}
+
+	syscall.Seek(syscall.Handle(handle), 0, os.SEEK_SET)
 
 	return uintptr(handle), nil
 }
