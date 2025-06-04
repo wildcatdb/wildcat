@@ -317,15 +317,10 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 		}
 
 		// Force a flush
-		err = db.Update(func(txn *Txn) error {
-			return txn.Put([]byte(fmt.Sprintf("flush_key_%d", j)), make([]byte, opts.WriteBufferSize))
-		})
+		err = db.ForceFlush()
 		if err != nil {
-			t.Fatalf("Failed to trigger flush: %v", err)
+			t.Fatalf("Failed to force flush: %v", err)
 		}
-
-		// Allow time for flush
-		time.Sleep(100 * time.Millisecond)
 
 		// Log current state
 		t.Logf("Created SSTable %d/%d", j+1, db.opts.CompactionSizeThreshold+1)

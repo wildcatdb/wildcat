@@ -282,13 +282,11 @@ func TestFlusher_ErrorHandling(t *testing.T) {
 	}
 
 	// Queue memtable for flushing
-	err = db.flusher.queueMemtable()
+	err = db.ForceFlush()
 	if err != nil {
-		t.Fatalf("Failed to queue memtable: %v", err)
-	}
+		t.Fatalf("Failed to force flush: %v", err)
 
-	// Give time for background flush to start
-	time.Sleep(2 * time.Second)
+	}
 
 	// Now make the level 1 directory non-writable to cause errors during flush
 	l1Dir := filepath.Join(dir, "l1")
@@ -313,11 +311,11 @@ func TestFlusher_ErrorHandling(t *testing.T) {
 		}
 	}
 
-	// Try to queue memtable - this may or may not succeed depending on implementation
-	_ = db.flusher.queueMemtable()
+	err = db.ForceFlush()
+	if err == nil {
+		t.Fatalf("Expected error during flush with read-only directory, got none")
 
-	// Give time for background flush to attempt operation
-	time.Sleep(2 * time.Second)
+	}
 
 	// Restore directory permissions
 	err = os.Chmod(l1Dir, originalPermissions.Mode())
