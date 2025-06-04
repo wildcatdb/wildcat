@@ -174,16 +174,10 @@ func TestLevel_Reopen(t *testing.T) {
 		}
 
 		// Force flush with large value
-		largeValue := make([]byte, opts.WriteBufferSize)
-		err = db.Update(func(txn *Txn) error {
-			return txn.Put([]byte("large_key"), largeValue)
-		})
+		err = db.ForceFlush()
 		if err != nil {
-			t.Fatalf("Failed to insert large value: %v", err)
+			t.Fatalf("Failed to force flush: %v", err)
 		}
-
-		// Give time for flush to complete
-		time.Sleep(500 * time.Millisecond)
 
 		// Get level info before closing
 		levels := db.levels.Load()
@@ -406,17 +400,11 @@ func TestLevel_ErrorHandling(t *testing.T) {
 		}
 	}
 
-	// Force flush
-	largeValue := make([]byte, opts.WriteBufferSize)
-	err = db.Update(func(txn *Txn) error {
-		return txn.Put([]byte("large_key"), largeValue)
-	})
+	err = db.ForceFlush()
 	if err != nil {
-		t.Fatalf("Failed to insert large value: %v", err)
-	}
+		t.Fatalf("Failed to force flush: %v", err)
 
-	// Wait for flush to complete
-	time.Sleep(500 * time.Millisecond)
+	}
 
 	// Close the database
 	err = db.Close()

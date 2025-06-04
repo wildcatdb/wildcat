@@ -24,7 +24,6 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -84,13 +83,14 @@ type Iterator struct {
 
 // Open opens a file and initializes the BlockManager.
 func Open(filename string, flag int, perm os.FileMode, syncOpt SyncOption, duration ...time.Duration) (*BlockManager, error) {
-	file, err := os.OpenFile(filename, flag, perm)
+
+	fd, err := OpenFile(filename, flag, uint32(perm))
 	if err != nil {
 		return nil, err
 	}
 
 	// Get the file descriptor for direct syscalls
-	fd := file.Fd()
+	file := NewFileFromFd(fd, filename)
 
 	// We get stats on the file and check if its empty
 	stats, err := file.Stat()
@@ -344,7 +344,7 @@ func (bm *BlockManager) appendFreeBlocks() error {
 
 	// Sync changes to disk
 	if bm.syncOption == SyncFull {
-		_ = syscall.Fdatasync(int(bm.fd))
+		_ = Fdatasync(bm.fd)
 	}
 	return nil
 }
@@ -702,7 +702,7 @@ func (bm *BlockManager) Append(data []byte) (int64, error) {
 	}
 
 	if bm.syncOption == SyncFull {
-		_ = syscall.Fdatasync(int(bm.fd))
+		_ = Fdatasync(bm.fd)
 	}
 
 	return int64(firstBlockID), nil
@@ -1313,7 +1313,7 @@ func (bm *BlockManager) updateExistingBlocks(blockIDs []uint64, data []byte, blo
 
 	// Sync if needed
 	if bm.syncOption == SyncFull {
-		_ = syscall.Fdatasync(int(bm.fd))
+		_ = Fdatasync(bm.fd)
 	}
 
 	return nil
@@ -1369,7 +1369,7 @@ func (bm *BlockManager) freeUnusedBlocks(blockIDs []uint64) error {
 
 	// Sync if needed
 	if bm.syncOption == SyncFull {
-		_ = syscall.Fdatasync(int(bm.fd))
+		_ = Fdatasync(bm.fd)
 	}
 
 	return nil
@@ -1381,5 +1381,5 @@ func (bm *BlockManager) Sync() error {
 		return errors.New("escalate fsync is only allowed when syncOption is SyncNone")
 	}
 
-	return syscall.Fdatasync(int(bm.fd))
+	return Fdatasync(bm.fd)
 }

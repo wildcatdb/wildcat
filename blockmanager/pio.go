@@ -2,7 +2,9 @@
 
 package blockmanager
 
-import "syscall"
+import (
+	"syscall"
+)
 
 // pwrite performs an atomic write at a specific offset without needing to Seek first
 func pwrite(fd uintptr, data []byte, offset int64) (int, error) {

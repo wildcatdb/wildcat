@@ -1,5 +1,4 @@
 name: Wildcat CI
-
 on:
   push:
     branches:
@@ -10,16 +9,20 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        go-version: ['1.24']
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v4
         with:
-          go-version: '1.24'
+          go-version: ${{ matrix.go-version }}
 
       - name: Install dependencies
         run: go mod tidy

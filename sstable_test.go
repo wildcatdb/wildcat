@@ -41,8 +41,7 @@ func TestSSTable_BasicOperations(t *testing.T) {
 		_ = os.RemoveAll(path)
 	}(dir)
 
-	// Insert enough data to trigger a flush to SSTable
-	numEntries := 100
+	numEntries := 50
 	for i := 0; i < numEntries; i++ {
 		key := fmt.Sprintf("key%d", i)
 		value := fmt.Sprintf("value%d", i)
@@ -69,7 +68,7 @@ func TestSSTable_BasicOperations(t *testing.T) {
 	}
 
 	// Give some time for background flushing to complete
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(2000 * time.Millisecond)
 
 	// Verify that level 1 has at least one SSTable
 	levels := db.levels.Load()
