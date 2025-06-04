@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -285,42 +286,60 @@ func TestFlusher_ErrorHandling(t *testing.T) {
 	err = db.ForceFlush()
 	if err != nil {
 		t.Fatalf("Failed to force flush: %v", err)
-
 	}
 
-	// Now make the level 1 directory non-writable to cause errors during flush
-	l1Dir := filepath.Join(dir, "l1")
-	originalPermissions, err := os.Stat(l1Dir)
-	if err != nil {
-		t.Fatalf("Failed to get l1 directory permissions: %v", err)
-	}
-
-	// Make directory read-only
-	err = os.Chmod(l1Dir, 0500) // Read + execute only
-	if err != nil {
-		t.Fatalf("Failed to change directory permissions: %v", err)
-	}
-
-	// Try to force another flush with the directory being read-only
-	for i := 10; i < 20; i++ {
-		err = db.Update(func(txn *Txn) error {
-			return txn.Put([]byte(fmt.Sprintf("error_key%d", i)), []byte(fmt.Sprintf("error_value%d", i)))
-		})
+	// Skip permission-based error testing on Windows due to different permission model
+	if runtime.GOOS != "windows" {
+		// Now make the level 1 directory non-writable to cause errors during flush
+		l1Dir := filepath.Join(dir, "l1")
+		originalPermissions, err := os.Stat(l1Dir)
 		if err != nil {
-			t.Fatalf("Failed to insert key: %v", err)
+			t.Fatalf("Failed to get l1 directory permissions: %v", err)
 		}
-	}
 
-	err = db.ForceFlush()
-	if err == nil {
-		t.Fatalf("Expected error during flush with read-only directory, got none")
+		// Make directory read-only
+		err = os.Chmod(l1Dir, 0500) // Read + execute only
+		if err != nil {
+			t.Fatalf("Failed to change directory permissions: %v", err)
+		}
 
-	}
+		// Try to force another flush with the directory being read-only
+		for i := 10; i < 20; i++ {
+			err = db.Update(func(txn *Txn) error {
+				return txn.Put([]byte(fmt.Sprintf("error_key%d", i)), []byte(fmt.Sprintf("error_value%d", i)))
+			})
+			if err != nil {
+				t.Fatalf("Failed to insert key: %v", err)
+			}
+		}
 
-	// Restore directory permissions
-	err = os.Chmod(l1Dir, originalPermissions.Mode())
-	if err != nil {
-		t.Fatalf("Failed to restore directory permissions: %v", err)
+		err = db.ForceFlush()
+		if err == nil {
+			t.Fatalf("Expected error during flush with read-only directory, got none")
+		}
+
+		// Restore directory permissions
+		err = os.Chmod(l1Dir, originalPermissions.Mode())
+		if err != nil {
+			t.Fatalf("Failed to restore directory permissions: %v", err)
+		}
+	} else {
+		// On Windows, just add some more data without testing permission errors
+		t.Log("Skipping permission-based error testing on Windows")
+		for i := 10; i < 20; i++ {
+			err = db.Update(func(txn *Txn) error {
+				return txn.Put([]byte(fmt.Sprintf("error_key%d", i)), []byte(fmt.Sprintf("error_value%d", i)))
+			})
+			if err != nil {
+				t.Fatalf("Failed to insert key: %v", err)
+			}
+		}
+
+		// Force flush without expecting an error
+		err = db.ForceFlush()
+		if err != nil {
+			t.Fatalf("Unexpected error during flush: %v", err)
+		}
 	}
 
 	// Close database and check we can still shut down gracefully

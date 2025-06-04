@@ -277,7 +277,7 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 	// Create a test DB with settings to trigger size-tiered compactions
 	opts := &Options{
 		Directory:       dir,
-		SyncOption:      SyncFull,
+		SyncOption:      SyncNone,
 		LogChannel:      nil,
 		WriteBufferSize: 4 * 1024, // Small buffer to force flushing
 	}
@@ -326,9 +326,6 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 		t.Logf("Created SSTable %d/%d", j+1, db.opts.CompactionSizeThreshold+1)
 	}
 
-	// Wait for background operations
-	time.Sleep(2 * time.Second)
-
 	// Verify L1 has enough SSTables
 	levels := db.levels.Load()
 	if levels == nil {
@@ -375,9 +372,6 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Manual size-tiered compaction failed: %v", err)
 		}
-
-		// Wait for compaction to complete
-		time.Sleep(2 * time.Second)
 
 		// Verify level 2 has a new SSTable from compaction
 		level2 := (*levels)[1]
