@@ -1,0 +1,33 @@
+name: Wildcat Race Tests
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  race-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24'
+      - name: Install dependencies
+        run: go mod tidy
+      - name: Run block manager race tests
+        run: go test ./blockmanager -race -v
+      - name: Run lru race tests
+        run: go test ./lru -race -v
+      - name: Run queue race tests
+        run: go test ./queue -race -v
+      - name: Run skiplist race tests
+        run: go test ./skiplist -race -v
+      - name: Run btree race tests
+        run: go test ./tree -race -v
+      - name: Run core race tests
+        run: go test -race -v
