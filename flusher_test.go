@@ -288,7 +288,7 @@ func TestFlusher_ErrorHandling(t *testing.T) {
 	}
 
 	// Give time for background flush to start
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(2 * time.Second)
 
 	// Now make the level 1 directory non-writable to cause errors during flush
 	l1Dir := filepath.Join(dir, "l1")
