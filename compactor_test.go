@@ -325,7 +325,7 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 		}
 
 		// Allow time for flush
-		time.Sleep(2 * time.Second)
+		time.Sleep(100 * time.Millisecond)
 
 		// Log current state
 		t.Logf("Created SSTable %d/%d", j+1, db.opts.CompactionSizeThreshold+1)
