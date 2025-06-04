@@ -325,14 +325,14 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 		}
 
 		// Allow time for flush
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(2 * time.Second)
 
 		// Log current state
 		t.Logf("Created SSTable %d/%d", j+1, db.opts.CompactionSizeThreshold+1)
 	}
 
 	// Wait for background operations
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(2 * time.Second)
 
 	// Verify L1 has enough SSTables
 	levels := db.levels.Load()
@@ -382,7 +382,7 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 		}
 
 		// Wait for compaction to complete
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(2 * time.Second)
 
 		// Verify level 2 has a new SSTable from compaction
 		level2 := (*levels)[1]

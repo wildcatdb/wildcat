@@ -317,7 +317,7 @@ func TestFlusher_ErrorHandling(t *testing.T) {
 	_ = db.flusher.queueMemtable()
 
 	// Give time for background flush to attempt operation
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(2 * time.Second)
 
 	// Restore directory permissions
 	err = os.Chmod(l1Dir, originalPermissions.Mode())

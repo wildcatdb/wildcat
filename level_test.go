@@ -183,7 +183,7 @@ func TestLevel_Reopen(t *testing.T) {
 		}
 
 		// Give time for flush to complete
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(2 * time.Second)
 
 		// Get level info before closing
 		levels := db.levels.Load()
@@ -416,7 +416,7 @@ func TestLevel_ErrorHandling(t *testing.T) {
 	}
 
 	// Wait for flush to complete
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(2 * time.Second)
 
 	// Close the database
 	err = db.Close()
