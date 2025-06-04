@@ -25,24 +25,29 @@ func OpenFile(name string, flags int, perm uint32) (uintptr, error) {
 		access = syscall.GENERIC_READ
 	}
 
-	// Handle creation flags
-	if flags&windows.O_CREAT != 0 {
-		if flags&windows.O_EXCL != 0 {
+	hasCreate := flags&windows.O_CREAT != 0
+	hasTrunc := flags&windows.O_TRUNC != 0
+	hasExcl := flags&windows.O_EXCL != 0
+
+	if hasCreate {
+		if hasExcl {
+			// Create new file, fail if exists
 			creation = syscall.CREATE_NEW
-		} else if flags&windows.O_TRUNC != 0 {
+		} else if hasTrunc {
+			// Create new or truncate existing
 			creation = syscall.CREATE_ALWAYS
 		} else {
+			// Create new or open existing (don't truncate)
 			creation = syscall.OPEN_ALWAYS
 		}
-	} else if flags&windows.O_TRUNC != 0 {
-		creation = syscall.TRUNCATE_EXISTING
 	} else {
-		creation = syscall.OPEN_EXISTING
-	}
-
-	// Handle append mode
-	if flags&windows.O_APPEND != 0 {
-		access |= syscall.FILE_APPEND_DATA
+		if hasTrunc {
+			// Truncate existing file, fail if doesn't exist
+			creation = syscall.TRUNCATE_EXISTING
+		} else {
+			// Open existing file, fail if doesn't exist
+			creation = syscall.OPEN_EXISTING
+		}
 	}
 
 	// Convert filename to UTF16
@@ -51,11 +56,11 @@ func OpenFile(name string, flags int, perm uint32) (uintptr, error) {
 		return 0, err
 	}
 
-	// Open the file
+	// Open the file with enhanced sharing for better multi-process support
 	handle, err := syscall.CreateFile(
 		namePtr,
 		access,
-		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE,
+		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE,
 		nil,
 		creation,
 		windowsFlags,
