@@ -20,6 +20,7 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -69,6 +70,232 @@ func TestOpen(t *testing.T) {
 	_ = db.Close()
 
 	wg.Wait()
+}
+
+func TestDB_RecoveryAfterUncleanShutdown(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_recovery_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(dir)
+	}()
+
+	// First instance - write data but don't close cleanly
+	{
+		opts := &Options{
+			Directory:  dir,
+			SyncOption: SyncFull,
+		}
+
+		db, err := Open(opts)
+		if err != nil {
+			t.Fatalf("Failed to open database: %v", err)
+		}
+
+		// Write some committed data
+		for i := 0; i < 100; i++ {
+			err = db.Update(func(txn *Txn) error {
+				key := fmt.Sprintf("recovery_key_%d", i)
+				value := fmt.Sprintf("recovery_value_%d", i)
+				return txn.Put([]byte(key), []byte(value))
+			})
+			if err != nil {
+				t.Fatalf("Failed to write data: %v", err)
+			}
+		}
+
+		// Start some uncommitted transactions
+		txn1 := db.Begin()
+		_ = txn1.Put([]byte("uncommitted_1"), []byte("should_not_survive"))
+
+		txn2 := db.Begin()
+		_ = txn2.Put([]byte("uncommitted_2"), []byte("should_not_survive"))
+
+		// Simulate unclean shutdown by NOT calling Close()
+		// (database just goes out of scope)
+	}
+
+	// Second instance - reopen and verify recovery
+	{
+		opts := &Options{
+			Directory:  dir,
+			SyncOption: SyncFull,
+		}
+
+		db, err := Open(opts)
+		if err != nil {
+			t.Fatalf("Failed to reopen database: %v", err)
+		}
+		defer func(db *DB) {
+			_ = db.Close()
+		}(db)
+
+		// Verify committed data survived
+		for i := 0; i < 100; i++ {
+			key := fmt.Sprintf("recovery_key_%d", i)
+			expectedValue := fmt.Sprintf("recovery_value_%d", i)
+
+			var actualValue []byte
+			err = db.View(func(txn *Txn) error {
+				var err error
+				actualValue, err = txn.Get([]byte(key))
+				return err
+			})
+
+			if err != nil {
+				t.Errorf("Failed to read committed key %s: %v", key, err)
+			} else if string(actualValue) != expectedValue {
+				t.Errorf("Value mismatch for key %s: expected %s, got %s",
+					key, expectedValue, actualValue)
+			}
+		}
+
+		// Verify uncommitted data did NOT survive
+		err = db.View(func(txn *Txn) error {
+			_, err := txn.Get([]byte("uncommitted_1"))
+			if err == nil {
+				return fmt.Errorf("uncommitted data should not have survived")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Errorf("Uncommitted transaction cleanup failed: %v", err)
+		}
+	}
+}
+
+func TestDB_Stats(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_stats_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(dir)
+	}()
+
+	opts := &Options{
+		Directory:   dir,
+		SyncOption:  SyncNone,
+		BloomFilter: true,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Test stats on empty database
+	stats := db.Stats()
+	if stats == "" {
+		t.Errorf("Expected non-empty stats string")
+	}
+
+	// Check that stats contain expected sections
+	expectedSections := []string{
+		"Wildcat DB Stats and Configuration",
+		"ID Generator State",
+		"Runtime Statistics",
+		"Write Buffer Size",
+		"Total Entries",
+	}
+
+	for _, section := range expectedSections {
+		if !strings.Contains(stats, section) {
+			t.Errorf("Stats missing expected section: %s", section)
+		}
+	}
+
+	// Add some data and verify stats change
+	for i := 0; i < 50; i++ {
+		err = db.Update(func(txn *Txn) error {
+			key := fmt.Sprintf("stats_key_%d", i)
+			value := fmt.Sprintf("stats_value_%d", i)
+			return txn.Put([]byte(key), []byte(value))
+		})
+		if err != nil {
+			t.Fatalf("Failed to insert data: %v", err)
+		}
+	}
+
+	newStats := db.Stats()
+	if newStats == stats {
+		t.Errorf("Expected stats to change after inserting data")
+	}
+
+	t.Logf("Database stats:\n%s", newStats)
+}
+
+func TestDB_ErrorConditions(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_error_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(dir)
+	}()
+
+	opts := &Options{
+		Directory:  dir,
+		SyncOption: SyncNone,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Test operations on nil keys/values
+	err = db.Update(func(txn *Txn) error {
+		return txn.Put(nil, []byte("value"))
+	})
+	if err == nil {
+		t.Errorf("Expected error putting nil key")
+	}
+
+	err = db.Update(func(txn *Txn) error {
+		return txn.Put([]byte("key"), nil)
+	})
+	if err == nil {
+		t.Errorf("Expected error putting nil value")
+	}
+
+	// Test reading non-existent key
+	err = db.View(func(txn *Txn) error {
+		_, err := txn.Get([]byte("non_existent_key"))
+		if err == nil {
+			return fmt.Errorf("expected error reading non-existent key")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Errorf("Non-existent key test failed: %v", err)
+	}
+
+	// Test empty key
+	err = db.Update(func(txn *Txn) error {
+		return txn.Put([]byte(""), []byte("empty_key_value"))
+	})
+	if err == nil {
+		t.Errorf("Expected error putting empty key")
+	}
+
+	err = db.View(func(txn *Txn) error {
+		var err error
+		_, err = txn.Get([]byte(""))
+		return err
+	})
+	if err == nil {
+		t.Errorf("Expected error reading empty key")
+
+	}
+
 }
 
 // **These are more internal benchmarks than actual database benchmarks.  They are included for completeness and work on optimizations**
