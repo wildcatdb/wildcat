@@ -45,6 +45,7 @@ typedef struct {
     int compaction_size_threshold;
     double compaction_score_size_weight;
     double compaction_score_count_weight;
+	double compaction_size_tiered_similarity_ratio;
     long flusher_interval_ns;
     long compactor_interval_ns;
     double bloom_fpr;
@@ -113,31 +114,32 @@ func removeDB(id uint64) {
 // convert C options to Go Options
 func fromCOptions(copts *C.wildcat_opts_t) *wildcat.Options {
 	return &wildcat.Options{
-		Directory:                  C.GoString(copts.directory),
-		WriteBufferSize:            int64(copts.write_buffer_size),
-		SyncOption:                 wildcat.SyncOption(copts.sync_option),
-		SyncInterval:               time.Duration(copts.sync_interval_ns),
-		LevelCount:                 int(copts.level_count),
-		LevelMultiplier:            int(copts.level_multiplier),
-		BlockManagerLRUSize:        int(copts.block_manager_lru_size),
-		BlockManagerLRUEvictRatio:  float64(copts.block_manager_lru_evict_ratio),
-		BlockManagerLRUAccesWeight: float64(copts.block_manager_lru_access_weight),
-		Permission:                 os.FileMode(copts.permission),
-		BloomFilter:                copts.bloom_filter != 0,
-		MaxCompactionConcurrency:   int(copts.max_compaction_concurrency),
-		CompactionCooldownPeriod:   time.Duration(copts.compaction_cooldown_ns),
-		CompactionBatchSize:        int(copts.compaction_batch_size),
-		CompactionSizeRatio:        float64(copts.compaction_size_ratio),
-		CompactionSizeThreshold:    int(copts.compaction_size_threshold),
-		CompactionScoreSizeWeight:  float64(copts.compaction_score_size_weight),
-		CompactionScoreCountWeight: float64(copts.compaction_score_count_weight),
-		FlusherTickerInterval:      time.Duration(copts.flusher_interval_ns),
-		CompactorTickerInterval:    time.Duration(copts.compactor_interval_ns),
-		BloomFilterFPR:             float64(copts.bloom_fpr),
-		WalAppendRetry:             int(copts.wal_append_retry),
-		WalAppendBackoff:           time.Duration(copts.wal_append_backoff_ns),
-		SSTableBTreeOrder:          int(copts.sstable_btree_order),
-		STDOutLogging:              copts.stdout_logging != 0,
+		Directory:                           C.GoString(copts.directory),
+		WriteBufferSize:                     int64(copts.write_buffer_size),
+		SyncOption:                          wildcat.SyncOption(copts.sync_option),
+		SyncInterval:                        time.Duration(copts.sync_interval_ns),
+		LevelCount:                          int(copts.level_count),
+		LevelMultiplier:                     int(copts.level_multiplier),
+		BlockManagerLRUSize:                 int(copts.block_manager_lru_size),
+		BlockManagerLRUEvictRatio:           float64(copts.block_manager_lru_evict_ratio),
+		BlockManagerLRUAccesWeight:          float64(copts.block_manager_lru_access_weight),
+		Permission:                          os.FileMode(copts.permission),
+		BloomFilter:                         copts.bloom_filter != 0,
+		MaxCompactionConcurrency:            int(copts.max_compaction_concurrency),
+		CompactionCooldownPeriod:            time.Duration(copts.compaction_cooldown_ns),
+		CompactionBatchSize:                 int(copts.compaction_batch_size),
+		CompactionSizeRatio:                 float64(copts.compaction_size_ratio),
+		CompactionSizeThreshold:             int(copts.compaction_size_threshold),
+		CompactionScoreSizeWeight:           float64(copts.compaction_score_size_weight),
+		CompactionScoreCountWeight:          float64(copts.compaction_score_count_weight),
+		CompactionSizeTieredSimilarityRatio: float64(copts.compaction_size_tiered_similarity_ratio),
+		FlusherTickerInterval:               time.Duration(copts.flusher_interval_ns),
+		CompactorTickerInterval:             time.Duration(copts.compactor_interval_ns),
+		BloomFilterFPR:                      float64(copts.bloom_fpr),
+		WalAppendRetry:                      int(copts.wal_append_retry),
+		WalAppendBackoff:                    time.Duration(copts.wal_append_backoff_ns),
+		SSTableBTreeOrder:                   int(copts.sstable_btree_order),
+		STDOutLogging:                       copts.stdout_logging != 0,
 	}
 }
 

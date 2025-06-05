@@ -1,6 +1,7 @@
 package wildcat
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"sort"
@@ -8,6 +9,189 @@ import (
 	"testing"
 	"time"
 )
+
+func TestCompactor_KeyRangeComparison(t *testing.T) {
+
+	// Create mock up of SSTables with different key ranges
+	tables := []*SSTable{
+		{
+			Id:   1,
+			Min:  []byte("apple"),
+			Max:  []byte("banana"),
+			Size: 1000,
+		},
+		{
+			Id:   2,
+			Min:  []byte("cat"),
+			Max:  []byte("zebra"), // Larger range
+			Size: 1000,
+		},
+		{
+			Id:   3,
+			Min:  []byte("dog"),
+			Max:  []byte("elephant"), // Smaller range
+			Size: 1000,
+		},
+		{
+			Id:   4,
+			Min:  []byte("apple"),
+			Max:  []byte("apple"), // Same key (smallest range)
+			Size: 1000,
+		},
+	}
+
+	t.Log("Testing bytes.Compare behavior:")
+	for _, table := range tables {
+		comparison := bytes.Compare(table.Max, table.Min)
+		t.Logf("Table %d: Min=%s, Max=%s, bytes.Compare(Max,Min)=%d",
+			table.Id, string(table.Min), string(table.Max), comparison)
+	}
+
+	// Simulate the compactor's selection logic
+	var selectedTable *SSTable
+	var smallestRange int
+
+	for i, table := range tables {
+		keyRangeSize := bytes.Compare(table.Max, table.Min)
+
+		if i == 0 || keyRangeSize < smallestRange {
+			smallestRange = keyRangeSize
+			selectedTable = table
+		}
+
+		if selectedTable != nil {
+			t.Logf("Table %d: keyRangeSize=%d, current smallest=%d, selected=%d",
+				table.Id, keyRangeSize, smallestRange, selectedTable.Id)
+		}
+	}
+
+	if selectedTable == nil {
+		t.Fatalf("No table selected, this should not happen")
+
+	}
+
+	t.Logf("Final selection: Table %d with range size %d", selectedTable.Id, smallestRange)
+
+	selectedTable = nil
+	var actualSmallestRange int
+
+	for i, table := range tables {
+		// Calculate actual lexicographic distance
+		rangeSize := len(table.Max) - len(table.Min)
+		if bytes.Equal(table.Max, table.Min) {
+			rangeSize = 0 // Same key = no range
+		}
+
+		if i == 0 || rangeSize < actualSmallestRange {
+			actualSmallestRange = rangeSize
+			selectedTable = table
+		}
+
+		if selectedTable != nil {
+			t.Logf("Table %d: actual range size=%d, current smallest=%d, selected=%d",
+				table.Id, rangeSize, actualSmallestRange, selectedTable.Id)
+		}
+	}
+
+	if selectedTable == nil {
+		t.Fatalf("No table selected, this should not happen")
+
+	}
+
+	t.Logf("Better selection: Table %d with actual range size %d", selectedTable.Id, actualSmallestRange)
+}
+
+func TestCompactor_SizeTieredRatio(t *testing.T) {
+	// Based on DefaultCompactionSizeTieredSimilarityRatio
+
+	// Create SSTables with different size relationships
+	tables := []*SSTable{
+		{Id: 1, Size: 100}, // Base size
+		{Id: 2, Size: 120}, // 1.2x - should be included
+		{Id: 3, Size: 149}, // 1.49x - should be included
+		{Id: 4, Size: 151}, // 1.51x - should be excluded
+		{Id: 5, Size: 200}, // 2.0x - should be excluded
+	}
+
+	// Simulate the size-tiered selection logic
+	baseSize := tables[0].Size
+	var similarSized []*SSTable
+	maxBatchSize := 10
+
+	similarSized = append(similarSized, tables[0])
+
+	for i := 1; i < len(tables); i++ {
+		ratio := float64(tables[i].Size) / float64(baseSize)
+		included := ratio <= 1.5 && len(similarSized) < maxBatchSize
+
+		if included {
+			similarSized = append(similarSized, tables[i])
+		}
+
+		t.Logf("Table %d: size=%d, ratio=%.2f, included=%v",
+			tables[i].Id, tables[i].Size, ratio, included)
+	}
+
+	t.Logf("Selected %d tables for size-tiered compaction", len(similarSized))
+
+	// What if the hardcoded 1.5 is too restrictive?
+
+	ratios := []float64{1.2, 1.5, 2.0}
+	for _, testRatio := range ratios {
+		var selected []*SSTable
+		selected = append(selected, tables[0])
+
+		for i := 1; i < len(tables); i++ {
+			ratio := float64(tables[i].Size) / float64(baseSize)
+			if ratio <= testRatio {
+				selected = append(selected, tables[i])
+			}
+		}
+
+		t.Logf("With ratio %.1f: selected %d tables", testRatio, len(selected))
+	}
+}
+
+func TestCompactor_ScoreCalculation(t *testing.T) {
+
+	writeBufferSize := int64(64 * 1024 * 1024) // 64MB
+	capacity := writeBufferSize * 10           // 640MB for level 1
+	sizeThreshold := 8
+	sizeWeight := 0.8
+	countWeight := 0.2
+
+	testCases := []struct {
+		name         string
+		currentSize  int64
+		sstableCount int
+	}{
+		{"Empty level", 0, 0},
+		{"Half full, few files", capacity / 2, 3},
+		{"Full size, normal files", capacity, 5},
+		{"Overfull size", capacity * 2, 6},
+		{"Normal size, too many files", capacity / 2, 12},
+		{"Both triggers", capacity * 2, 15},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			sizeScore := float64(tc.currentSize) / float64(capacity)
+			countScore := float64(tc.sstableCount) / float64(sizeThreshold)
+
+			totalScore := sizeScore*sizeWeight + countScore*countWeight
+			shouldCompact := totalScore > 1.0
+
+			t.Logf("Size: %d/%d (%.2f), Count: %d/%d (%.2f)",
+				tc.currentSize, capacity, sizeScore,
+				tc.sstableCount, sizeThreshold, countScore)
+			t.Logf("Total score: %.2f, Should compact: %v", totalScore, shouldCompact)
+
+			if tc.currentSize > capacity && tc.sstableCount > sizeThreshold && !shouldCompact {
+				t.Errorf("Expected compaction when both size and count exceed thresholds")
+			}
+		})
+	}
+}
 
 func TestCompactor_Basic(t *testing.T) {
 	dir, err := os.MkdirTemp("", "db_compactor_test")
