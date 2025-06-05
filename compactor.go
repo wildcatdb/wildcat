@@ -34,15 +34,6 @@ type Compactor struct {
 	scoreLock       sync.Mutex      // Mutex for synchronizing compaction score calculations
 }
 
-// sstCompactionIterator iterates over an SSTable for compaction
-type sstCompactionIterator struct {
-	sstable  *SSTable       // The SSTable being iterated
-	tree     *tree.BTree    // The BTree of the SSTable
-	treeIter *tree.Iterator // The iterator for the BTree
-	entry    *KLogEntry     // The current KLog entry being processed
-	eof      bool           // End of file flag
-}
-
 // iterState holds the state of an iterator for compaction
 type iterState struct {
 	iter      *tree.Iterator             // The iterator for the SSTable
@@ -173,7 +164,7 @@ func (compactor *Compactor) scheduleSizeTieredCompaction(level *Level, levelNum 
 		similarSized := []*SSTable{safeTables[i]}
 
 		j := i + 1
-		for j < len(safeTables) && float64(safeTables[j].Size)/float64(size) <= 1.5 && len(similarSized) < compactor.db.opts.CompactionBatchSize {
+		for j < len(safeTables) && float64(safeTables[j].Size)/float64(size) <= compactor.db.opts.CompactionSizeTieredSimilarityRatio && len(similarSized) < compactor.db.opts.CompactionBatchSize {
 			similarSized = append(similarSized, safeTables[j])
 			j++
 		}
@@ -658,6 +649,10 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 			}
 		}
 
+		if latestState == nil {
+			return fmt.Errorf("no valid latest state found for key %s", minKey)
+		}
+
 		// Insert if not a tombstone
 		if latest != nil && latest.ValueBlockID != -1 {
 
@@ -745,54 +740,6 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 	output.Size = totalSize
 
 	return nil
-}
-
-// next returns the next key-value pair from the SSTable
-func (iter *sstCompactionIterator) next() ([]byte, interface{}, int64, bool) {
-	if iter.eof || iter.entry == nil {
-		return nil, nil, 0, false
-	}
-
-	// Get the next entry from the B-tree
-	if iter.treeIter == nil {
-		return nil, nil, 0, false
-	}
-
-	iter.treeIter.Next()
-
-	// Get the VLog block manager
-	vlogPath := fmt.Sprintf("%s%s%d%s%s%d%s", iter.sstable.db.opts.Directory, LevelPrefix, iter.sstable.Level,
-		string(os.PathSeparator), SSTablePrefix, iter.sstable.Id, VLogExtension)
-
-	var vlogBm *blockmanager.BlockManager
-	var err error
-
-	if v, ok := iter.sstable.db.lru.Get(vlogPath); ok {
-		vlogBm = v.(*blockmanager.BlockManager)
-	} else {
-		vlogBm, err = blockmanager.Open(vlogPath, os.O_RDONLY, iter.sstable.db.opts.Permission,
-			blockmanager.SyncOption(iter.sstable.db.opts.SyncOption), iter.sstable.db.opts.SyncInterval)
-		if err != nil {
-			iter.eof = true
-			return nil, nil, 0, false
-		}
-		iter.sstable.db.lru.Put(vlogPath, vlogBm, func(key, value interface{}) {
-
-			// Close the block manager when evicted from LRU
-			if bm, ok := value.(*blockmanager.BlockManager); ok {
-				_ = bm.Close()
-			}
-		})
-	}
-
-	// Read the value from VLog
-	value, _, err := vlogBm.Read(iter.treeIter.Value().(*KLogEntry).ValueBlockID)
-	if err != nil {
-		iter.eof = true
-		return nil, nil, 0, false
-	}
-
-	return iter.treeIter.Value().(*KLogEntry).Key, value, iter.treeIter.Value().(*KLogEntry).Timestamp, true
 }
 
 // shouldCompact determines if compaction is needed

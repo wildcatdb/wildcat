@@ -162,6 +162,7 @@ opts := &wildcat.Options{
     CompactionSizeThreshold:     8,                       // File count trigger
     CompactionScoreSizeWeight:   0.8,                     // Weight for size-based scoring
     CompactionScoreCountWeight:  0.2,                     // Weight for count-based scoring
+    CompactionSizeTieredSimilarityRatio: 1.5,             // Similarity ratio for size-tiered compaction
     FlusherTickerInterval:       1 * time.Millisecond,    // Flusher check interval
     CompactorTickerInterval:     250 * time.Millisecond,  // Compactor check interval
     BloomFilterFPR:              0.01,                    // Bloom filter false positive rate
@@ -202,6 +203,7 @@ opts := &wildcat.Options{
 23. **BlockManagerLRUEvictRatio** Ratio for LRU eviction. Determines what percentage of the cache to evict when cleanup is needed.
 24. **BlockManagerLRUAccesWeight** Weight for LRU access eviction. Balances how much to prioritize access frequency vs. age when deciding what to evict.
 25. **STDOutLogging** If true, logs will be printed to stdout instead of the log channel.  Log channel will be ignored if provided.
+25. **CompactionSizeTieredSimilarityRatio**  Similarity ratio for size-tiered compaction.  For grouping SSTables that are "roughly the same size" together for compaction.
 
 ### Simple Key-Value Operations
 The easiest way to interact with Wildcat is through the Update method, which handles transactions automatically.  This means it runs begin, commit, and rollback for you, allowing you to focus on the operations themselves.
