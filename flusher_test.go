@@ -1027,3 +1027,285 @@ func TestFlusher_EmptyFlush(t *testing.T) {
 		t.Logf("Correctly created %d SSTables for non-empty memtable", klogCount)
 	}
 }
+
+func TestFlusher_QueueOrdering(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_flusher_queue_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+
+	logChan := make(chan string, 100)
+	defer func() {
+		for len(logChan) > 0 {
+			<-logChan
+		}
+	}()
+
+	opts := &Options{
+		Directory:             dir,
+		SyncOption:            SyncNone,
+		LogChannel:            logChan,
+		WriteBufferSize:       2 * 1024,
+		FlusherTickerInterval: 50 * time.Millisecond, // Slower flushing for observation
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	// Create multiple memtables in queue by rapid writes and manual queuing
+	memtableIds := make([]string, 0)
+
+	for i := 0; i < 5; i++ {
+		// Add data to current memtable
+		for j := 0; j < 20; j++ {
+			key := fmt.Sprintf("queue_test_%d_%d", i, j)
+			value := fmt.Sprintf("value_%d_%d", i, j)
+
+			err = db.Update(func(txn *Txn) error {
+				return txn.Put([]byte(key), []byte(value))
+			})
+			if err != nil {
+				t.Fatalf("Failed to write data: %v", err)
+			}
+		}
+
+		// Get current memtable path before queuing
+		currentMemtable := db.memtable.Load().(*Memtable)
+		memtableIds = append(memtableIds, currentMemtable.wal.path)
+
+		// Manually queue the memtable
+		err = db.flusher.queueMemtable()
+		if err != nil {
+			t.Fatalf("Failed to queue memtable %d: %v", i, err)
+		}
+
+		queueSize := db.flusher.immutable.Size()
+		t.Logf("Queued memtable %d, queue size now: %d", i, queueSize)
+	}
+
+	// Check initial queue state
+	initialQueueSize := db.flusher.immutable.Size()
+	t.Logf("Total memtables queued: %d", initialQueueSize)
+
+	if initialQueueSize != 5 {
+		t.Errorf("Expected 5 memtables in queue, got %d", initialQueueSize)
+	}
+
+	// Wait for flusher to process queue (FIFO order expected)
+	time.Sleep(2 * time.Second)
+
+	finalQueueSize := db.flusher.immutable.Size()
+	t.Logf("Final queue size: %d", finalQueueSize)
+
+	// Verify all data is still accessible (regardless of flush order)
+	for i := 0; i < 5; i++ {
+		for j := 0; j < 20; j += 5 { // Sample every 5th key
+			key := fmt.Sprintf("queue_test_%d_%d", i, j)
+			expectedValue := fmt.Sprintf("value_%d_%d", i, j)
+
+			var actualValue []byte
+			err = db.Update(func(txn *Txn) error {
+				var err error
+				actualValue, err = txn.Get([]byte(key))
+				return err
+			})
+
+			if err != nil {
+				t.Errorf("Failed to read key %s: %v", key, err)
+			} else if string(actualValue) != expectedValue {
+				t.Errorf("Value mismatch for key %s: expected %s, got %s",
+					key, expectedValue, actualValue)
+			}
+		}
+	}
+}
+
+func TestFlusher_DeletionsAndTombstones(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_flusher_deletions_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+
+	logChan := make(chan string, 100)
+	defer func() {
+		for len(logChan) > 0 {
+			<-logChan
+		}
+	}()
+
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncNone,
+		LogChannel:      logChan,
+		WriteBufferSize: 4 * 1024,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	// Insert initial data
+	const keyCount = 100
+	for i := 0; i < keyCount; i++ {
+		key := fmt.Sprintf("deletion_key_%d", i)
+		value := fmt.Sprintf("deletion_value_%d", i)
+
+		err = db.Update(func(txn *Txn) error {
+			return txn.Put([]byte(key), []byte(value))
+		})
+		if err != nil {
+			t.Fatalf("Failed to insert key %d: %v", i, err)
+		}
+	}
+
+	// Delete every other key (even indices: 0, 2, 4, ...)
+	deletedKeys := make(map[string]bool)
+	for i := 0; i < keyCount; i += 2 {
+		key := fmt.Sprintf("deletion_key_%d", i)
+		deletedKeys[key] = true
+
+		err = db.Update(func(txn *Txn) error {
+			return txn.Delete([]byte(key))
+		})
+		if err != nil {
+			t.Fatalf("Failed to delete key %s: %v", key, err)
+		}
+	}
+
+	// Update some of the REMAINING keys (not deleted ones)
+	// Update keys where i%4 == 1 (these are: 1, 5, 9, 13, ... - all odd, non-deleted)
+	updatedKeys := make(map[string]string)
+	for i := 1; i < keyCount; i += 4 {
+		key := fmt.Sprintf("deletion_key_%d", i)
+		newValue := fmt.Sprintf("updated_value_%d", i)
+		updatedKeys[key] = newValue
+
+		err = db.Update(func(txn *Txn) error {
+			return txn.Put([]byte(key), []byte(newValue))
+		})
+		if err != nil {
+			t.Fatalf("Failed to update key %s: %v", key, err)
+		}
+	}
+
+	// Force flush the updates
+	err = db.ForceFlush()
+	if err != nil {
+		t.Fatalf("Failed to flush updates: %v", err)
+	}
+	t.Logf("Updated and flushed %d keys", len(updatedKeys))
+
+	// Verify the final state
+	successCount := 0
+	errorCount := 0
+
+	for i := 0; i < keyCount; i++ {
+		key := fmt.Sprintf("deletion_key_%d", i)
+
+		var value []byte
+		err = db.Update(func(txn *Txn) error {
+			var err error
+			value, err = txn.Get([]byte(key))
+			return err
+		})
+
+		if deletedKeys[key] {
+
+			// This key should be deleted
+			if err != nil {
+
+				// Correctly deleted
+				successCount++
+				t.Logf("✓ Key %s correctly deleted", key)
+			} else {
+				// ERROR** Should be deleted but still exists
+				t.Errorf("✗ Key %s should be deleted but found with value: %s", key, value)
+				errorCount++
+			}
+		} else {
+
+			// This key should exist
+			if err != nil {
+				// ERROR** Should exist but not found
+				t.Errorf("✗ Key %s should exist but got error: %v", key, err)
+				errorCount++
+			} else {
+				// Key exists, check if it has the right value
+				if updatedValue, wasUpdated := updatedKeys[key]; wasUpdated {
+					// Should have updated value
+					if string(value) == updatedValue {
+						successCount++
+						t.Logf("✓ Key %s correctly updated to: %s", key, updatedValue)
+					} else {
+						t.Errorf("✗ Key %s should have updated value %s, got %s",
+							key, updatedValue, value)
+						errorCount++
+					}
+				} else {
+					// Should have original value
+					expectedValue := fmt.Sprintf("deletion_value_%d", i)
+					if string(value) == expectedValue {
+						successCount++
+						t.Logf("✓ Key %s correctly has original value: %s", key, expectedValue)
+					} else {
+						t.Errorf("✗ Key %s should have original value %s, got %s",
+							key, expectedValue, value)
+						errorCount++
+					}
+				}
+			}
+		}
+	}
+
+	// Summary
+	t.Logf("Verification complete: %d successes, %d errors out of %d total keys",
+		successCount, errorCount, keyCount)
+
+	if errorCount > 0 {
+		t.Errorf("Test failed with %d errors", errorCount)
+	}
+
+	// Verify expected counts
+	expectedDeleted := len(deletedKeys)                              // 50 keys (even indices)
+	expectedUpdated := len(updatedKeys)                              // 25 keys (1, 5, 9, 13, ...)
+	expectedOriginal := keyCount - expectedDeleted - expectedUpdated // Remaining keys
+
+	t.Logf("Expected state: %d deleted, %d updated, %d original",
+		expectedDeleted, expectedUpdated, expectedOriginal)
+
+	// Check that multiple SSTables were created (original data + deletions + updates)
+	l1Dir := filepath.Join(dir, "l1")
+	files, err := os.ReadDir(l1Dir)
+	if err != nil {
+		t.Fatalf("Failed to read level 1 directory: %v", err)
+	}
+
+	klogCount := 0
+	for _, file := range files {
+		if filepath.Ext(file.Name()) == ".klog" {
+			klogCount++
+		}
+	}
+
+	if klogCount < 1 {
+		t.Errorf("Expected at least 1 SSTables (data + deletions + updates), got %d",
+			klogCount)
+	} else {
+		t.Logf("✓ Created %d SSTables for deletion test", klogCount)
+	}
+}
