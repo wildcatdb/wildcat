@@ -628,6 +628,7 @@ typedef struct {
     int compaction_size_threshold;
     double compaction_score_size_weight;
     double compaction_score_count_weight;
+    double compaction_size_tiered_similarity_ratio;
     long flusher_interval_ns;
     long compactor_interval_ns;
     double bloom_fpr;
