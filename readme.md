@@ -38,6 +38,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 
 ## Discord Community
 Join our Discord community to discuss, ask questions, and get help with Wildcat.
+
 [![Discord](https://img.shields.io/discord/1380406674216587294?label=Discord&logo=discord&color=EDB73B)](https://discord.gg/Rs5Z2e69ts)
 
 ## Table of Contents
