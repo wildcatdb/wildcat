@@ -94,12 +94,42 @@ Join our Discord community to discuss, ask questions, and get help with Wildcat.
 ## Basic Usage
 Wildcat supports opening multiple `*wildcat.DB` instances in parallel, each operating independently in separate directories.
 
+### Downloading
+```bash
+go get github.com/wildcatdb/wildcat/v2
+```
+
+Specific major version i.e `v2.x.x` can be downloaded using
+```bash
+go get github.com/wildcatdb/wildcat/v2@v2.0.1
+```
+
 ### Import
 ```go
 import (
-    "github.com/wildcatdb/wildcat"
+    "github.com/wildcatdb/wildcat/v2"
 )
 ```
+
+When importing different majors you can do
+```go
+// v1
+import (
+    wildcatv1 "github.com/wildcatdb/wildcat"
+)
+
+// v2
+import (
+    wildcatv2 "github.com/wildcatdb/wildcat/v2"
+)
+
+// v2+
+import (
+    wildcat "github.com/wildcatdb/wildcat/v32"
+)
+```
+
+
 
 ### Opening a Wildcat DB instance
 The only required option is the database directory path.
