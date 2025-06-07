@@ -182,7 +182,14 @@ func wildcat_begin_txn(handle C.ulong) C.long {
 	if db == nil {
 		return -1
 	}
-	txn := db.Begin()
+	txn, err := db.Begin()
+	if err != nil {
+		cMsg := C.CString(fmt.Sprintf("wildcat_begin_txn failed: %v", err))
+		C.print_error(cMsg)
+		C.free(unsafe.Pointer(cMsg))
+		return -1
+
+	}
 	return C.long(txn.Id)
 }
 
