@@ -45,7 +45,10 @@ func TestTxn_BasicOperations(t *testing.T) {
 	}(dir)
 
 	// Test basic transaction operations
-	txn := db.Begin()
+	txn, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
 
 	// Verify transaction ID is non-empty
 	if txn.Id == 0 {
@@ -72,7 +75,10 @@ func TestTxn_BasicOperations(t *testing.T) {
 	}
 
 	// Verify the key is not visible outside the transaction yet
-	txn2 := db.Begin()
+	txn2, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
 	_, err = txn2.Get([]byte("key1"))
 	if err == nil {
 		t.Errorf("Key should not be visible in other transaction before commit")
@@ -85,7 +91,11 @@ func TestTxn_BasicOperations(t *testing.T) {
 	}
 
 	// Verify the key is now visible in another transaction
-	txn3 := db.Begin()
+	txn3, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
+
 	value, err = txn3.Get([]byte("key1"))
 	if err != nil {
 		t.Errorf("Failed to get key after commit: %v", err)
@@ -94,7 +104,11 @@ func TestTxn_BasicOperations(t *testing.T) {
 	}
 
 	// Test delete operation in a new transaction
-	txn4 := db.Begin()
+	txn4, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
+
 	err = txn4.Delete([]byte("key1"))
 	if err != nil {
 		t.Fatalf("Failed to delete key: %v", err)
@@ -112,7 +126,11 @@ func TestTxn_BasicOperations(t *testing.T) {
 	}
 
 	// Start a new transaction and verify key is gone
-	txn5 := db.Begin()
+	txn5, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
+
 	_, err = txn5.Get([]byte("key1"))
 	if err == nil {
 		t.Errorf("Key should be gone after delete commit")
@@ -162,7 +180,10 @@ func TestTxn_Rollback(t *testing.T) {
 	}
 
 	// Begin a transaction that will be rolled back
-	txn := db.Begin()
+	txn, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
 
 	// Make some changes
 	err = txn.Put([]byte("key_to_rollback"), []byte("value_to_rollback"))
@@ -183,7 +204,10 @@ func TestTxn_Rollback(t *testing.T) {
 	}
 
 	// Verify the changes are not visible after rollback
-	txn2 := db.Begin()
+	txn2, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
 
 	_, err = txn2.Get([]byte("key_to_rollback"))
 	if err == nil {
@@ -241,7 +265,10 @@ func TestTxn_Isolation(t *testing.T) {
 	}
 
 	// Start a long-running transaction
-	txnA := db.Begin()
+	txnA, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
 
 	// Read the value in transaction A
 	valueA1, err := txnA.Get([]byte("isolation_key"))
@@ -261,7 +288,11 @@ func TestTxn_Isolation(t *testing.T) {
 	}
 
 	// Start a new transaction that should see the updated value
-	txnB := db.Begin()
+	txnB, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
+
 	valueB, err := txnB.Get([]byte("isolation_key"))
 	if err != nil {
 		t.Fatalf("Failed to read key in txn B: %v", err)
@@ -513,14 +544,22 @@ func TestTxn_WALRecovery(t *testing.T) {
 	}
 
 	// Uncommitted transaction
-	txnUncommitted := db.Begin()
+	txnUncommitted, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
+
 	err = txnUncommitted.Put([]byte("uncommitted_key"), []byte("uncommitted_value"))
 	if err != nil {
 		t.Fatalf("Failed to write uncommitted key: %v", err)
 	}
 
 	// Transaction that will be rolled back
-	txnRolledBack := db.Begin()
+	txnRolledBack, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
+
 	err = txnRolledBack.Put([]byte("rolledback_key"), []byte("rolledback_value"))
 	if err != nil {
 		t.Fatalf("Failed to write rollback key: %v", err)
@@ -632,7 +671,11 @@ func TestTxn_DeleteTimestamp(t *testing.T) {
 	key := []byte("timestamp_test_key")
 	value := []byte("timestamp_test_value")
 
-	txn1 := db.Begin()
+	txn1, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
+
 	t.Logf("Insert transaction ID: %d, Timestamp: %d", txn1.Id, txn1.Timestamp)
 
 	err = txn1.Put(key, value)
@@ -646,7 +689,11 @@ func TestTxn_DeleteTimestamp(t *testing.T) {
 	}
 
 	// Verify the key exists
-	txn2 := db.Begin()
+	txn2, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
+
 	t.Logf("Verification transaction ID: %d, Timestamp: %d", txn2.Id, txn2.Timestamp)
 
 	retrievedValue, err := txn2.Get(key)
@@ -659,7 +706,11 @@ func TestTxn_DeleteTimestamp(t *testing.T) {
 	t.Logf("Key found after insertion: %s", retrievedValue)
 
 	// Delete the key with a new transaction
-	txn3 := db.Begin()
+	txn3, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
+
 	t.Logf("Delete transaction ID: %d, Timestamp: %d", txn3.Id, txn3.Timestamp)
 
 	err = txn3.Delete(key)
@@ -673,7 +724,11 @@ func TestTxn_DeleteTimestamp(t *testing.T) {
 	}
 
 	// Verify the key is deleted with a new transaction
-	txn4 := db.Begin()
+	txn4, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
+
 	t.Logf("Post-delete verification transaction ID: %d, Timestamp: %d", txn4.Id, txn4.Timestamp)
 
 	_, err = txn4.Get(key)
@@ -683,7 +738,11 @@ func TestTxn_DeleteTimestamp(t *testing.T) {
 	t.Logf("Key correctly not found after deletion: %v", err)
 
 	// Verify we can still access the key with a timestamp before deletion
-	txn5 := db.Begin()
+	txn5, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
+
 	txn5.Timestamp = txn1.Timestamp // Use the original insert timestamp
 	t.Logf("Historical verification transaction ID: %d, Using Timestamp: %d", txn5.Id, txn5.Timestamp)
 

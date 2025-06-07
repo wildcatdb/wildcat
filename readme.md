@@ -5,31 +5,32 @@
 ![License](https://img.shields.io/badge/license-MPL_2.0-blue)
 
 
-Wildcat is a high-performance embedded key-value database (or storage engine) written in Go. It incorporates modern database design principles including LSM (Log-Structured Merge) tree architecture, MVCC (Multi-Version Concurrency Control), and lock-free data structures for its critical paths, along with automatic background operations to deliver excellent read/write performance with strong consistency guarantees.
+Wildcat is a high-performance embedded key-value database (or storage engine) written in Go. It incorporates modern database design principles including LSM (Log-Structured Merge) tree architecture, MVCC (Multi-Version Concurrency Control), and lock-free data structures for its critical paths, along with automatic background operations to deliver excellent read/write performance with immediate consistency and durability.
 
 ## Features
-- LSM (Log-Structured Merge) tree architecture optimized for write and read throughput
-- Lock-free MVCC ensures non-blocking reads and writes
+- LSM (Log-Structured Merge) tree architecture optimized for write-heavy workloads
+- Mostly lock-free MVCC with minimal blocking on critical paths
 - WAL logging captures full transaction state for recovery and rehydration
 - Version-aware skip list for fast in-memory MVCC access
-- Atomic write path, safe for multithreaded use
+- Thread-safe write operations with atomic coordination
 - Scalable design with background flusher and compactor
-- Durable and concurrent and atomic block storage, leveraging direct, offset-based file I/O (using `pread`/`pwrite`) for optimal performance and control
-- Atomic LRU for active block manager handles
-- Memtable lifecycle management and snapshot durability
-- SSTables are immutable BTree's
-- Configurable Sync options such as `None`, `Partial (with background interval)`, `Full`
-- Snapshot-isolated MVCC with read timestamps
-- Crash recovery restores all in-flight and committed transactions
-- Automatic multi-threaded background compaction
-- Full ACID transaction support
+- Concurrent block storage leveraging direct, offset-based file I/O (using `pread`/`pwrite`) for optimal performance
+- Atomic LRU cache for active block manager handles
+- Memtable lifecycle management with snapshot consistency
+- SSTables stored as immutable BTrees
+- Configurable durability levels `None` (fastest), `Partial` (balanced), `Full` (most durable)
+- Snapshot-isolated MVCC with timestamp-based reads
+- Crash recovery preserves committed transactions and maintains access to incomplete transactions
+- Automatic multi-threaded background compaction with configurable concurrency
+- ACID transaction support with configurable durability guarantees
 - Range, prefix, and full iteration support with bidirectional traversal
-- Sustains 100K+ txns/sec writes, and hundreds of thousands of reads/sec
-- Optional Bloom filter per SSTable for fast key lookups
-- Key value separation optimization (`.klog` for keys, `.vlog` for values, klog entries point to vlog entries)
+- High throughput design targeting tens of thousands of transactions per second
+- Optional Bloom filters per SSTable for improved key lookup performance
+- Key-value separation optimization (`.klog` for keys, `.vlog` for values)
 - Tombstone-aware compaction with retention based on active transaction windows
-- Transaction recovery with incomplete transactions are preserved and accessible after crashes
-- Keys and values are opaque sequences of bytes
+- Transaction recovery preserves incomplete transactions for post-crash inspection and resolution
+- Keys and values stored as opaque byte sequences
+- Single-node embedded database with no network or replication overhead
 
 ## Overview
 <div>
@@ -145,7 +146,7 @@ You may see `.tmp` files within level directories.  These are temporary block ma
 
 ```
 l1/sst_343.klog.tmp > l1/sst_343.klog (once finalized)
-l1/sst_343.vlog.tmp > l1/sst_343.klog (once finalized)
+l1/sst_343.vlog.tmp > l1/sst_343.vlog (once finalized)
 ```
 
 ### Advanced Configuration
@@ -158,7 +159,7 @@ opts := &wildcat.Options{
     SyncInterval:                128 * time.Millisecond,  // Only set when using SyncPartial
     LevelCount:                  7,                       // Number of LSM levels
     LevelMultiplier:             10,                      // Size multiplier between levels
-    BlockManagerLRUSize:         256,                     // Cache size for block managers
+    BlockManagerLRUSize:         1024,                    // Cache size for block managers
     SSTableBTreeOrder:           10,                      // BTree order for SSTable klog
     LogChannel:                  make(chan string, 1000), // Channel for real time logging
     BloomFilter:                 false,                   // Enable/disable sstable bloom filters
@@ -177,7 +178,11 @@ opts := &wildcat.Options{
     WalAppendBackoff:            128 * time.Microsecond,  // WAL append retry backoff
     BlockManagerLRUEvictRatio:   0.20,                    // LRU eviction ratio
     BlockManagerLRUAccesWeight:  0.8,                     // LRU access weight
-    STDOutLogging: false,                                 // Log to stdout instead of channel
+    STDOutLogging:               false,                   // Log to stdout instead of channel
+    MaxConcurrentTxns            65536                    // Maximum concurrent transactions (ring buffer size)
+    TxnBeginRetry                10                       // Number of retries for Begin() when buffer full
+    TxnBeginBackoff              1 * time.Microsecond     // Initial backoff duration for Begin() retries
+    TxnBeginMaxBackoff           100 * time.Millisecond   // Maximum backoff duration for Begin() retries
 }
 ```
 
@@ -211,6 +216,10 @@ opts := &wildcat.Options{
 24. **BlockManagerLRUAccesWeight** Weight for LRU access eviction. Balances how much to prioritize access frequency vs. age when deciding what to evict.
 25. **STDOutLogging** If true, logs will be printed to stdout instead of the log channel.  Log channel will be ignored if provided.
 25. **CompactionSizeTieredSimilarityRatio**  Similarity ratio for size-tiered compaction.  For grouping SSTables that are "roughly the same size" together for compaction.
+26. **MaxConcurrentTxns** Maximum number of concurrent transactions.  This is the size of the ring buffer used for transaction management.
+27. **TxnBeginRetry** Number of retries for `Begin()` when the transaction buffer is full.
+28. **TxnBeginBackoff** Initial backoff duration for `Begin()` retries when the transaction buffer is full.
+29. **TxnBeginMaxBackoff** Maximum backoff duration for `Begin()` retries when the transaction buffer is full.
 
 ### Simple Key-Value Operations
 The easiest way to interact with Wildcat is through the Update method, which handles transactions automatically.  This means it runs begin, commit, and rollback for you, allowing you to focus on the operations themselves.
@@ -537,7 +546,7 @@ fmt.Println(stats)
 │ LRU Size                   : 1024                                         │
 │ LRU Evict Ratio            : 0.2                                          │
 │ LRU Access Weight          : 0.8                                          │
-│ File Version               : 1                                            │
+│ File Version               : 2                                            │
 │ Magic Number               : 1464421444                                   │
 │ Directory                  : /tmp/db_merge_iterator_large_test1776741552/ │
 ├───────────────────────────────────────────────────────────────────────────┤
@@ -877,7 +886,7 @@ Optimistic timestamp-based Multi-Version Concurrency Control (MVCC) with Last-Wr
 - L1–L2 use size-tiered compaction.
 - L3+ use leveled compaction by key range.
 - Concurrent compaction with configurable maximum concurrency limits.
-- Compaction score is calculated using a hybrid formula `score = (levelSize / capacity) * 0.7 + (sstableCount / threshold) * 0.3` compaction is triggered when `score > 1.0`
+- Compaction score is calculated using a hybrid formula `score = (levelSize / capacity) * 0.8 + (sstableCount / threshold) * 0.2` compaction is triggered when `score > 1.0`
 - Cooldown period enforced between compactions to prevent resource thrashing.
 - Compaction filters out redundant tombstones based on timestamp and overlapping range.
 - A tombstone is dropped if it's older than the oldest active read and no longer needed in higher levels.

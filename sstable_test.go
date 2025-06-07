@@ -379,7 +379,10 @@ func TestSSTable_MVCCWithMultipleVersions(t *testing.T) {
 	// Create 5 versions of the same key
 	for i := 1; i <= 5; i++ {
 		// Start a transaction and record its timestamp
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
 		timestamps = append(timestamps, txn.Timestamp)
 		txns = append(txns, txn)
 
@@ -414,7 +417,11 @@ func TestSSTable_MVCCWithMultipleVersions(t *testing.T) {
 	// Now verify that we can read each version using the corresponding timestamp
 	for i := 0; i < 5; i++ {
 		// Create a transaction with the recorded timestamp
-		readTxn := db.Begin()
+		readTxn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		// Set the timestamp to match the original write timestamp
 		readTxn.Timestamp = timestamps[i]
 
@@ -433,7 +440,11 @@ func TestSSTable_MVCCWithMultipleVersions(t *testing.T) {
 	}
 
 	// Verify that a new transaction sees only the latest version
-	latestTxn := db.Begin()
+	latestTxn, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
+
 	latestValue, err := latestTxn.Get(key)
 	if err != nil {
 		t.Fatalf("Failed to read latest version: %v", err)

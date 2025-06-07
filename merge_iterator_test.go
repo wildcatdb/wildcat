@@ -70,7 +70,11 @@ func TestMergeIterator_MVCC(t *testing.T) {
 	}
 
 	// Test that iterator returns the most recent values
-	txn := db.Begin()
+	txn, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
+
 	iter, err := txn.NewIterator(true)
 	if err != nil {
 		t.Fatalf("Failed to create iterator: %v", err)
@@ -180,7 +184,11 @@ func TestMergeIterator_LargeScale(t *testing.T) {
 	}
 
 	// Test that iterator returns the most recent values
-	txn := db.Begin()
+	txn, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
+
 	iter, err := txn.NewIterator(true)
 	if err != nil {
 		t.Fatalf("Failed to create iterator: %v", err)
@@ -260,7 +268,11 @@ func TestMergeIterator_Bidirectional(t *testing.T) {
 	}
 
 	t.Run("Ascending Iterator", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewIterator(true)
@@ -303,7 +315,11 @@ func TestMergeIterator_Bidirectional(t *testing.T) {
 	})
 
 	t.Run("Descending Iterator", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewIterator(false)
@@ -346,7 +362,11 @@ func TestMergeIterator_Bidirectional(t *testing.T) {
 	})
 
 	t.Run("Bidirectional Navigation", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		// Start with ascending iterator
@@ -391,7 +411,11 @@ func TestMergeIterator_Bidirectional(t *testing.T) {
 	})
 
 	t.Run("Direction Change Consistency", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		// Create ascending iterator
@@ -493,7 +517,11 @@ func TestMergeIterator_BidirectionalWithMVCC(t *testing.T) {
 	}
 
 	t.Run("MVCC with Ascending", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewIterator(true)
@@ -531,7 +559,11 @@ func TestMergeIterator_BidirectionalWithMVCC(t *testing.T) {
 	})
 
 	t.Run("MVCC with Descending", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewIterator(false)
@@ -612,7 +644,11 @@ func TestMergeIterator_EdgeCases(t *testing.T) {
 	}(dir)
 
 	t.Run("Empty Iterator", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewIterator(true)
@@ -643,7 +679,11 @@ func TestMergeIterator_EdgeCases(t *testing.T) {
 			t.Fatalf("Failed to insert single item: %v", err)
 		}
 
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		// Test ascending
@@ -678,7 +718,11 @@ func TestMergeIterator_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("HasNext/HasPrev", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewIterator(true)
@@ -814,7 +858,11 @@ func TestMergeIterator_BidirectionalMultipleSources(t *testing.T) {
 	log.Println(db.Stats())
 
 	t.Run("Ascending with Multiple Sources", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewIterator(true)
@@ -871,7 +919,11 @@ func TestMergeIterator_BidirectionalMultipleSources(t *testing.T) {
 	})
 
 	t.Run("Descending with Multiple Sources", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewIterator(false)
@@ -924,7 +976,11 @@ func TestMergeIterator_BidirectionalMultipleSources(t *testing.T) {
 	})
 
 	t.Run("Bidirectional Navigation with Multiple Sources", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		// Start with ascending iterator
@@ -1051,7 +1107,10 @@ func TestMergeIterator_BidirectionalStressTest(t *testing.T) {
 	log.Println(db.Stats())
 
 	t.Run("Stress Test Ascending", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
 		defer txn.remove()
 
 		iter, err := txn.NewIterator(true)
@@ -1088,7 +1147,11 @@ func TestMergeIterator_BidirectionalStressTest(t *testing.T) {
 	})
 
 	t.Run("Stress Test Descending", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewIterator(false)
@@ -1125,7 +1188,11 @@ func TestMergeIterator_BidirectionalStressTest(t *testing.T) {
 	})
 
 	t.Run("Stress Test Direction Changes", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewIterator(true)
@@ -1223,7 +1290,11 @@ func TestMergeIterator_RangeBasic(t *testing.T) {
 	}
 
 	t.Run("Range Ascending [c,g)", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewRangeIterator([]byte("c"), []byte("g"), true)
@@ -1262,7 +1333,10 @@ func TestMergeIterator_RangeBasic(t *testing.T) {
 	})
 
 	t.Run("Range Descending [c,g)", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
 		defer txn.remove()
 
 		iter, err := txn.NewRangeIterator([]byte("c"), []byte("g"), false)
@@ -1301,7 +1375,10 @@ func TestMergeIterator_RangeBasic(t *testing.T) {
 	})
 
 	t.Run("Range Edge Cases", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
 		defer txn.remove()
 
 		// Empty range
@@ -1402,7 +1479,11 @@ func TestMergeIterator_RangeWithMVCC(t *testing.T) {
 	}
 
 	t.Run("Range MVCC Ascending [key05,key15)", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewRangeIterator([]byte("key05"), []byte("key15"), true)
@@ -1438,7 +1519,11 @@ func TestMergeIterator_RangeWithMVCC(t *testing.T) {
 	})
 
 	t.Run("Range MVCC Descending [key05,key15)", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewRangeIterator([]byte("key05"), []byte("key15"), false)
@@ -1540,7 +1625,11 @@ func TestMergeIterator_PrefixBasic(t *testing.T) {
 	}
 
 	t.Run("Prefix Ascending 'user:'", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewPrefixIterator([]byte("user:"), true)
@@ -1585,7 +1674,11 @@ func TestMergeIterator_PrefixBasic(t *testing.T) {
 	})
 
 	t.Run("Prefix Descending 'post:'", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewPrefixIterator([]byte("post:"), false)
@@ -1630,7 +1723,11 @@ func TestMergeIterator_PrefixBasic(t *testing.T) {
 	})
 
 	t.Run("Prefix Non-existent", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewPrefixIterator([]byte("admin:"), true)
@@ -1719,7 +1816,11 @@ func TestMergeIterator_PrefixWithMVCC(t *testing.T) {
 	}
 
 	t.Run("Prefix MVCC Ascending 'user:'", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewPrefixIterator([]byte("user:"), true)
@@ -1762,7 +1863,11 @@ func TestMergeIterator_PrefixWithMVCC(t *testing.T) {
 	})
 
 	t.Run("Prefix MVCC Descending 'config:'", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewPrefixIterator([]byte("config:"), false)
@@ -1854,7 +1959,10 @@ func TestMergeIterator_RangeBidirectional(t *testing.T) {
 	}
 
 	t.Run("Range Bidirectional Navigation [c,h)", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
 		defer txn.remove()
 
 		// Start with ascending iterator
@@ -2016,7 +2124,11 @@ func TestMergeIterator_RangeMultipleSources(t *testing.T) {
 	log.Println(db.Stats())
 
 	t.Run("Range Multiple Sources Ascending [key15,key35)", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewRangeIterator([]byte("key15"), []byte("key35"), true)
@@ -2074,7 +2186,11 @@ func TestMergeIterator_RangeMultipleSources(t *testing.T) {
 	})
 
 	t.Run("Range Multiple Sources Descending [key15,key35)", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewRangeIterator([]byte("key15"), []byte("key35"), false)
@@ -2230,7 +2346,11 @@ func TestMergeIterator_PrefixMultipleSources(t *testing.T) {
 	log.Println(db.Stats())
 
 	t.Run("Prefix Multiple Sources Ascending 'user:'", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewPrefixIterator([]byte("user:"), true)
@@ -2301,7 +2421,11 @@ func TestMergeIterator_PrefixMultipleSources(t *testing.T) {
 	})
 
 	t.Run("Prefix Multiple Sources Descending 'post:'", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewPrefixIterator([]byte("post:"), false)
@@ -2384,7 +2508,11 @@ func TestMergeIterator_RangeAndPrefixEdgeCases(t *testing.T) {
 	}(dir)
 
 	t.Run("Empty Range Iterator", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		iter, err := txn.NewRangeIterator([]byte("x"), []byte("y"), true)
@@ -2410,7 +2538,10 @@ func TestMergeIterator_RangeAndPrefixEdgeCases(t *testing.T) {
 	})
 
 	t.Run("Empty Prefix Iterator", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
 		defer txn.remove()
 
 		iter, err := txn.NewPrefixIterator([]byte("nonexistent:"), true)
@@ -2459,7 +2590,10 @@ func TestMergeIterator_RangeAndPrefixEdgeCases(t *testing.T) {
 	}
 
 	t.Run("Range Boundary Cases", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
 		defer txn.remove()
 
 		// Range with same start and end (empty range)
@@ -2493,7 +2627,11 @@ func TestMergeIterator_RangeAndPrefixEdgeCases(t *testing.T) {
 	})
 
 	t.Run("Prefix Boundary Cases", func(t *testing.T) {
-		txn := db.Begin()
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		defer txn.remove()
 
 		// Prefix "a" should match "a", "aa", "aaa", "ab"

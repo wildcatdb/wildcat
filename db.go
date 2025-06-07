@@ -78,6 +78,10 @@ const (
 	DefaultWALAppendRetry                      = 10                     // Default number of retries for WAL append
 	DefaultWALAppendBackoff                    = 128 * time.Microsecond // Default backoff duration for WAL append
 	DefaultSSTableBTreeOrder                   = 10                     // Default order of the B-tree for SSTables
+	DefaultMaxConcurrentTxns                   = 65536                  // Default max concurrent transactions
+	DefaultTxnBeginRetry                       = 10                     // Default retries for Begin()
+	DefaultTxnBeginBackoff                     = 1 * time.Microsecond   // Default initial backoff
+	DefaultTxnBeginMaxBackoff                  = 100 * time.Millisecond // Default max backoff
 )
 
 // Options represents the configuration options for Wildcat
@@ -109,12 +113,16 @@ type Options struct {
 	WalAppendBackoff                    time.Duration // Backoff duration for WAL append
 	SSTableBTreeOrder                   int           // Order of the B-tree for SSTables
 	STDOutLogging                       bool          // Enable logging to standard output (default is false and if set, channel is ignored)
+	MaxConcurrentTxns                   int           // Maximum concurrent transactions (ring buffer size)
+	TxnBeginRetry                       int           // Number of retries for Begin() when buffer full
+	TxnBeginBackoff                     time.Duration // Initial backoff duration for Begin() retries
+	TxnBeginMaxBackoff                  time.Duration // Maximum backoff duration for Begin() retries
 }
 
 // DB represents the main Wildcat structure
 type DB struct {
 	opts             *Options                 // Configuration options
-	txns             atomic.Pointer[[]*Txn]   // Atomic pointer to the transactions
+	txnRing          *TxnRingBuffer           // Ring buffer for transactions
 	levels           atomic.Pointer[[]*Level] // Atomic pointer to the levels
 	lru              *lru.LRU                 // LRU cache for block managers
 	flusher          *Flusher                 // Flusher for memtables
@@ -159,7 +167,7 @@ func Open(opts *Options) (*DB, error) {
 		lru:            lru.New(int64(opts.BlockManagerLRUSize), opts.BlockManagerLRUEvictRatio, opts.BlockManagerLRUAccesWeight), // New block manager LRU cache
 		wg:             &sync.WaitGroup{},                                                                                         // Wait group for background operations
 		opts:           opts,                                                                                                      // Set the options
-		txns:           atomic.Pointer[[]*Txn]{},                                                                                  // Atomic pointer to transactions
+		txnRing:        newTxnRingBuffer(uint64(opts.MaxConcurrentTxns)),                                                          // Create a new ring buffer for transactions with the specified size
 		closeCh:        make(chan struct{}),                                                                                       // Channel for closing the database
 		txnTSGenerator: newIDGeneratorWithTimestamp(),                                                                             // We use timestamp generator for monotonic generation (1579134612000000004, next ID will be 1579134612000000005)
 	}
@@ -364,6 +372,31 @@ func (opts *Options) setDefaults() {
 		opts.CompactionSizeTieredSimilarityRatio = DefaultCompactionSizeTieredSimilarityRatio
 	}
 
+	if opts.TxnBeginMaxBackoff <= 0 {
+		opts.TxnBeginMaxBackoff = DefaultTxnBeginMaxBackoff
+	}
+
+	if opts.TxnBeginRetry <= 0 {
+		opts.TxnBeginRetry = DefaultTxnBeginRetry
+	}
+
+	if opts.TxnBeginBackoff <= 0 {
+		opts.TxnBeginBackoff = DefaultTxnBeginBackoff
+	}
+
+	// Ensure ring buffer capacity is power of 2
+	if opts.MaxConcurrentTxns&(opts.MaxConcurrentTxns-1) != 0 {
+		// Round up to next power of 2
+		n := 1
+		for n < opts.MaxConcurrentTxns {
+			n <<= 1
+		}
+		opts.MaxConcurrentTxns = n
+	} else {
+		// Already a power of 2, just use it
+		opts.MaxConcurrentTxns = DefaultMaxConcurrentTxns
+	}
+
 }
 
 // Close closes the database and all open resources
@@ -457,10 +490,6 @@ func (db *DB) reinstate() error {
 				_ = bm.Close()
 			}
 		})
-
-		// Initialize empty transactions slice
-		txns := make([]*Txn, 0)
-		db.txns.Store(&txns)
 
 		db.log(fmt.Sprintf("Created new memtable and WAL at %s", newWalPath))
 
@@ -588,7 +617,6 @@ func (db *DB) reinstate() error {
 
 			// Process reads - always keep the latest read timestamp
 			for key, timestamp := range entry.ReadSet {
-
 				// Only update if this read is newer
 				if ts, exists := finalTxn.ReadSet[key]; !exists || timestamp > ts {
 					finalTxn.ReadSet[key] = timestamp
@@ -663,12 +691,13 @@ func (db *DB) reinstate() error {
 	// Store the active memtable
 	db.memtable.Store(activeMemt)
 
-	// Collect active (uncommitted) transactions
-	activeTxns := make([]*Txn, 0)
+	// Collect active (uncommitted) transactions and add to ring buffer
+	var activeCount int64
 	for _, txn := range globalTxnMap {
 		if !txn.Committed &&
 			(len(txn.WriteSet) > 0 || len(txn.DeleteSet) > 0 || len(txn.ReadSet) > 0) {
-			// Add a deep copy to avoid mutation issues
+
+			// Create a deep copy to avoid mutation issues
 			txnCopy := &Txn{
 				Id:        txn.Id,
 				Timestamp: txn.Timestamp,
@@ -680,6 +709,7 @@ func (db *DB) reinstate() error {
 				mutex:     sync.Mutex{},
 			}
 
+			// Copy the sets
 			for k, v := range txn.WriteSet {
 				txnCopy.WriteSet[k] = v
 			}
@@ -690,18 +720,21 @@ func (db *DB) reinstate() error {
 				txnCopy.ReadSet[k] = v
 			}
 
-			activeTxns = append(activeTxns, txnCopy)
+			// Add the correct txnCopy variable to ring buffer
+			if !db.txnRing.add(txnCopy) {
+				db.log(fmt.Sprintf("Warning: Failed to add transaction %d to ring buffer during recovery - buffer full", txn.Id))
+			} else {
+				activeCount++
+			}
 		}
 	}
 
-	// Store active transactions
-	db.txns.Store(&activeTxns)
-
-	// Log summary statistics
+	// Log summary statistics with accurate counts
+	committedCount := int64(len(globalTxnMap)) - activeCount
 	db.log(fmt.Sprintf("Reinstatement completed: processed %d total entries across %d WAL files",
 		totalEntries, len(walFiles)))
 	db.log(fmt.Sprintf("Recovered %d transactions total, %d committed, %d active",
-		len(globalTxnMap), len(globalTxnMap)-len(activeTxns), len(activeTxns)))
+		len(globalTxnMap), committedCount, activeCount))
 	db.log(fmt.Sprintf("Active memtable size: %d bytes with %d entries",
 		atomic.LoadInt64(&activeMemt.size), activeMemt.skiplist.Count(time.Now().UnixNano()+10000000000)))
 
@@ -983,7 +1016,7 @@ func (db *DB) Stats() string {
 			Values: []any{
 				atomic.LoadInt64(&db.memtable.Load().(*Memtable).size),
 				db.memtable.Load().(*Memtable).skiplist.Count(time.Now().UnixNano() + 10000000000),
-				len(*db.txns.Load()), db.oldestActiveRead, len(db.flusher.immutable.List()), func() int {
+				db.txnRing.count(), db.oldestActiveRead, len(db.flusher.immutable.List()), func() int {
 					sstables := 0
 					levels := db.levels.Load()
 					if levels != nil {
