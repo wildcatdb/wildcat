@@ -62,7 +62,17 @@ func (g *IDGenerator) nextID() int64 {
 				next = time.Now().UnixNano()
 			}
 		} else {
-			next = last + 1
+			if g.idgType == IDGTypeTimestamp {
+				now := time.Now().UnixNano()
+				// Always use max(now, last+1) to ensure monotonic increment
+				if now > last {
+					next = now
+				} else {
+					next = last + 1
+				}
+			} else {
+				next = last + 1
+			}
 		}
 
 		if atomic.CompareAndSwapInt64(&g.lastID, last, next) {
