@@ -28,7 +28,7 @@ import (
 )
 
 const MagicNumber = uint32(0x57494C44)        // "WILD"
-const Version = uint32(1)                     // Version of the file format
+const Version = uint32(2)                     // Version of the file format
 const BlockSize = uint32(512)                 // Smaller the better, faster in our tests
 const Allotment = uint64(64)                  // How many blocks we can allot at once to the file.  We allocate this many blocks once allocationTable is empty
 const EndOfChain = uint64(0xFFFFFFFFFFFFFFFF) // Marker for end of blockchain (overflowed block)
@@ -71,6 +71,7 @@ type BlockManager struct {
 	closeChan       chan struct{}   // Channel to signal closure of the background sync
 	wg              *sync.WaitGroup // WaitGroup to wait for background sync to finish
 	alottmentFlag   int32           // Atomic flag to prevent multiple goroutines from appending blocks simultaneously
+	fileVersion     uint32          // Mainly used for backwards comp between v1-v2+ file formats
 }
 
 // Iterator is used to traverse the blocks in the file
@@ -106,6 +107,7 @@ func Open(filename string, flag int, perm os.FileMode, syncOpt SyncOption, durat
 		syncOption:      syncOpt,
 		closeChan:       make(chan struct{}),
 		wg:              &sync.WaitGroup{},
+		fileVersion:     Version, // Default to current version for new files
 	}
 
 	if len(duration) > 0 {
@@ -126,6 +128,7 @@ func Open(filename string, flag int, perm os.FileMode, syncOpt SyncOption, durat
 		}
 	} else {
 		// If the file is not empty, we need to read the header and check if it matches
+		// This will set bm.fileVersion based on the file's actual version
 		if err = bm.readHeader(); err != nil {
 			return nil, err
 		}
@@ -232,18 +235,18 @@ func (bm *BlockManager) readHeader() error {
 	if header.MagicNumber != MagicNumber {
 		return errors.New("invalid magic number")
 	}
-	if header.Version != Version {
+
+	// Support both V1 and V2
+	if header.Version != 1 && header.Version != 2 {
 		return errors.New("unsupported version")
 	}
+
+	// Store the file version for CRC calculations
+	bm.fileVersion = header.Version
+
 	if header.BlockSize != BlockSize {
-		// The block size is fixed to block manager version, if we try to read a block unfamiliar to format there will
-		// be problems thus we check and error out if the block size is not what we expect
 		return errors.New("invalid block size")
-
 	}
-
-	// We don't care for Allotment in this context, can change on minor updates
-	// for optimization reasons, this is just the amount of blocks we append at once
 
 	return nil
 }
@@ -307,16 +310,11 @@ func (bm *BlockManager) appendFreeBlocks() error {
 			NextBlock: EndOfChain, // End of chain for free blocks
 		}
 
-		// Calculate and set the CRC
-		headerBuf := new(bytes.Buffer)
-		blockHeader.CRC = 0
-		if err := binary.Write(headerBuf, binary.LittleEndian, &blockHeader); err != nil {
-			return err
-		}
-		blockHeader.CRC = crc32.ChecksumIEEE(headerBuf.Bytes())
+		// Calculate CRC using version-aware method (no data for free blocks)
+		blockHeader.CRC = bm.calculateBlockCRC(blockHeader, nil)
 
 		// Write the block header to the buffer
-		headerBuf.Reset()
+		headerBuf := new(bytes.Buffer)
 		if err := binary.Write(headerBuf, binary.LittleEndian, &blockHeader); err != nil {
 			return err
 		}
@@ -355,13 +353,6 @@ func (bm *BlockManager) allocateBlock() (uint64, error) {
 
 	// Check if we need to allocate proactively
 	if bm.allocationTable.Size() == threshold {
-		// We need to append blocks, but we need to ensure only one goroutine does this
-		// We'll use atomic CAS operations for this
-
-		// We'll use a sync.Once pattern but with atomic operations
-		// This ensures multiple goroutines won't all try to append blocks simultaneously
-
-		// Create a flag to track if we've started appending blocks
 
 		// Try to set the flag from 0 to 1
 		if atomic.CompareAndSwapInt32(&bm.alottmentFlag, 0, 1) {
@@ -428,7 +419,6 @@ func (bm *BlockManager) allocateBlock() (uint64, error) {
 
 // scanForFreeBlocks scans the file for free blocks and populates the allocation table.
 func (bm *BlockManager) scanForFreeBlocks() error {
-	// Get file size
 	fileInfo, err := bm.file.Stat()
 	if err != nil {
 		return err
@@ -448,7 +438,7 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 	bm.allocationTable = queue.New()
 
 	blockHeaderSize := binary.Size(BlockHeader{})
-	headerBuf := make([]byte, blockHeaderSize)
+	blockBuffer := make([]byte, BlockSize) // Full block buffer for V2+ verification
 
 	// First pass we scan from the end until we find a used block or end of chain block
 	var firstNonFreeBlockFromEnd uint64 = blockCount
@@ -456,43 +446,39 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 		// Calculate position for this block
 		position := int64(headerSize) + int64(i)*int64(BlockSize)
 
-		// Read the block header using pread
-		_, err := pread(bm.fd, headerBuf, position)
+		// Read the full block for proper V2+ verification
+		_, err := pread(bm.fd, blockBuffer, position)
 		if err != nil {
 			return err
 		}
 
 		// Decode the header
 		var blockHeader BlockHeader
-		if err := binary.Read(bytes.NewReader(headerBuf), binary.LittleEndian, &blockHeader); err != nil {
+		if err := binary.Read(bytes.NewReader(blockBuffer[:blockHeaderSize]), binary.LittleEndian, &blockHeader); err != nil {
 			return err
 		}
 
-		// Verify the CRC of the header
+		// Verify the CRC using version-aware method
 		expectedCRC := blockHeader.CRC
-		blockHeader.CRC = 0
-		headerWithoutCRC := new(bytes.Buffer)
-		if err := binary.Write(headerWithoutCRC, binary.LittleEndian, &blockHeader); err != nil {
-			return err
+		var blockData []byte
+		if blockHeader.DataSize > 0 {
+			dataStart := blockHeaderSize
+			dataEnd := dataStart + int(blockHeader.DataSize)
+			if dataEnd <= len(blockBuffer) {
+				blockData = blockBuffer[dataStart:dataEnd]
+			}
 		}
-		calculatedCRC := crc32.ChecksumIEEE(headerWithoutCRC.Bytes())
 
 		// If CRC is invalid, continue to the next block
-		if expectedCRC != calculatedCRC {
+		if !bm.verifyBlockCRC(blockHeader, blockData, expectedCRC) {
 			continue
 		}
 
-		// A block is considered non-free if
-		// 1. It has data (DataSize > 0)
-		// 2. It's marked as an end of chain (NextBlock == EndOfChain and DataSize > 0)
-		// Also free blocks might also have NextBlock == EndOfChain but they have DataSize == 0
+		// A block is considered non-free if it has data
 		if blockHeader.DataSize > 0 {
 			firstNonFreeBlockFromEnd = i
 			break
 		}
-
-		// Also check if this block is referenced by any other block
-		// (We'll do this in a second pass)
 	}
 
 	// All blocks from firstNonFreeBlockFromEnd+1 to blockCount-1 are free
@@ -517,29 +503,31 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 		// Calculate position for this block
 		position := int64(headerSize) + int64(i)*int64(BlockSize)
 
-		// Read the block header using pread
-		_, err := pread(bm.fd, headerBuf, position)
+		// Read the full block for proper V2+ verification
+		_, err := pread(bm.fd, blockBuffer, position)
 		if err != nil {
 			return err
 		}
 
 		// Decode the header
 		var blockHeader BlockHeader
-		if err := binary.Read(bytes.NewReader(headerBuf), binary.LittleEndian, &blockHeader); err != nil {
+		if err := binary.Read(bytes.NewReader(blockBuffer[:blockHeaderSize]), binary.LittleEndian, &blockHeader); err != nil {
 			return err
 		}
 
-		// Verify the CRC of the header
+		// Verify the CRC using version-aware method
 		expectedCRC := blockHeader.CRC
-		blockHeader.CRC = 0
-		headerWithoutCRC := new(bytes.Buffer)
-		if err := binary.Write(headerWithoutCRC, binary.LittleEndian, &blockHeader); err != nil {
-			return err
+		var blockData []byte
+		if blockHeader.DataSize > 0 {
+			dataStart := blockHeaderSize
+			dataEnd := dataStart + int(blockHeader.DataSize)
+			if dataEnd <= len(blockBuffer) {
+				blockData = blockBuffer[dataStart:dataEnd]
+			}
 		}
-		calculatedCRC := crc32.ChecksumIEEE(headerWithoutCRC.Bytes())
 
 		// Skip blocks with invalid CRC - they could be corrupted or uninitialized
-		if expectedCRC != calculatedCRC {
+		if !bm.verifyBlockCRC(blockHeader, blockData, expectedCRC) {
 			continue
 		}
 
@@ -627,8 +615,6 @@ func (bm *BlockManager) Append(data []byte) (int64, error) {
 		blockID, err := bm.allocateBlock()
 		if err != nil {
 			// If allocation fails, we have a partial chain
-			// In a production system, you might want to free these blocks
-			// But for now we'll just return the error
 			return -1, err
 		}
 		blockChain[i] = blockID
@@ -662,26 +648,21 @@ func (bm *BlockManager) Append(data []byte) (int64, error) {
 			remainingData = nil
 		}
 
-		// Create and write the block
+		// Create block header
 		blockHeader := BlockHeader{
 			BlockID:   currentBlockID,
 			DataSize:  uint64(len(dataToWrite)),
 			NextBlock: nextBlockID,
 		}
 
-		// Calculate and set the CRC for the header
-		headerBuf := new(bytes.Buffer)
-		blockHeader.CRC = 0
-		if err := binary.Write(headerBuf, binary.LittleEndian, &blockHeader); err != nil {
-			return -1, err
-		}
-		blockHeader.CRC = crc32.ChecksumIEEE(headerBuf.Bytes())
+		// Calculate CRC using version-aware method
+		blockHeader.CRC = bm.calculateBlockCRC(blockHeader, dataToWrite)
 
 		// Create a buffer for the entire block
 		blockBuffer := make([]byte, BlockSize)
 
-		// Reset header buffer and write header with CRC
-		headerBuf.Reset()
+		// Write header with CRC
+		headerBuf := new(bytes.Buffer)
 		if err := binary.Write(headerBuf, binary.LittleEndian, &blockHeader); err != nil {
 			return -1, err
 		}
@@ -756,19 +737,20 @@ func (bm *BlockManager) Read(blockID int64) ([]byte, int64, error) {
 			return nil, -1, err
 		}
 
-		// Verify the CRC
-		expectedCRC := blockHeader.CRC
-		blockHeader.CRC = 0
+		// Extract the data from the block first (needed for V2 CRC verification)
+		dataStart := blockHeaderSize
+		dataEnd := dataStart + int(blockHeader.DataSize)
 
-		// Recalculate the CRC
-		headerBuf := new(bytes.Buffer)
-		if err := binary.Write(headerBuf, binary.LittleEndian, &blockHeader); err != nil {
-			return nil, -1, err
+		if dataEnd > int(BlockSize) {
+			return nil, -1, errors.New("data size exceeds block size")
 		}
-		calculatedCRC := crc32.ChecksumIEEE(headerBuf.Bytes())
 
-		if expectedCRC != calculatedCRC {
-			return nil, -1, errors.New("block header CRC mismatch")
+		blockData := blockBuffer[dataStart:dataEnd]
+
+		// Verify the CRC using version-aware method
+		expectedCRC := blockHeader.CRC
+		if !bm.verifyBlockCRC(blockHeader, blockData, expectedCRC) {
+			return nil, -1, errors.New("block CRC mismatch")
 		}
 
 		if blockHeader.BlockID != currentBlockID {
@@ -779,16 +761,8 @@ func (bm *BlockManager) Read(blockID int64) ([]byte, int64, error) {
 			return nil, -1, errors.New("block contains no data")
 		}
 
-		// Extract the data from the block
-		dataStart := blockHeaderSize
-		dataEnd := dataStart + int(blockHeader.DataSize)
-
-		if dataEnd > int(BlockSize) {
-			return nil, -1, errors.New("data size exceeds block size")
-		}
-
 		// Append the data to the result buffer
-		resultBuffer.Write(blockBuffer[dataStart:dataEnd])
+		resultBuffer.Write(blockData)
 
 		// Save the current block ID before moving to the next
 		lastBlockID = currentBlockID
@@ -966,29 +940,31 @@ func (it *Iterator) isValidBlock(blockID uint64) bool {
 	// Calculate position for this block
 	position := int64(headerSize) + int64(blockID)*int64(BlockSize)
 
-	// Read block header
-	headerBuf := make([]byte, blockHeaderSize)
-	_, err := pread(it.blockManager.fd, headerBuf, position)
+	// Read full block for proper V2+ verification
+	blockBuffer := make([]byte, BlockSize)
+	_, err := pread(it.blockManager.fd, blockBuffer, position)
 	if err != nil {
 		return false
 	}
 
 	// Decode the header
 	var blockHeader BlockHeader
-	if err := binary.Read(bytes.NewReader(headerBuf), binary.LittleEndian, &blockHeader); err != nil {
+	if err := binary.Read(bytes.NewReader(blockBuffer[:blockHeaderSize]), binary.LittleEndian, &blockHeader); err != nil {
 		return false
 	}
 
-	// Verify the CRC
+	// Verify the CRC using version-aware method
 	expectedCRC := blockHeader.CRC
-	blockHeader.CRC = 0
-	headerBuf2 := new(bytes.Buffer)
-	if err := binary.Write(headerBuf2, binary.LittleEndian, &blockHeader); err != nil {
-		return false
+	var blockData []byte
+	if blockHeader.DataSize > 0 {
+		dataStart := blockHeaderSize
+		dataEnd := dataStart + int(blockHeader.DataSize)
+		if dataEnd <= len(blockBuffer) {
+			blockData = blockBuffer[dataStart:dataEnd]
+		}
 	}
-	calculatedCRC := crc32.ChecksumIEEE(headerBuf2.Bytes())
 
-	if expectedCRC != calculatedCRC {
+	if !it.blockManager.verifyBlockCRC(blockHeader, blockData, expectedCRC) {
 		return false
 	}
 
@@ -1000,7 +976,6 @@ func (it *Iterator) isValidBlock(blockID uint64) bool {
 func (it *Iterator) findChainHead(blockID uint64) (uint64, error) {
 	// Check if any block points to our target block
 	// We need to scan backwards to find a block that chains to our target
-
 	headerSize := binary.Size(Header{})
 	if headerSize < 0 {
 		return 0, errors.New("failed to calculate header size")
@@ -1040,7 +1015,8 @@ func (it *Iterator) chainsToTarget(startBlock, targetBlock uint64) bool {
 	}
 
 	currentBlock := startBlock
-	visited := make(map[uint64]bool) // Prevent infinite loops**
+	visited := make(map[uint64]bool) // Prevent infinite loops
+	blockBuffer := make([]byte, BlockSize)
 
 	// Follow the chain from startBlock
 	for currentBlock != EndOfChain && currentBlock != 0 {
@@ -1055,29 +1031,30 @@ func (it *Iterator) chainsToTarget(startBlock, targetBlock uint64) bool {
 			return true
 		}
 
-		// Read the current block header to get the next block
+		// Read the current block to get the header
 		position := int64(headerSize) + int64(currentBlock)*int64(BlockSize)
-		headerBuf := make([]byte, blockHeaderSize)
-		_, err := pread(it.blockManager.fd, headerBuf, position)
+		_, err := pread(it.blockManager.fd, blockBuffer, position)
 		if err != nil {
 			return false
 		}
 
 		var blockHeader BlockHeader
-		if err := binary.Read(bytes.NewReader(headerBuf), binary.LittleEndian, &blockHeader); err != nil {
+		if err := binary.Read(bytes.NewReader(blockBuffer[:blockHeaderSize]), binary.LittleEndian, &blockHeader); err != nil {
 			return false
 		}
 
-		// Verify CRC
+		// Verify CRC using version-aware method
 		expectedCRC := blockHeader.CRC
-		blockHeader.CRC = 0
-		headerBuf2 := new(bytes.Buffer)
-		if err := binary.Write(headerBuf2, binary.LittleEndian, &blockHeader); err != nil {
-			return false
+		var blockData []byte
+		if blockHeader.DataSize > 0 {
+			dataStart := blockHeaderSize
+			dataEnd := dataStart + int(blockHeader.DataSize)
+			if dataEnd <= len(blockBuffer) {
+				blockData = blockBuffer[dataStart:dataEnd]
+			}
 		}
-		calculatedCRC := crc32.ChecksumIEEE(headerBuf2.Bytes())
 
-		if expectedCRC != calculatedCRC {
+		if !it.blockManager.verifyBlockCRC(blockHeader, blockData, expectedCRC) {
 			return false
 		}
 
@@ -1136,7 +1113,8 @@ func (bm *BlockManager) Update(blockID int64, newData []byte) (int64, error) {
 		return -1, errors.New("failed to calculate header size")
 	}
 
-	// Case 1: New data fits in existing blocks (same size or smaller)
+	// Case 1
+	// New data fits in existing blocks (same size or smaller)
 	if newBlocksNeeded <= existingBlocksCount {
 		err := bm.updateExistingBlocks(existingBlocks, newData, newBlocksNeeded)
 		if err != nil {
@@ -1154,7 +1132,8 @@ func (bm *BlockManager) Update(blockID int64, newData []byte) (int64, error) {
 		return blockID, nil
 	}
 
-	// Case 2: New data requires more blocks (extension)
+	// Case 2
+	// New data requires more blocks (extension)
 	additionalBlocksNeeded := newBlocksNeeded - existingBlocksCount
 
 	// Allocate additional blocks
@@ -1196,11 +1175,11 @@ func (bm *BlockManager) getBlockChain(startBlockID uint64) ([]uint64, error) {
 
 	headerSize := binary.Size(Header{})
 	blockHeaderSize := binary.Size(BlockHeader{})
+	blockBuffer := make([]byte, BlockSize)
 
 	visited := make(map[uint64]bool) // Prevent infinite loops
 
 	for currentBlockID != EndOfChain {
-
 		// Prevent infinite loops
 		if visited[currentBlockID] {
 			return nil, errors.New("circular reference detected in block chain")
@@ -1209,31 +1188,31 @@ func (bm *BlockManager) getBlockChain(startBlockID uint64) ([]uint64, error) {
 
 		chainBlocks = append(chainBlocks, currentBlockID)
 
-		// Read block header to get next block
+		// Read block to get header
 		position := int64(headerSize) + int64(currentBlockID)*int64(BlockSize)
-		headerBuf := make([]byte, blockHeaderSize)
-
-		_, err := pread(bm.fd, headerBuf, position)
+		_, err := pread(bm.fd, blockBuffer, position)
 		if err != nil {
 			return nil, err
 		}
 
 		var blockHeader BlockHeader
-		if err := binary.Read(bytes.NewReader(headerBuf), binary.LittleEndian, &blockHeader); err != nil {
+		if err := binary.Read(bytes.NewReader(blockBuffer[:blockHeaderSize]), binary.LittleEndian, &blockHeader); err != nil {
 			return nil, err
 		}
 
-		// Verify CRC
+		// Verify CRC using version-aware method
 		expectedCRC := blockHeader.CRC
-		blockHeader.CRC = 0
-		headerBuf2 := new(bytes.Buffer)
-		if err := binary.Write(headerBuf2, binary.LittleEndian, &blockHeader); err != nil {
-			return nil, err
+		var blockData []byte
+		if blockHeader.DataSize > 0 {
+			dataStart := blockHeaderSize
+			dataEnd := dataStart + int(blockHeader.DataSize)
+			if dataEnd <= len(blockBuffer) {
+				blockData = blockBuffer[dataStart:dataEnd]
+			}
 		}
-		calculatedCRC := crc32.ChecksumIEEE(headerBuf2.Bytes())
 
-		if expectedCRC != calculatedCRC {
-			return nil, errors.New("block header CRC mismatch")
+		if !bm.verifyBlockCRC(blockHeader, blockData, expectedCRC) {
+			return nil, errors.New("block CRC mismatch")
 		}
 
 		currentBlockID = blockHeader.NextBlock
@@ -1279,19 +1258,14 @@ func (bm *BlockManager) updateExistingBlocks(blockIDs []uint64, data []byte, blo
 			NextBlock: nextBlockID,
 		}
 
-		// Calculate CRC
-		headerBuf := new(bytes.Buffer)
-		blockHeader.CRC = 0
-		if err := binary.Write(headerBuf, binary.LittleEndian, &blockHeader); err != nil {
-			return err
-		}
-		blockHeader.CRC = crc32.ChecksumIEEE(headerBuf.Bytes())
+		// Calculate CRC using version-aware method
+		blockHeader.CRC = bm.calculateBlockCRC(blockHeader, dataToWrite)
 
 		// Create block buffer
 		blockBuffer := make([]byte, BlockSize)
 
 		// Write header with CRC
-		headerBuf.Reset()
+		headerBuf := new(bytes.Buffer)
 		if err := binary.Write(headerBuf, binary.LittleEndian, &blockHeader); err != nil {
 			return err
 		}
@@ -1324,7 +1298,6 @@ func (bm *BlockManager) freeUnusedBlocks(blockIDs []uint64) error {
 	headerSize := binary.Size(Header{})
 
 	for _, blockID := range blockIDs {
-
 		// Create a free block header
 		blockHeader := BlockHeader{
 			BlockID:   blockID,
@@ -1332,19 +1305,14 @@ func (bm *BlockManager) freeUnusedBlocks(blockIDs []uint64) error {
 			NextBlock: EndOfChain, // End of chain for free blocks
 		}
 
-		// Calculate CRC
-		headerBuf := new(bytes.Buffer)
-		blockHeader.CRC = 0
-		if err := binary.Write(headerBuf, binary.LittleEndian, &blockHeader); err != nil {
-			return err
-		}
-		blockHeader.CRC = crc32.ChecksumIEEE(headerBuf.Bytes())
+		// Calculate CRC using version-aware method (no data for free blocks)
+		blockHeader.CRC = bm.calculateBlockCRC(blockHeader, nil)
 
 		// Create block buffer
 		blockBuffer := make([]byte, BlockSize)
 
 		// Write header with CRC
-		headerBuf.Reset()
+		headerBuf := new(bytes.Buffer)
 		if err := binary.Write(headerBuf, binary.LittleEndian, &blockHeader); err != nil {
 			return err
 		}
@@ -1373,6 +1341,29 @@ func (bm *BlockManager) freeUnusedBlocks(blockIDs []uint64) error {
 	}
 
 	return nil
+}
+
+// verifyBlockCRC checks if the CRC of a block header and its data matches the expected CRC.
+func (bm *BlockManager) verifyBlockCRC(header BlockHeader, data []byte, expectedCRC uint32) bool {
+	calculatedCRC := bm.calculateBlockCRC(header, data)
+	return calculatedCRC == expectedCRC
+}
+
+// calculateBlockCRC calculates the CRC for a block header and its data.
+func (bm *BlockManager) calculateBlockCRC(header BlockHeader, data []byte) uint32 {
+	// Create header buffer (CRC = 0)
+	headerBuf := new(bytes.Buffer)
+	header.CRC = 0
+	binary.Write(headerBuf, binary.LittleEndian, &header)
+
+	if bm.fileVersion == 1 {
+		// V1=Header-only CRC (backward compatibility)
+		return crc32.ChecksumIEEE(headerBuf.Bytes())
+	} else {
+		// V2+=Full block CRC (header + data)
+		fullBlock := append(headerBuf.Bytes(), data...)
+		return crc32.ChecksumIEEE(fullBlock)
+	}
 }
 
 // Sync escalates the Fdatasync operation to ensure data integrity.  Only allowed when syncOption is SyncNone.

@@ -2001,6 +2001,276 @@ func TestIteratorWithCorruptedBlocks(t *testing.T) {
 	t.Logf("Iterator found %d valid blocks and correctly skipped corrupted blocks", validBlocksFound)
 }
 
+func TestBackwardCompatibilityV1ToV2(t *testing.T) {
+	tempFilePath := os.TempDir() + "/blockmanager_backward_compat_test"
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
+
+	file, err := os.OpenFile(tempFilePath, os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	v1Header := Header{
+		MagicNumber: MagicNumber,
+		Version:     1, // V1 format
+		BlockSize:   BlockSize,
+		Allotment:   Allotment,
+	}
+
+	buf := new(bytes.Buffer)
+	v1Header.CRC = 0
+	if err := binary.Write(buf, binary.LittleEndian, &v1Header); err != nil {
+		t.Fatalf("Failed to write V1 header: %v", err)
+	}
+	v1Header.CRC = crc32.ChecksumIEEE(buf.Bytes())
+
+	// Write V1 header to file
+	buf.Reset()
+	if err := binary.Write(buf, binary.LittleEndian, &v1Header); err != nil {
+		t.Fatalf("Failed to write V1 header with CRC: %v", err)
+	}
+	if _, err := file.Write(buf.Bytes()); err != nil {
+		t.Fatalf("Failed to write header to file: %v", err)
+	}
+
+	// Create some V1 blocks with header-only CRC
+	testData := [][]byte{
+		[]byte("V1 block data 1"),
+		[]byte("V1 block data 2"),
+		[]byte("V1 block data 3"),
+	}
+
+	blockIDs := make([]int64, len(testData))
+
+	for i, data := range testData {
+		blockID := int64(i + 1) // Block IDs start from 1
+		blockIDs[i] = blockID
+
+		// Create V1 block header (CRC only on header, not data)
+		blockHeader := BlockHeader{
+			BlockID:   uint64(blockID),
+			DataSize:  uint64(len(data)),
+			NextBlock: EndOfChain,
+		}
+
+		// Calculate V1 CRC (header only)
+		headerBuf := new(bytes.Buffer)
+		blockHeader.CRC = 0
+		if err := binary.Write(headerBuf, binary.LittleEndian, &blockHeader); err != nil {
+			t.Fatalf("Failed to write block header: %v", err)
+		}
+		blockHeader.CRC = crc32.ChecksumIEEE(headerBuf.Bytes()) // V1: header-only CRC
+
+		// Create full block
+		blockBuffer := make([]byte, BlockSize)
+		headerBuf.Reset()
+		if err := binary.Write(headerBuf, binary.LittleEndian, &blockHeader); err != nil {
+			t.Fatalf("Failed to write final block header: %v", err)
+		}
+
+		copy(blockBuffer, headerBuf.Bytes())
+		copy(blockBuffer[binary.Size(BlockHeader{}):], data)
+
+		// Write block to file
+		position := int64(binary.Size(Header{})) + int64(blockID)*int64(BlockSize)
+		if _, err := file.WriteAt(blockBuffer, position); err != nil {
+			t.Fatalf("Failed to write V1 block: %v", err)
+		}
+	}
+
+	if err := file.Close(); err != nil {
+		t.Fatalf("Failed to close V1 file: %v", err)
+	}
+
+	// Open the V1 file with V2 BlockManager
+	bm, err := Open(tempFilePath, os.O_RDWR, 0666, SyncNone)
+	if err != nil {
+		t.Fatalf("Failed to open V1 file with V2 BlockManager: %v", err)
+	}
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
+
+	// Verify the file version was detected correctly
+	if bm.fileVersion != 1 {
+		t.Errorf("Expected fileVersion 1, got %d", bm.fileVersion)
+	}
+
+	//  Read V1 data successfully
+	for i, expectedData := range testData {
+		readData, _, err := bm.Read(blockIDs[i])
+		if err != nil {
+			t.Errorf("Failed to read V1 block %d: %v", i, err)
+			continue
+		}
+
+		if !bytes.Equal(expectedData, readData) {
+			t.Errorf("V1 data mismatch for block %d. Expected: %s, Got: %s",
+				i, string(expectedData), string(readData))
+		}
+	}
+
+	// Write new data (should use V1 format since file is V1)
+	newData := []byte("New data written to V1 file")
+	newBlockID, err := bm.Append(newData)
+	if err != nil {
+		t.Fatalf("Failed to append new data to V1 file: %v", err)
+	}
+
+	// Verify new data can be read
+	readNewData, _, err := bm.Read(newBlockID)
+	if err != nil {
+		t.Fatalf("Failed to read new data from V1 file: %v", err)
+	}
+
+	if !bytes.Equal(newData, readNewData) {
+		t.Errorf("New data mismatch. Expected: %s, Got: %s",
+			string(newData), string(readNewData))
+	}
+
+	//  Update existing V1 data
+	updatedData := []byte("Updated V1 data")
+	_, err = bm.Update(blockIDs[0], updatedData)
+	if err != nil {
+		t.Fatalf("Failed to update V1 block: %v", err)
+	}
+
+	// Verify updated data
+	readUpdatedData, _, err := bm.Read(blockIDs[0])
+	if err != nil {
+		t.Fatalf("Failed to read updated V1 data: %v", err)
+	}
+
+	if !bytes.Equal(updatedData, readUpdatedData) {
+		t.Errorf("Updated data mismatch. Expected: %s, Got: %s",
+			string(updatedData), string(readUpdatedData))
+	}
+
+	t.Log("V1 file successfully opened and operated on with V2 BlockManager")
+}
+
+func TestNewFileCreatedAsV2(t *testing.T) {
+	tempFilePath := os.TempDir() + "/blockmanager_new_v2_test"
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
+
+	// Create a new file (should be V2 by default)
+	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
+	if err != nil {
+		t.Fatalf("Failed to create new file: %v", err)
+	}
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
+
+	// Verify new files are created as V2
+	if bm.fileVersion != 2 {
+		t.Errorf("Expected new file to be V2 (version 2), got version %d", bm.fileVersion)
+	}
+
+	// Test V2 functionality
+	testData := []byte("Test data for V2 file")
+	blockID, err := bm.Append(testData)
+	if err != nil {
+		t.Fatalf("Failed to append data to V2 file: %v", err)
+	}
+
+	readData, _, err := bm.Read(blockID)
+	if err != nil {
+		t.Fatalf("Failed to read data from V2 file: %v", err)
+	}
+
+	if !bytes.Equal(testData, readData) {
+		t.Errorf("V2 data mismatch. Expected: %s, Got: %s",
+			string(testData), string(readData))
+	}
+
+	t.Log("New file correctly created as V2 format")
+}
+
+func TestV1FileWithCorruptedData(t *testing.T) {
+	tempFilePath := os.TempDir() + "/blockmanager_v1_corrupted_test"
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tempFilePath)
+
+	// Create a V1 file with intentionally corrupted data
+	file, err := os.OpenFile(tempFilePath, os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Create V1 header
+	v1Header := Header{
+		MagicNumber: MagicNumber,
+		Version:     1,
+		BlockSize:   BlockSize,
+		Allotment:   Allotment,
+	}
+
+	buf := new(bytes.Buffer)
+	v1Header.CRC = 0
+	binary.Write(buf, binary.LittleEndian, &v1Header)
+	v1Header.CRC = crc32.ChecksumIEEE(buf.Bytes())
+
+	buf.Reset()
+	binary.Write(buf, binary.LittleEndian, &v1Header)
+	file.Write(buf.Bytes())
+
+	// Create a block with corrupted data but valid V1 header CRC
+	originalData := []byte("Original data")
+	corruptedData := []byte("Corrupted!!!!")
+
+	blockHeader := BlockHeader{
+		BlockID:   1,
+		DataSize:  uint64(len(originalData)),
+		NextBlock: EndOfChain,
+	}
+
+	// Calculate valid V1 CRC (header only)
+	headerBuf := new(bytes.Buffer)
+	blockHeader.CRC = 0
+	binary.Write(headerBuf, binary.LittleEndian, &blockHeader)
+	blockHeader.CRC = crc32.ChecksumIEEE(headerBuf.Bytes())
+
+	// Create block with corrupted data
+	blockBuffer := make([]byte, BlockSize)
+	headerBuf.Reset()
+	binary.Write(headerBuf, binary.LittleEndian, &blockHeader)
+	copy(blockBuffer, headerBuf.Bytes())
+	copy(blockBuffer[binary.Size(BlockHeader{}):], corruptedData) // Write corrupted data
+
+	position := int64(binary.Size(Header{})) + int64(BlockSize)
+	file.WriteAt(blockBuffer, position)
+	file.Close()
+
+	// Open with V2 BlockManager
+	bm, err := Open(tempFilePath, os.O_RDWR, 0666, SyncNone)
+	if err != nil {
+		t.Fatalf("Failed to open V1 file: %v", err)
+	}
+	defer func(bm *BlockManager) {
+		_ = bm.Close()
+	}(bm)
+
+	// V1 format should pass validation (header CRC is valid)
+	// but return the corrupted data since V1 doesn't validate data
+	readData, _, err := bm.Read(1)
+	if err != nil {
+		t.Fatalf("V1 block with corrupted data should be readable: %v", err)
+	}
+
+	// This demonstrates V1's limitation - corrupted data is returned
+	if bytes.Equal(readData, originalData) {
+		t.Error("Expected corrupted data to be returned (V1 limitation)")
+	}
+
+	t.Log("✓ V1 file with corrupted data demonstrates header-only CRC limitation")
+}
+
 func BenchmarkUpdate(b *testing.B) {
 	tempFilePath := os.TempDir() + "/blockmanager_update_bench"
 

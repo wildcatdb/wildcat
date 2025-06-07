@@ -9,6 +9,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // SSTable represents a sorted string table
@@ -86,6 +87,11 @@ func (sst *SSTable) get(key []byte, readTimestamp int64) ([]byte, int64) {
 
 	val, _, err := t.Get(key)
 	if err != nil {
+		if strings.Contains(err.Error(), "CRC mismatch") {
+			// If we encounter a CRC mismatch, we assume the SSTable is corrupted
+			sst.db.log("SSTable " + strconv.FormatInt(sst.Id, 10) + " at level " + strconv.FormatInt(int64(sst.Level), 10) + " block corruption detected: " + err.Error())
+			return nil, 0
+		}
 		return nil, 0
 	}
 
