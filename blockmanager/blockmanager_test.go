@@ -2278,7 +2278,7 @@ func TestV2FileWithCorruptedData(t *testing.T) {
 	}(tempFilePath)
 
 	// Create a V2 file normally
-	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
+	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncFull)
 	if err != nil {
 		t.Fatalf("Failed to create V2 file: %v", err)
 	}
@@ -2307,7 +2307,7 @@ func TestV2FileWithCorruptedData(t *testing.T) {
 	file.Close()
 
 	// Reopen with V2 BlockManager
-	bm, err = Open(tempFilePath, os.O_RDWR, 0666, SyncNone)
+	bm, err = Open(tempFilePath, os.O_RDWR, 0666, SyncFull)
 	if err != nil {
 		t.Fatalf("Failed to reopen V2 file: %v", err)
 	}
