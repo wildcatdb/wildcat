@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -2292,19 +2293,24 @@ func TestV2FileWithCorruptedData(t *testing.T) {
 
 	bm.Close()
 
-	// Manually corrupt the data portion while keeping header intact
-	file, err := os.OpenFile(tempFilePath, os.O_RDWR, 0666)
+	// Use BlockManager's file opening method instead of os.OpenFile
+	fd, err := OpenFile(tempFilePath, os.O_RDWR, 0666)
 	if err != nil {
 		t.Fatalf("Failed to reopen file: %v", err)
 	}
 
+	// Calculate corruption position
 	headerSize := binary.Size(Header{})
 	blockHeaderSize := binary.Size(BlockHeader{})
 	position := int64(headerSize) + int64(blockID)*int64(BlockSize) + int64(blockHeaderSize)
 
 	corruptedData := []byte("Corrupted data!!")
-	file.WriteAt(corruptedData, position)
-	file.Close()
+	_, err = pwrite(fd, corruptedData, position)
+	if err != nil {
+		t.Fatalf("Failed to corrupt data: %v", err)
+	}
+
+	syscall.Close(int(fd))
 
 	// Reopen with V2 BlockManager
 	bm, err = Open(tempFilePath, os.O_RDWR, 0666, SyncFull)
