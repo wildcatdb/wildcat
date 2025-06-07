@@ -53,6 +53,10 @@ typedef struct {
     long wal_append_backoff_ns;
     int sstable_btree_order;
     int stdout_logging;
+    int max_compaction_concurrency;
+    int txn_begin_retry;
+    long txn_begin_backoff_ns;
+    long txn_begin_max_backoff_ns;
 } wildcat_opts_t;
 
 static void print_error(const char* msg) {
@@ -140,6 +144,10 @@ func fromCOptions(copts *C.wildcat_opts_t) *wildcat.Options {
 		WalAppendBackoff:                    time.Duration(copts.wal_append_backoff_ns),
 		SSTableBTreeOrder:                   int(copts.sstable_btree_order),
 		STDOutLogging:                       copts.stdout_logging != 0,
+		MaxConcurrentTxns:                   int(copts.max_compaction_concurrency),
+		TxnBeginRetry:                       int(copts.txn_begin_retry),
+		TxnBeginBackoff:                     time.Duration(copts.txn_begin_backoff_ns),
+		TxnBeginMaxBackoff:                  time.Duration(copts.txn_begin_max_backoff_ns),
 	}
 }
 

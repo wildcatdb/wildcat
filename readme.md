@@ -251,7 +251,11 @@ if err != nil {
 For more complex operations, you can manually manage transactions.
 ```go
 // Begin a transaction
-txn := db.Begin()
+txn, err := db.Begin()
+if err != nil {
+    // Handle error
+    return
+}
 
 // Perform operations
 err := txn.Put([]byte("key1"), []byte("value1"))
@@ -431,7 +435,11 @@ OR
 // Perform batch operations
 for i := 0; i < 1000; i++ {
     // Begin a transaction
-    txn := db.Begin()
+    txn, err := db.Begin()
+    if err != nil {
+        // Handle error
+        return
+    }
 
     key := []byte(fmt.Sprintf("key%d", i))
     value := []byte(fmt.Sprintf("value%d", i))
@@ -652,6 +660,10 @@ typedef struct {
     long wal_append_backoff_ns;
     int sstable_btree_order;
     int stdout_logging;
+    int max_compaction_concurrency;
+    int txn_begin_retry;
+    long txn_begin_backoff_ns;
+    long txn_begin_max_backoff_ns;
 } wildcat_opts_t;
 ```
 
