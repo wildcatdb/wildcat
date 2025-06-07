@@ -237,4 +237,3 @@ func TestIDGenerator_ClockBackwards(t *testing.T) {
 			id3, id2)
 	}
 }
-}
