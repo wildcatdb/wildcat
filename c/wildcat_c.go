@@ -68,7 +68,7 @@ import "C"
 
 import (
 	"fmt"
-	"github.com/wildcatdb/wildcat"
+	"github.com/wildcatdb/wildcat/v2"
 	"os"
 	"sync"
 	"time"
