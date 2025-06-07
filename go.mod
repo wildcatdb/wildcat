@@ -1,4 +1,4 @@
-module github.com/wildcatdb/wildcat
+module github.com/wildcatdb/wildcat/v2
 
 go 1.24
 
