@@ -3,6 +3,7 @@ package wildcat
 import (
 	"bytes"
 	"container/heap"
+	"fmt"
 	"github.com/wildcatdb/wildcat/skiplist"
 	"github.com/wildcatdb/wildcat/tree"
 	"go.mongodb.org/mongo-driver/bson"
@@ -18,6 +19,7 @@ type MergeIterator struct {
 	lastKey       []byte
 	lastTimestamp int64
 	allIterators  []*iterator
+	db            *DB
 }
 
 // iterator is the internal structure for each iterator
@@ -33,13 +35,14 @@ type iterator struct {
 }
 
 // NewMergeIterator creates a new MergeIterator with the given iterators
-func NewMergeIterator(iterators []*iterator, ts int64, ascending bool) (*MergeIterator, error) {
+func NewMergeIterator(db *DB, iterators []*iterator, ts int64, ascending bool) (*MergeIterator, error) {
 	mi := &MergeIterator{
 		heap:         make(iteratorHeap, 0, len(iterators)),
 		reverseHeap:  make(reverseIteratorHeap, 0, len(iterators)),
 		ts:           ts,
 		ascending:    ascending,
 		allIterators: make([]*iterator, len(iterators)),
+		db:           db,
 	}
 
 	// Copy iterators for potential re-initialization
@@ -233,6 +236,9 @@ func (mi *MergeIterator) initializeIterator(it *iterator) error {
 			if t.Next() {
 				entry, err := mi.extractKLogEntry(t.Value())
 				if err != nil {
+					if it.sst != nil {
+						mi.db.log(fmt.Sprintf("Potential block corruption detected for SSTable %d at Level %d: %v", it.sst.Id, it.sst.Level, err))
+					}
 					return err
 				}
 
@@ -256,6 +262,9 @@ func (mi *MergeIterator) initializeIterator(it *iterator) error {
 			if t.Valid() {
 				entry, err := mi.extractKLogEntry(t.Value())
 				if err != nil {
+					if it.sst != nil {
+						mi.db.log(fmt.Sprintf("Potential block corruption detected for SSTable %d at Level %d: %v", it.sst.Id, it.sst.Level, err))
+					}
 					return err
 				}
 
@@ -269,6 +278,9 @@ func (mi *MergeIterator) initializeIterator(it *iterator) error {
 					for t.Prev() {
 						entry, err := mi.extractKLogEntry(t.Value())
 						if err != nil {
+							if it.sst != nil {
+								mi.db.log(fmt.Sprintf("Potential block corruption detected for SSTable %d at Level %d: %v", it.sst.Id, it.sst.Level, err))
+							}
 							it.exhausted = true
 							return err
 						}
@@ -408,6 +420,9 @@ func (mi *MergeIterator) seekIterator(it *iterator, seekKey []byte) error {
 		if t.Valid() {
 			entry, err := mi.extractKLogEntry(t.Value())
 			if err != nil {
+				if it.sst != nil {
+					mi.db.log(fmt.Sprintf("Potential block corruption detected for SSTable %d at Level %d: %v", it.sst.Id, it.sst.Level, err))
+				}
 				it.exhausted = true
 				return err
 			}
@@ -646,6 +661,10 @@ func (mi *MergeIterator) advanceIterator(it *iterator) {
 
 			entry, err := mi.extractKLogEntry(t.Value())
 			if err != nil {
+				if it.sst != nil {
+					mi.db.log(fmt.Sprintf("Potential block corruption detected for SSTable %d at Level %d: %v", it.sst.Id, it.sst.Level, err))
+				}
+
 				it.exhausted = true
 				return
 			}

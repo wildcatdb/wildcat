@@ -81,6 +81,8 @@ Join our Discord community to discuss, ask questions, and get help with Wildcat.
     - [ID Generator System Integration](#id-generator-system-integration)
     - [Bloom Filter](#bloom-filter)
     - [Merge Iterator](#merge-iterator)
+- [File Format Versioning](#file-format-versioning)
+- [Corruption Handling](#corruption-handling)
 - [Motivation](#motivation)
 - [Contributing](#contributing)
 
@@ -1174,8 +1176,8 @@ Wildcat's block manager provides a low-level, atomic high-performance file I/O w
 - **Concurrent access** Thread-safe operations with lock-free design where possible
 
 #### Block Structure
-- **Header validation** Magic number and version verification
-- **Block metadata** Size, next block ID, and CRC checksums
+- **Block Manager Header validation** Magic number and version verification
+- **Block metadata (header)** Size, next block ID, and CRC checksums
 - **Chain support** Automatic handling of data spanning multiple blocks
 - **Free space tracking** Intelligent free block scanning and allocation
 
@@ -2193,6 +2195,43 @@ Wildcat's merge iterator allows efficient merging of multiple data sources, such
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### File Format Versioning (V1 vs V2)
+Wildcat supports two file format versions to balance backward compatibility with enhanced data integrity protection.
+
+#### Version Detection
+When opening a database, Wildcat automatically detects the file format version by reading the version field in the file header. This version is stored in `BlockManager.fileVersion` and determines how CRC calculations are performed throughout the session.
+
+#### V1 Format (Header-Only CRC)
+The original format calculates CRC32 checksums only on block headers (metadata like BlockID, DataSize, NextBlock). The actual data payload is not included in the checksum calculation.
+
+#### V2 Format (Header + Data CRC)
+The enhanced format calculates CRC32 checksums on both the block header AND the actual data content, providing comprehensive block integrity protection.
+
+**Benefits**
+- Detects corruption anywhere in the block
+- Protects both metadata and payload data
+- Enhanced reliability for production systems
+
+#### Compatibility
+- **Existing V1 databases** continue working without any changes required
+- **New databases** are automatically created with V2 format for enhanced protection
+- **No migration needed** - V1 files remain fully functional indefinitely
+- **Mixed environments** are supported where different files use different versions
+
+> [!NOTE]
+> While V1 files will continue to work indefinitely, it's recommended to eventually migrate to V2 format for enhanced data integrity protection. V2's comprehensive CRC coverage provides better detection of storage-level corruption, which becomes increasingly important for long-term data durability.
+
+### Corruption Handling
+Unlike storage systems that can fail catastrophically on corruption, Wildcat prioritizes availability over strict consistency.
+- **Graceful Degradation** Corrupted blocks are skipped, system continues operating
+- **Silent Recovery** Missing data treated as "not found" rather than fatal errors
+- **Operational Visibility** Comprehensive logging for corruption detection and monitoring
+- **Self-Healing** LSM-tree operations naturally remove corrupted data over time
+
+The block manager detects corruption through CRC verification and returns specific "CRC mismatch" errors. The SSTable layer logs detailed corruption context while treating affected keys as "not found". Transactions leverage multi-source redundancy to provide natural fallbacks, allowing reads to succeed even when some data sources are corrupted.
+
+High availability is maintained as services continue operating despite storage issues. Natural recovery occurs as compaction processes remove corrupted SSTables over time. Rich logging provides detailed corruption context for effective monitoring and alerting. Data loss is minimized through multiple LSM levels that provide redundancy for most keys.
 
 ### Motivation
 My name is Alex Gaetano Padula, and I've spent the past several years fully immersed in one thing.. databases and storage engines. Not frameworks. Not trends. Just the raw, unforgiving internals of how data lives, moves, and survives.

@@ -421,7 +421,7 @@ func (txn *Txn) NewIterator(asc bool) (*MergeIterator, error) {
 		}
 	}
 
-	return NewMergeIterator(items, txn.Timestamp, asc)
+	return NewMergeIterator(txn.db, items, txn.Timestamp, asc)
 }
 
 // NewRangeIterator creates a new range bidirectional iterator
@@ -518,7 +518,7 @@ func (txn *Txn) NewRangeIterator(startKey []byte, endKey []byte, asc bool) (*Mer
 		}
 	}
 
-	return NewMergeIterator(items, txn.Timestamp, asc)
+	return NewMergeIterator(txn.db, items, txn.Timestamp, asc)
 }
 
 // NewPrefixIterator creates a new prefix bidirectional iterator
@@ -615,7 +615,7 @@ func (txn *Txn) NewPrefixIterator(prefix []byte, asc bool) (*MergeIterator, erro
 		}
 	}
 
-	return NewMergeIterator(items, txn.Timestamp, asc)
+	return NewMergeIterator(txn.db, items, txn.Timestamp, asc)
 }
 
 // remove removes the transaction from the database
