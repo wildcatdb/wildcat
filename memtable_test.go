@@ -268,7 +268,10 @@ func TestMemtable_MVCC(t *testing.T) {
 	}
 
 	// Test snapshot isolation with a manual approach
-	txn1 := db.Begin()
+	txn1, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
 
 	// Read the current value in this transaction
 	result1, err := txn1.Get(key)
@@ -578,14 +581,22 @@ func TestMemtable_UncommittedTransactions(t *testing.T) {
 	}(dir)
 
 	// Begin a transaction but don't commit it
-	txn := db.Begin()
+	txn, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
+
 	err = txn.Put([]byte("uncommitted_key1"), []byte("uncommitted_value1"))
 	if err != nil {
 		t.Fatalf("Failed to put in uncommitted transaction: %v", err)
 	}
 
 	// Begin and commit a transaction
-	txn2 := db.Begin()
+	txn2, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
+
 	err = txn2.Put([]byte("committed_key1"), []byte("committed_value1"))
 	if err != nil {
 		t.Fatalf("Failed to put in committed transaction: %v", err)
@@ -596,7 +607,11 @@ func TestMemtable_UncommittedTransactions(t *testing.T) {
 	}
 
 	// Begin a transaction, make changes, then roll it back
-	txn3 := db.Begin()
+	txn3, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction 1: %v", err)
+	}
+
 	err = txn3.Put([]byte("rolledback_key1"), []byte("rolledback_value1"))
 	if err != nil {
 		t.Fatalf("Failed to put in rolled back transaction: %v", err)

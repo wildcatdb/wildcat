@@ -106,10 +106,18 @@ func TestDB_RecoveryAfterUncleanShutdown(t *testing.T) {
 		}
 
 		// Start some uncommitted transactions
-		txn1 := db.Begin()
+		txn1, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		_ = txn1.Put([]byte("uncommitted_1"), []byte("should_not_survive"))
 
-		txn2 := db.Begin()
+		txn2, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction 1: %v", err)
+		}
+
 		_ = txn2.Put([]byte("uncommitted_2"), []byte("should_not_survive"))
 
 		// Simulate unclean shutdown by NOT calling Close()

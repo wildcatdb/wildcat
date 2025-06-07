@@ -5,13 +5,31 @@ import (
 	"fmt"
 	"github.com/wildcatdb/wildcat/blockmanager"
 	"github.com/wildcatdb/wildcat/tree"
+	"math/rand"
 	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unsafe"
 )
+
+// TxnRingBuffer implements a lock-free ring buffer for transactions
+type TxnRingBuffer struct {
+	buffer   []*TxnSlot // Ring buffer of *TxnSlot pointers
+	mask     uint64     // Size mask (size must be power of 2)
+	head     uint64     // Next position to write
+	tail     uint64     // Next position to read/search from
+	capacity uint64     // Buffer capacity
+}
+
+// TxnSlot represents a slot in the transaction ring buffer
+type TxnSlot struct {
+	txn     unsafe.Pointer // *Txn pointer
+	version uint64         // Version for ABA prevention
+	active  uint64         // 1 if active, 0 if free
+}
 
 // Txn represents a transaction in Wildcat
 type Txn struct {
@@ -23,76 +41,268 @@ type Txn struct {
 	Committed bool              // Whether the transaction is committed
 	db        *DB               // Not exported for serialization
 	mutex     sync.Mutex        // Not exported for serialization
+	slotPos   uint64            // Position in ring buffer
+}
+
+// newTxnRingBuffer creates a new TxnRingBuffer with the specified capacity for transactions
+func newTxnRingBuffer(capacity uint64) *TxnRingBuffer {
+
+	// Ensure capacity is power of 2
+	if capacity&(capacity-1) != 0 {
+		// Round up to next power of 2
+		capacity = 1 << (64 - uint64(countLeadingZeros(capacity-1)))
+	}
+
+	// Properly initialize the buffer slice
+	buffer := make([]*TxnSlot, capacity)
+	for i := uint64(0); i < capacity; i++ {
+		buffer[i] = &TxnSlot{}
+	}
+
+	return &TxnRingBuffer{
+		buffer:   buffer,
+		mask:     capacity - 1,
+		capacity: capacity,
+		head:     0,
+		tail:     0,
+	}
+}
+
+// add adds a transaction to the ring buffer
+func (rb *TxnRingBuffer) add(txn *Txn) bool {
+	// Safety check
+	if rb == nil || rb.buffer == nil || len(rb.buffer) == 0 || txn == nil {
+		return false
+	}
+
+	// Try to find a free slot
+	for attempts := uint64(0); attempts < rb.capacity*2; attempts++ {
+		// First, try to advance tail to free up inactive slots
+		rb.advanceTail()
+
+		head := atomic.LoadUint64(&rb.head)
+		tail := atomic.LoadUint64(&rb.tail)
+
+		// Check if buffer is full
+		if head-tail >= rb.capacity {
+			return false // Buffer is full
+		}
+
+		// Try to find a free slot starting from head
+		pos := head & rb.mask
+
+		// Safety bounds check
+		if pos >= uint64(len(rb.buffer)) {
+			return false
+		}
+
+		slot := rb.buffer[pos]
+		if slot == nil {
+			return false
+		}
+
+		// Check if slot is free and try to claim it
+		if atomic.CompareAndSwapUint64(&slot.active, 0, 1) {
+			// Successfully claimed the slot
+			atomic.StorePointer(&slot.txn, unsafe.Pointer(txn))
+			atomic.AddUint64(&slot.version, 1)
+
+			// Store slot position in transaction for fast removal
+			txn.slotPos = pos
+
+			// Advance head only after successful insertion
+			atomic.CompareAndSwapUint64(&rb.head, head, head+1)
+			return true
+		}
+
+		// Slot was not free, try to advance head and look for next slot
+		if !atomic.CompareAndSwapUint64(&rb.head, head, head+1) {
+			// Someone else advanced head, continue with the loop
+			continue
+		}
+	}
+
+	return false // Couldn't find a free slot after many attempts
+}
+
+// advanceTail tries to advance the tail pointer past inactive slots
+func (rb *TxnRingBuffer) advanceTail() {
+	maxAdvances := rb.capacity / 4 // Limit how much we advance to prevent infinite loops
+
+	for advances := uint64(0); advances < maxAdvances; advances++ {
+		tail := atomic.LoadUint64(&rb.tail)
+		head := atomic.LoadUint64(&rb.head)
+
+		// Don't advance past head
+		if tail >= head {
+			break
+		}
+
+		pos := tail & rb.mask
+
+		if pos >= uint64(len(rb.buffer)) {
+			break
+		}
+
+		slot := rb.buffer[pos]
+		if slot == nil {
+			break
+		}
+
+		// If this slot is inactive, we can advance tail
+		if atomic.LoadUint64(&slot.active) == 0 {
+			if atomic.CompareAndSwapUint64(&rb.tail, tail, tail+1) {
+				continue // Successfully advanced, try next
+			} else {
+				break // Someone else changed tail, stop trying
+			}
+		} else {
+			break // Found an active slot, can't advance further
+		}
+	}
+}
+
+// remove removes a transaction from the ring buffer
+func (rb *TxnRingBuffer) remove(txn *Txn) bool {
+	if rb == nil || rb.buffer == nil || txn == nil {
+		return false
+	}
+
+	if txn.slotPos >= rb.capacity {
+		return false
+	}
+
+	slot := rb.buffer[txn.slotPos]
+	if slot == nil {
+		return false
+	}
+
+	// Check if this is still our transaction
+	storedTxn := (*Txn)(atomic.LoadPointer(&slot.txn))
+	if storedTxn != txn {
+		return false
+	}
+
+	// Clear the slot atomically - order matters here
+	atomic.StorePointer(&slot.txn, nil)
+	atomic.AddUint64(&slot.version, 1)
+	atomic.StoreUint64(&slot.active, 0) // Mark as inactive last to ensure cleanup
+
+	return true
+}
+
+// findByID finds a transaction by ID
+func (rb *TxnRingBuffer) findByID(id int64) *Txn {
+	if rb == nil || rb.buffer == nil {
+		return nil
+	}
+
+	for i := uint64(0); i < rb.capacity; i++ {
+		slot := rb.buffer[i]
+		if slot != nil && atomic.LoadUint64(&slot.active) == 1 {
+			txn := (*Txn)(atomic.LoadPointer(&slot.txn))
+			if txn != nil && txn.Id == id {
+				return txn
+			}
+		}
+	}
+	return nil
+}
+
+// forEach iterates over all active transactions
+func (rb *TxnRingBuffer) forEach(fn func(*Txn) bool) {
+	if rb == nil || rb.buffer == nil {
+		return
+	}
+
+	for i := uint64(0); i < rb.capacity; i++ {
+		slot := rb.buffer[i]
+		if slot != nil && atomic.LoadUint64(&slot.active) == 1 {
+			txn := (*Txn)(atomic.LoadPointer(&slot.txn))
+			if txn != nil {
+				if !fn(txn) {
+					break
+				}
+			}
+		}
+	}
+}
+
+// count returns the approximate number of active transactions
+func (rb *TxnRingBuffer) count() uint64 {
+	if rb == nil || rb.buffer == nil {
+		return 0
+	}
+
+	count := uint64(0)
+	for i := uint64(0); i < rb.capacity; i++ {
+		slot := rb.buffer[i]
+		if slot != nil && atomic.LoadUint64(&slot.active) == 1 {
+			count++
+		}
+	}
+	return count
 }
 
 // Begin starts a new transaction
-func (db *DB) Begin() *Txn {
+func (db *DB) Begin() (*Txn, error) {
 	txn := &Txn{
 		Id:        db.txnIdGenerator.nextID(),
 		db:        db,
 		ReadSet:   make(map[string]int64),
 		WriteSet:  make(map[string][]byte),
 		DeleteSet: make(map[string]bool),
-		Timestamp: db.txnTSGenerator.nextID(), // Monotonic ordering and no timestamp collisions even under extreme load
+		Timestamp: db.txnTSGenerator.nextID(),
 		Committed: false,
 		mutex:     sync.Mutex{},
 	}
 
-	// Follow atomic patterns.. load -> copy -> modify -> store with retry loop
-	for {
-		txnList := db.txns.Load()
-		var newTxns []*Txn
+	// Atomic retry loop with exponential backoff
+	var lastErr error
+	backoff := db.opts.TxnBeginBackoff
 
-		if txnList == nil {
-
-			// No existing transactions, create new slice
-			newTxns = make([]*Txn, 1)
-			newTxns[0] = txn
-		} else {
-
-			// Create a completely new slice with new underlying array
-			newTxns = make([]*Txn, len(*txnList)+1)
-			copy(newTxns, *txnList)
-			newTxns[len(*txnList)] = txn
+	for attempt := 0; attempt <= db.opts.TxnBeginRetry; attempt++ {
+		if db.txnRing.add(txn) {
+			return txn, nil
 		}
 
-		// Try to atomically swap - if it fails, retry
-		if db.txns.CompareAndSwap(txnList, &newTxns) {
+		lastErr = fmt.Errorf("transaction ring buffer full on attempt %d", attempt+1)
+
+		// Check if we've exhausted retries
+		if attempt == db.opts.TxnBeginRetry {
 			break
 		}
-		// If CAS failed, someone else modified txns, so retry the entire operation
+
+		// Exponential backoff with jitter!!!!
+		sleepTime := backoff * (1 << uint(attempt))
+		if sleepTime > db.opts.TxnBeginMaxBackoff {
+			sleepTime = db.opts.TxnBeginMaxBackoff
+		}
+
+		// Add jitter (± 25% randomization)
+		jitter := time.Duration(rand.Int63n(int64(sleepTime / 4)))
+		if rand.Intn(2) == 0 {
+			sleepTime += jitter
+		} else {
+			sleepTime -= jitter
+		}
+
+		time.Sleep(sleepTime)
 	}
 
-	return txn
+	// All retries exhausted
+	return nil, errors.New(fmt.Sprintf("failed to begin transaction after %d attempts: %v",
+		db.opts.TxnBeginRetry+1, lastErr))
 }
 
 // GetTxn retrieves a transaction by ID.
 // Can be used on system recovery.  You can recover an incomplete transaction.
 func (db *DB) GetTxn(id int64) (*Txn, error) {
-
-	// Find the transaction by ID
-	txns := db.txns.Load()
-	if txns == nil {
+	txn := db.txnRing.findByID(id)
+	if txn == nil {
 		return nil, fmt.Errorf("transaction not found")
 	}
-
-	// We use binary search but sequential search may also be fine, I will leave for now
-	// as it's faster than linear
-	low, high := 0, len(*txns)-1
-	for low <= high {
-		mid := low + (high-low)/2
-		txn := (*txns)[mid]
-
-		if txn.Id == id {
-			return txn, nil
-		} else if txn.Id < id {
-			high = mid - 1
-		} else {
-			low = mid + 1
-		}
-	}
-
-	return nil, fmt.Errorf("transaction not found")
+	return txn, nil
 }
 
 // Put adds key-value pair to database
@@ -144,9 +354,13 @@ func (txn *Txn) Delete(key []byte) error {
 
 // Commit commits the transaction
 func (txn *Txn) Commit() error {
+	if txn == nil {
+		return fmt.Errorf("transaction is nil")
+	}
+
 	txn.mutex.Lock()
 	defer txn.mutex.Unlock()
-	defer txn.remove()
+	defer txn.remove() // Ensure cleanup happens
 
 	if txn.Committed {
 		return nil // Already committed
@@ -177,7 +391,6 @@ func (txn *Txn) Commit() error {
 
 	// Check if we need to enqueue the memtable for flush
 	if atomic.LoadInt64(&txn.db.memtable.Load().(*Memtable).size) > txn.db.opts.WriteBufferSize {
-
 		// Enqueue the memtable for flush and swap
 		err = txn.db.flusher.queueMemtable()
 		if err != nil {
@@ -190,9 +403,13 @@ func (txn *Txn) Commit() error {
 
 // Rollback rolls back the transaction
 func (txn *Txn) Rollback() error {
+	if txn == nil {
+		return fmt.Errorf("transaction is nil")
+	}
+
 	txn.mutex.Lock()
 	defer txn.mutex.Unlock()
-	defer txn.remove()
+	defer txn.remove() // Ensure cleanup happens
 
 	// Clear all pending changes
 	txn.WriteSet = make(map[string][]byte)
@@ -301,7 +518,15 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 
 // Update performs an atomic update using a transaction
 func (db *DB) Update(fn func(txn *Txn) error) error {
-	txn := db.Begin()
+	if db == nil {
+		return fmt.Errorf("database is nil")
+	}
+
+	txn, err := db.Begin()
+	if txn == nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
 	fnErr := fn(txn)
 	if fnErr != nil {
 		rollbackErr := txn.Rollback()
@@ -315,7 +540,15 @@ func (db *DB) Update(fn func(txn *Txn) error) error {
 
 // View performs a read-only transaction
 func (db *DB) View(fn func(txn *Txn) error) error {
-	txn := db.Begin()
+	if db == nil {
+		return fmt.Errorf("database is nil")
+	}
+
+	txn, err := db.Begin()
+	if txn == nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
 	defer txn.remove() // Ensure transaction is cleaned up
 
 	fnErr := fn(txn)
@@ -620,42 +853,18 @@ func (txn *Txn) NewPrefixIterator(prefix []byte, asc bool) (*MergeIterator, erro
 
 // remove removes the transaction from the database
 func (txn *Txn) remove() {
+	if txn == nil || txn.db == nil {
+		return
+	}
+
+	// Clear the transaction data
 	txn.ReadSet = make(map[string]int64)
 	txn.WriteSet = make(map[string][]byte)
 	txn.DeleteSet = make(map[string]bool)
 	txn.Committed = false
 
-	// Follow atomic patterns.. load -> copy -> modify -> store
-	for {
-		txns := txn.db.txns.Load()
-		if txns == nil {
-			return
-		}
-
-		// Find the transaction to remove
-		foundIndex := -1
-		for i, t := range *txns {
-			if t.Id == txn.Id {
-				foundIndex = i
-				break
-			}
-		}
-
-		if foundIndex == -1 {
-			return // Transaction not found
-		}
-
-		// Create a new slice without the found transaction
-		newTxns := make([]*Txn, len(*txns)-1)
-		copy(newTxns, (*txns)[:foundIndex])
-		copy(newTxns[foundIndex:], (*txns)[foundIndex+1:])
-
-		// Try to atomically swap - if it fails, retry
-		if txn.db.txns.CompareAndSwap(txns, &newTxns) {
-			break
-		}
-		// If CAS failed, someone else modified txns, so retry
-	}
+	// Remove from ring buffer
+	txn.db.txnRing.remove(txn)
 }
 
 // appendWal appends the transaction state to a Write-Ahead Log (WAL)
@@ -753,4 +962,36 @@ func (txn *Txn) appendWal() error {
 	}
 
 	return lastErr
+}
+
+// countLeadingZeros counts the number of leading zeros in a uint64 value.
+func countLeadingZeros(x uint64) int {
+	if x == 0 {
+		return 64
+	}
+	n := 0
+	if x <= 0x00000000FFFFFFFF {
+		n += 32
+		x <<= 32
+	}
+	if x <= 0x0000FFFFFFFFFFFF {
+		n += 16
+		x <<= 16
+	}
+	if x <= 0x00FFFFFFFFFFFFFF {
+		n += 8
+		x <<= 8
+	}
+	if x <= 0x0FFFFFFFFFFFFFFF {
+		n += 4
+		x <<= 4
+	}
+	if x <= 0x3FFFFFFFFFFFFFFF {
+		n += 2
+		x <<= 2
+	}
+	if x <= 0x7FFFFFFFFFFFFFFF {
+		n += 1
+	}
+	return n
 }
