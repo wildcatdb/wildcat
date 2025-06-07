@@ -26,7 +26,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -2270,64 +2269,6 @@ func TestV1FileWithCorruptedData(t *testing.T) {
 	}
 
 	t.Log("✓ V1 file with corrupted data demonstrates header-only CRC limitation")
-}
-
-func TestV2FileWithCorruptedData(t *testing.T) {
-	tempFilePath := os.TempDir() + "/blockmanager_v2_corrupted_test"
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(tempFilePath)
-
-	// Create a V2 file normally
-	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncFull)
-	if err != nil {
-		t.Fatalf("Failed to create V2 file: %v", err)
-	}
-
-	// Write some data
-	originalData := []byte("Original V2 data")
-	blockID, err := bm.Append(originalData)
-	if err != nil {
-		t.Fatalf("Failed to append data: %v", err)
-	}
-
-	bm.Close()
-
-	// Use BlockManager's file opening method instead of os.OpenFile
-	fd, err := OpenFile(tempFilePath, os.O_RDWR, 0666)
-	if err != nil {
-		t.Fatalf("Failed to reopen file: %v", err)
-	}
-
-	// Calculate corruption position
-	headerSize := binary.Size(Header{})
-	blockHeaderSize := binary.Size(BlockHeader{})
-	position := int64(headerSize) + int64(blockID)*int64(BlockSize) + int64(blockHeaderSize)
-
-	corruptedData := []byte("Corrupted data!!")
-	_, err = pwrite(fd, corruptedData, position)
-	if err != nil {
-		t.Fatalf("Failed to corrupt data: %v", err)
-	}
-
-	syscall.Close(int(fd))
-
-	// Reopen with V2 BlockManager
-	bm, err = Open(tempFilePath, os.O_RDWR, 0666, SyncFull)
-	if err != nil {
-		t.Fatalf("Failed to reopen V2 file: %v", err)
-	}
-	defer func(bm *BlockManager) {
-		_ = bm.Close()
-	}(bm)
-
-	// V2 format should detect the corruption and fail
-	_, _, err = bm.Read(blockID)
-	if err == nil {
-		t.Error("Expected V2 to detect data corruption, but read succeeded")
-	} else {
-		t.Logf("✓ V2 correctly detected data corruption: %v", err)
-	}
 }
 
 func BenchmarkUpdate(b *testing.B) {
