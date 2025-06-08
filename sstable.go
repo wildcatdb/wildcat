@@ -2,9 +2,9 @@ package wildcat
 
 import (
 	"bytes"
-	"github.com/wildcatdb/wildcat/blockmanager"
-	"github.com/wildcatdb/wildcat/bloomfilter"
-	"github.com/wildcatdb/wildcat/tree"
+	"github.com/wildcatdb/wildcat/v2/blockmanager"
+	"github.com/wildcatdb/wildcat/v2/bloomfilter"
+	"github.com/wildcatdb/wildcat/v2/tree"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"os"

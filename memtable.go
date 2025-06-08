@@ -2,9 +2,9 @@ package wildcat
 
 import (
 	"fmt"
-	"github.com/wildcatdb/wildcat/blockmanager"
-	"github.com/wildcatdb/wildcat/bloomfilter"
-	"github.com/wildcatdb/wildcat/skiplist"
+	"github.com/wildcatdb/wildcat/v2/blockmanager"
+	"github.com/wildcatdb/wildcat/v2/bloomfilter"
+	"github.com/wildcatdb/wildcat/v2/skiplist"
 	"os"
 	"sync/atomic"
 	"time"
