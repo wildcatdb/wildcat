@@ -133,8 +133,6 @@ import (
 )
 ```
 
-
-
 ### Opening a Wildcat DB instance
 The only required option is the database directory path.
 ```go
@@ -166,21 +164,28 @@ By default Wildcat uses 6 levels, so you will see directories like this:
 ├── 1.wal
 └── idgstate
 ```
+
 The `L1`, `L2`, etc. directories are used for storing SSTables(immutable btrees) at different levels of the LSM tree. The `1.wal` file is the **current** Write-Ahead Log (WAL) file tied to the **current** memtable.
-When a memtable reaches a configured write buffer size, it is enqueued for flushing to disk and becomes immutable. The WAL file is then rotated, and a new one is created for subsequent writes.
+When a memtable reaches a configured write buffer size `WriteBufferSize`, it is enqueued for flushing to disk and becomes immutable. The WAL file is then rotated, and a new one is created for subsequent writes.
 
 Mind you there can be many WAL files pending flush, and they will be named `2.wal`, `3.wal`, etc. as they are created. The WAL files are used to ensure durability and recoverability of transactions.
 
-When the flusher completes a flush operation an immutable memtable becomes an sstable at L1.
+When the flusher completes a flush operation an immutable memtable becomes an sstable(btree) at L1.
 
-The idgstate file holds sstable, wal, and txn id state.  So when a restart occurs we can recover last known id's and continue monotonically increasing id's for SSTables, WALs, and transactions.
+The `idgstate` file holds sstable, wal, and txn id generator state.  So when a restart occurs we can recover last known id's and continue monotonically increasing id's for SSTables, WALs, and transactions.
 
 ### Temporary files
 You may see `.tmp` files within level directories.  These are temporary block manager files which are renamed after finalization of a flusher or compactor process.  On start up of a crash say we don't want to persist partial files so their removed based on that extension.  Partial files can cause inconsistencies in the database and unnecessary disk space.
 
 ```
-l1/sst_343.klog.tmp > l1/sst_343.klog (once finalized)
-l1/sst_343.vlog.tmp > l1/sst_343.vlog (once finalized)
+┌─────────────────────────────────────────────────────────────────┐
+│  232.wal → flushing                                             │
+│        ↓                                                        │
+│  l1/sst_343.klog.tmp → l1/sst_343.klog (renamed once finalized) │
+│  l1/sst_343.vlog.tmp → l1/sst_343.vlog (renamed once finalized) │
+│  wal file is removed after flush                                │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ### Advanced Configuration
@@ -442,7 +447,6 @@ err = db.View(func(txn *wildcat.Txn) error {
     return err
 })
 ```
-
 
 ### Batch Operations
 You can perform multiple operations in a single transaction.
