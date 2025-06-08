@@ -101,7 +101,7 @@ go get github.com/wildcatdb/wildcat/v2
 
 Specific major version i.e `v2.x.x` can be downloaded using
 ```bash
-go get github.com/wildcatdb/wildcat/v2@v2.0.1
+go get github.com/wildcatdb/wildcat/v2@v2.1.0
 ```
 
 ### Import
@@ -115,17 +115,21 @@ When importing different majors you can do
 ```go
 // v1
 import (
-    wildcatv1 "github.com/wildcatdb/wildcat"
+    "github.com/wildcatdb/wildcat"
 )
+```
 
+```go
 // v2
 import (
-    wildcatv2 "github.com/wildcatdb/wildcat/v2"
+    "github.com/wildcatdb/wildcat/v2"
 )
+```
 
+```go
 // v2+
 import (
-    wildcat "github.com/wildcatdb/wildcat/v32"
+    "github.com/wildcatdb/wildcat/v32"
 )
 ```
 
@@ -159,8 +163,8 @@ By default Wildcat uses 6 levels, so you will see directories like this:
 ├── l4
 ├── l5
 ├── l6
-1.wal
-idgstate
+├── 1.wal
+└── idgstate
 ```
 The `L1`, `L2`, etc. directories are used for storing SSTables(immutable btrees) at different levels of the LSM tree. The `1.wal` file is the **current** Write-Ahead Log (WAL) file tied to the **current** memtable.
 When a memtable reaches a configured write buffer size, it is enqueued for flushing to disk and becomes immutable. The WAL file is then rotated, and a new one is created for subsequent writes.
