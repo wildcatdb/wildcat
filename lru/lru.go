@@ -16,7 +16,7 @@
 package lru
 
 import (
-	"github.com/wildcatdb/wildcat/queue"
+	"github.com/wildcatdb/wildcat/v2/queue"
 	"math"
 	"runtime"
 	"sync/atomic"

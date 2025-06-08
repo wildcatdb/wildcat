@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"container/heap"
 	"fmt"
-	"github.com/wildcatdb/wildcat/skiplist"
-	"github.com/wildcatdb/wildcat/tree"
+	"github.com/wildcatdb/wildcat/v2/skiplist"
+	"github.com/wildcatdb/wildcat/v2/tree"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )

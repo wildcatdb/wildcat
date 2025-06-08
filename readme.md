@@ -701,8 +701,8 @@ typedef struct {
 ```c
 typedef enum {
     SYNC_NONE = 0,
-    SYNC_ALWAYS,
-    SYNC_INTERVAL
+    SYNC_FULL,
+    SYNC_PARTIAL
 } sync_option_t;
 ```
 

@@ -55,7 +55,7 @@ main()
     wildcat_opts_t opts = {0};
     opts.directory = (char*)db_path;
     opts.write_buffer_size = 32 * 1024 * 1024;  /* 32MB */
-    opts.sync_option = SYNC_ALWAYS;
+    opts.sync_option = SYNC_FULL;
     opts.sync_interval_ns = 0;
     opts.level_count = 6;
     opts.level_multiplier = 10;

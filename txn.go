@@ -3,8 +3,8 @@ package wildcat
 import (
 	"errors"
 	"fmt"
-	"github.com/wildcatdb/wildcat/blockmanager"
-	"github.com/wildcatdb/wildcat/tree"
+	"github.com/wildcatdb/wildcat/v2/blockmanager"
+	"github.com/wildcatdb/wildcat/v2/tree"
 	"math/rand"
 	"os"
 	"strings"
@@ -76,7 +76,7 @@ func (rb *TxnRingBuffer) add(txn *Txn) bool {
 	}
 
 	// Try to find a free slot
-	for attempts := uint64(0); attempts < rb.capacity*2; attempts++ {
+	for attempts := uint64(0); attempts < rb.capacity*4; attempts++ {
 		// First, try to advance tail to free up inactive slots
 		rb.advanceTail()
 
@@ -88,36 +88,50 @@ func (rb *TxnRingBuffer) add(txn *Txn) bool {
 			return false // Buffer is full
 		}
 
-		// Try to find a free slot starting from head
-		pos := head & rb.mask
+		// Try each slot starting from tail (to reuse freed slots first)
+		for offset := uint64(0); offset < rb.capacity; offset++ {
+			pos := (tail + offset) & rb.mask
 
-		// Safety bounds check
-		if pos >= uint64(len(rb.buffer)) {
-			return false
+			// Safety bounds check
+			if pos >= uint64(len(rb.buffer)) {
+				continue
+			}
+
+			slot := rb.buffer[pos]
+			if slot == nil {
+				continue
+			}
+
+			// Check if slot is free and try to claim it
+			if atomic.CompareAndSwapUint64(&slot.active, 0, 1) {
+
+				// Successfully claimed the slot
+				atomic.AddUint64(&slot.version, 1)
+
+				atomic.StorePointer(&slot.txn, unsafe.Pointer(txn))
+
+				// Store slot position in transaction for fast removal
+				txn.slotPos = pos
+
+				// Update head to be at least past this position
+				for {
+					currentHead := atomic.LoadUint64(&rb.head)
+					newHead := pos + 1
+					if newHead <= currentHead {
+						break // Head is already past this position
+					}
+					if atomic.CompareAndSwapUint64(&rb.head, currentHead, newHead) {
+						break // Successfully updated head
+					}
+					// Retry if CAS failed
+				}
+				return true
+			}
 		}
 
-		slot := rb.buffer[pos]
-		if slot == nil {
-			return false
-		}
-
-		// Check if slot is free and try to claim it
-		if atomic.CompareAndSwapUint64(&slot.active, 0, 1) {
-			// Successfully claimed the slot
-			atomic.StorePointer(&slot.txn, unsafe.Pointer(txn))
-			atomic.AddUint64(&slot.version, 1)
-
-			// Store slot position in transaction for fast removal
-			txn.slotPos = pos
-
-			// Advance head only after successful insertion
-			atomic.CompareAndSwapUint64(&rb.head, head, head+1)
-			return true
-		}
-
-		// Slot was not free, try to advance head and look for next slot
+		// No free slots found, try to advance head and retry
 		if !atomic.CompareAndSwapUint64(&rb.head, head, head+1) {
-			// Someone else advanced head, continue with the loop
+			// Someone else advanced head, retry immediately
 			continue
 		}
 	}
@@ -127,7 +141,10 @@ func (rb *TxnRingBuffer) add(txn *Txn) bool {
 
 // advanceTail tries to advance the tail pointer past inactive slots
 func (rb *TxnRingBuffer) advanceTail() {
-	maxAdvances := rb.capacity / 4 // Limit how much we advance to prevent infinite loops
+	maxAdvances := rb.capacity / 4 // Limit how much we advance to prevent infinite loops**
+	if maxAdvances == 0 {
+		maxAdvances = 1 // Ensure we advance at least once for small buffers
+	}
 
 	for advances := uint64(0); advances < maxAdvances; advances++ {
 		tail := atomic.LoadUint64(&rb.tail)
@@ -140,6 +157,7 @@ func (rb *TxnRingBuffer) advanceTail() {
 
 		pos := tail & rb.mask
 
+		// Safety bounds check
 		if pos >= uint64(len(rb.buffer)) {
 			break
 		}
@@ -185,7 +203,7 @@ func (rb *TxnRingBuffer) remove(txn *Txn) bool {
 
 	// Clear the slot atomically - order matters here
 	atomic.StorePointer(&slot.txn, nil)
-	atomic.AddUint64(&slot.version, 1)
+	atomic.AddUint64(&slot.version, 1)  // Increment version on removal
 	atomic.StoreUint64(&slot.active, 0) // Mark as inactive last to ensure cleanup
 
 	return true
@@ -940,7 +958,7 @@ func (txn *Txn) appendWal() error {
 				}
 			})
 
-			// Try append again immediately with the new descriptor
+			// Try to append again immediately with the new descriptor
 			_, err = walBm.Append(data)
 			if err == nil {
 				// Success after reopen EXIT!!
@@ -964,7 +982,7 @@ func (txn *Txn) appendWal() error {
 	return lastErr
 }
 
-// countLeadingZeros counts the number of leading zeros in a uint64 value.
+// countLeadingZeros counts the number of leading zeros in an uint64 value.
 func countLeadingZeros(x uint64) int {
 	if x == 0 {
 		return 64

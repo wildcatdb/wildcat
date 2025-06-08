@@ -2,10 +2,10 @@ package wildcat
 
 import (
 	"fmt"
-	"github.com/wildcatdb/wildcat/blockmanager"
-	"github.com/wildcatdb/wildcat/queue"
-	"github.com/wildcatdb/wildcat/skiplist"
-	"github.com/wildcatdb/wildcat/tree"
+	"github.com/wildcatdb/wildcat/v2/blockmanager"
+	"github.com/wildcatdb/wildcat/v2/queue"
+	"github.com/wildcatdb/wildcat/v2/skiplist"
+	"github.com/wildcatdb/wildcat/v2/tree"
 	"os"
 	"sync/atomic"
 	"time"
