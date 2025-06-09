@@ -16,7 +16,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - Scalable design with background flusher and compactor
 - Concurrent block storage leveraging direct, offset-based file I/O (using `pread`/`pwrite`) for optimal performance
 - Atomic LRU cache for active block manager handles
-- Memtable lifecycle management with snapshot consistency
+- Memtable lifecycle management
 - SSTables stored as immutable BTrees
 - Configurable durability levels `None` (fastest), `Partial` (balanced), `Full` (most durable)
 - Snapshot-isolated MVCC with timestamp-based reads
@@ -24,13 +24,13 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - Automatic multi-threaded background compaction with configurable concurrency
 - ACID transaction support with configurable durability guarantees
 - Range, prefix, and full iteration support with bidirectional traversal
-- High throughput design targeting tens of thousands of transactions per second
+- High transactional throughput per second with low latency due to lock-free and non-blocking design.
 - Optional Bloom filters per SSTable for improved key lookup performance
 - Key-value separation optimization (`.klog` for keys, `.vlog` for values)
 - Tombstone-aware compaction with retention based on active transaction windows
 - Transaction recovery preserves incomplete transactions for post-crash inspection and resolution
 - Keys and values stored as opaque byte sequences
-- Single-node embedded database with no network or replication overhead
+- Single-node embedded storage engine with no network or replication overhead
 
 ## Overview
 <div>
@@ -38,7 +38,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 </div>
 
 ## Discord Community
-Join our Discord community to discuss, ask questions, and get help with Wildcat.
+Join our Discord community to discuss development, design, ask questions, and get help with Wildcat.
 
 [![Discord](https://img.shields.io/discord/1380406674216587294?label=Discord&logo=discord&color=EDB73B)](https://discord.gg/Rs5Z2e69ts)
 
@@ -527,9 +527,9 @@ fmt.Println(stats)
 ├───────────────────────────────────────────────────────────────────────────┤
 │ ID Generator State                                                        │
 ├───────────────────────────────────────────────────────────────────────────┤
-│ Last SST ID                : 0                                            │
-│ Last WAL ID                : 0                                            │
-│ Last TXN ID                : 0                                            │
+│ Last SST ID                : 5                                            │
+│ Last WAL ID                : 1                                            │
+│ Last TXN ID                : 20                                           │
 ├───────────────────────────────────────────────────────────────────────────┤
 │ Runtime Statistics                                                        │
 ├───────────────────────────────────────────────────────────────────────────┤

@@ -46,6 +46,11 @@ func reloadIDGenerator(lastId int64) *IDGenerator {
 	}
 }
 
+// last returns the last generated ID
+func (g *IDGenerator) last() int64 {
+	return atomic.LoadInt64(&g.lastID)
+}
+
 // nextID generates the next unique ID, resetting to 1 if int64 max is reached
 func (g *IDGenerator) nextID() int64 {
 	for {
