@@ -82,6 +82,7 @@ const (
 	DefaultTxnBeginRetry                       = 10                     // Default retries for Begin()
 	DefaultTxnBeginBackoff                     = 1 * time.Microsecond   // Default initial backoff
 	DefaultTxnBeginMaxBackoff                  = 100 * time.Millisecond // Default max backoff
+	DefaultRecoverUncommittedTxns              = true                   // Default whether to recover uncommitted transactions on startup
 )
 
 // Options represents the configuration options for Wildcat
@@ -117,6 +118,7 @@ type Options struct {
 	TxnBeginRetry                       int           // Number of retries for Begin() when buffer full
 	TxnBeginBackoff                     time.Duration // Initial backoff duration for Begin() retries
 	TxnBeginMaxBackoff                  time.Duration // Maximum backoff duration for Begin() retries
+	RecoverUncommittedTxns              bool          // Whether to recover uncommitted transactions on startup
 }
 
 // DB represents the main Wildcat structure
@@ -649,7 +651,7 @@ func (db *DB) reinstate() error {
 
 		// For immutable memtables, include committed transactions
 		// This ensures that data is available for reading even before flushing completes
-		populateMemtableFromTxns(immutableMemt, globalTxnMap, false) // false = only committed txns
+		populateMemtableFromTxns(immutableMemt, globalTxnMap, db.opts.RecoverUncommittedTxns)
 
 		// Enqueue the memtable for flushing
 		db.flusher.enqueueMemtable(immutableMemt)
@@ -686,7 +688,7 @@ func (db *DB) reinstate() error {
 	})
 
 	// Populate the active memtable with all committed transactions
-	populateMemtableFromTxns(activeMemt, globalTxnMap, false) // false = only committed txns
+	populateMemtableFromTxns(activeMemt, globalTxnMap, db.opts.RecoverUncommittedTxns)
 
 	// Store the active memtable
 	db.memtable.Store(activeMemt)
