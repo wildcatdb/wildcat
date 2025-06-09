@@ -57,6 +57,7 @@ typedef struct {
     int txn_begin_retry;
     long txn_begin_backoff_ns;
     long txn_begin_max_backoff_ns;
+    int recover_uncommitted_txns;
 } wildcat_opts_t;
 
 static void print_error(const char* msg) {
@@ -148,6 +149,7 @@ func fromCOptions(copts *C.wildcat_opts_t) *wildcat.Options {
 		TxnBeginRetry:                       int(copts.txn_begin_retry),
 		TxnBeginBackoff:                     time.Duration(copts.txn_begin_backoff_ns),
 		TxnBeginMaxBackoff:                  time.Duration(copts.txn_begin_max_backoff_ns),
+		RecoverUncommittedTxns:              copts.recover_uncommitted_txns != 0,
 	}
 }
 

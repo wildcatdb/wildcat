@@ -28,7 +28,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - Optional Bloom filters per SSTable for improved key lookup performance
 - Key-value separation optimization (`.klog` for keys, `.vlog` for values)
 - Tombstone-aware compaction with retention based on active transaction windows
-- Transaction recovery preserves incomplete transactions for post-crash inspection and resolution
+- Transaction recovery preserves incomplete transactions for post-crash inspection and resolution if db configured with `RecoverUncommittedTxns`
 - Keys and values stored as opaque byte sequences
 - Single-node embedded storage engine with no network or replication overhead
 
@@ -571,6 +571,7 @@ Wildcat provides many configuration options for fine-tuning.
 | **TxnBeginRetry** | `10` | Number of retries for `Begin()` when the transaction buffer is full. |
 | **TxnBeginBackoff** | `1 * time.Microsecond` | Initial backoff duration for `Begin()` retries when the transaction buffer is full. |
 | **TxnBeginMaxBackoff** | `100 * time.Millisecond` | Maximum backoff duration for `Begin()` retries when the transaction buffer is full. |
+| **RecoverUncommittedTxns** | `true` | If true, Wildcat will attempt to recover uncommitted transactions on startup. This allows you to inspect and potentially commit or rollback transactions that were in progress at the time of a crash. |
 
 ## Shared C Library
 You will require the latest Go toolchain to build the shared C library for Wildcat. This allows you to use Wildcat as a C library in other languages.
@@ -632,6 +633,7 @@ typedef struct {
     int txn_begin_retry;
     long txn_begin_backoff_ns;
     long txn_begin_max_backoff_ns;
+    int recover_uncommitted_txns;
 } wildcat_opts_t;
 ```
 
@@ -822,7 +824,7 @@ Optimistic timestamp-based Multi-Version Concurrency Control (MVCC) with Last-Wr
 ```
 
 - Shared WAL per memtable; transactions append full state.
-- WAL replay restores all committed and in-flight transactions.
+- WAL replay restores all committed and in-flight transactions (if db configured with `RecoverUncommittedTxns`)
 - WALs rotate when memtables flush.
 - When a successful flush occurs the corresponding WAL file is removed.
 
