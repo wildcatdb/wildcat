@@ -5,7 +5,7 @@
 ![License](https://img.shields.io/badge/license-MPL_2.0-blue)
 
 
-Wildcat is a high-performance embedded key-value database (or storage engine) written in Go. It incorporates modern database design principles including LSM (Log-Structured Merge) tree architecture, MVCC (Multi-Version Concurrency Control), and lock-free data structures for its critical paths, along with automatic background operations to deliver excellent read/write performance with immediate consistency and durability.
+Wildcat is a high-performance embedded key-value database (or storage engine) written in Go with C interoptibility. It incorporates modern database design principles including LSM (Log-Structured Merge) tree architecture, MVCC (Multi-Version Concurrency Control), and lock-free data structures for its critical paths, along with automatic background operations to deliver excellent read/write performance with immediate consistency and durability.
 
 ## Features
 - LSM (Log-Structured Merge) tree architecture optimized for write-heavy workloads
@@ -552,7 +552,7 @@ This returns detailed information including
 - Compaction and flushing statistics
 
 ### Force Flushing
-You can force a flush of current and immutable memtables to disk using the `Flush` method.
+You can force a flush of current and immutable memtables in queue to disk using the `Flush` method.
 ```go
 // Force all memtables to flush to SSTables
 err := db.ForceFlush()
@@ -1425,7 +1425,7 @@ evictionScore = accessWeight * accessCount + timeWeight * age
 - **High throughput** Supports millions of operations per second under contention
 
 ### BTree
-Wildcat's BTree provides the foundation for SSTable key storage with advanced features for range queries and bidirectional iteration.
+Wildcat's BTree provides the foundation for SSTable key storage with advanced features for range, prefix queries and bidirectional iteration.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
