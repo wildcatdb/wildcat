@@ -1004,7 +1004,7 @@ func (db *DB) Stats() string {
 		{
 			Title:  "ID Generator State",
 			Labels: []string{"Last SST ID", "Last WAL ID", "Last TXN ID"},
-			Values: []any{db.idgs.lastSstID, db.idgs.lastWalID, db.idgs.lastTxnID},
+			Values: []any{db.sstIdGenerator.last(), db.walIdGenerator.last(), db.txnIdGenerator.last()},
 		},
 		{
 			Title: "Runtime Statistics",

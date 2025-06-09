@@ -68,6 +68,7 @@ type BlockManager struct {
 	fd              uintptr         // File descriptor for direct syscalls
 	syncOption      SyncOption      // Synchronization option for the file
 	syncInterval    time.Duration   // Interval for background sync (if applicable)
+	closeOnce       sync.Once       // Ensures that Close is only called once for concurrency safety
 	closeChan       chan struct{}   // Channel to signal closure of the background sync
 	wg              *sync.WaitGroup // WaitGroup to wait for background sync to finish
 	alottmentFlag   int32           // Atomic flag to prevent multiple goroutines from appending blocks simultaneously
@@ -255,7 +256,7 @@ func (bm *BlockManager) readHeader() error {
 func (bm *BlockManager) backgroundSync() {
 	defer bm.wg.Done()
 
-	if bm.syncInterval == 0 && bm.syncOption == SyncNone {
+	if bm.syncInterval <= 0 || (bm.syncOption == SyncNone || bm.syncOption == SyncFull) {
 		return // No background sync set
 	}
 	ticker := time.NewTicker(bm.syncInterval)
@@ -562,23 +563,30 @@ func (bm *BlockManager) scanForFreeBlocks() error {
 
 // Close closes the file and releases any resources held by the BlockManager.
 func (bm *BlockManager) Close() error {
+	var closeErr error
 
-	select {
-	case <-bm.closeChan:
-		// Channel is already closed, do nothing
-	default:
-		// Close the channel to stop background sync
+	bm.closeOnce.Do(func() {
+		// Close the channel to signal background sync to stop
 		close(bm.closeChan)
-	}
 
-	// Wait for the background sync goroutine to finish
-	bm.wg.Wait()
+		// Wait for the background sync goroutine to finish
+		bm.wg.Wait()
 
-	if bm.file != nil {
-		return bm.file.Close()
-	}
+		// If sync.Full is set, ensure all data is flushed to disk
+		if bm.syncOption == SyncFull {
+			if err := Fdatasync(bm.fd); err != nil {
+				closeErr = err
+				return
+			}
+		}
 
-	return nil
+		// Close the file
+		if bm.file != nil {
+			closeErr = bm.file.Close()
+		}
+	})
+
+	return closeErr
 }
 
 // Append writes data to the file by allocating one or more blocks

@@ -16,7 +16,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - Scalable design with background flusher and compactor
 - Concurrent block storage leveraging direct, offset-based file I/O (using `pread`/`pwrite`) for optimal performance
 - Atomic LRU cache for active block manager handles
-- Memtable lifecycle management with snapshot consistency
+- Memtable lifecycle management
 - SSTables stored as immutable BTrees
 - Configurable durability levels `None` (fastest), `Partial` (balanced), `Full` (most durable)
 - Snapshot-isolated MVCC with timestamp-based reads
@@ -24,13 +24,13 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - Automatic multi-threaded background compaction with configurable concurrency
 - ACID transaction support with configurable durability guarantees
 - Range, prefix, and full iteration support with bidirectional traversal
-- High throughput design targeting tens of thousands of transactions per second
+- High transactional throughput per second with low latency due to lock-free and non-blocking design.
 - Optional Bloom filters per SSTable for improved key lookup performance
 - Key-value separation optimization (`.klog` for keys, `.vlog` for values)
 - Tombstone-aware compaction with retention based on active transaction windows
 - Transaction recovery preserves incomplete transactions for post-crash inspection and resolution
 - Keys and values stored as opaque byte sequences
-- Single-node embedded database with no network or replication overhead
+- Single-node embedded storage engine with no network or replication overhead
 
 ## Overview
 <div>
@@ -38,7 +38,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 </div>
 
 ## Discord Community
-Join our Discord community to discuss, ask questions, and get help with Wildcat.
+Join our Discord community to discuss development, design, ask questions, and get help with Wildcat.
 
 [![Discord](https://img.shields.io/discord/1380406674216587294?label=Discord&logo=discord&color=EDB73B)](https://discord.gg/Rs5Z2e69ts)
 
@@ -48,7 +48,6 @@ Join our Discord community to discuss, ask questions, and get help with Wildcat.
   - [Opening a Wildcat DB instance](#opening-a-wildcat-db-instance)
   - [Directory Structure](#directory-structure)
   - [Temporary files](#temporary-files)
-  - [Advanced Configuration](#advanced-configuration)
   - [Simple Key-Value Operations](#simple-key-value-operations)
   - [Manual Transaction Management](#manual-transaction-management)
   - [Iterating Keys](#iterating-keys)
@@ -62,6 +61,7 @@ Join our Discord community to discuss, ask questions, and get help with Wildcat.
   - [Database Statistics](#database-statistics)
   - [Force Flushing](#force-flushing)
   - [Escalate Sync](#escalate-sync)
+  - [Advanced Configuration](#advanced-configuration)
 - [Shared C Library](#shared-c-library)
 - [Overview](#overview)
     - [MVCC Model](#mvcc-model)
@@ -183,82 +183,10 @@ You may see `.tmp` files within level directories.  These are temporary block ma
 │        ↓                                                        │
 │  l1/sst_343.klog.tmp → l1/sst_343.klog (renamed once finalized) │
 │  l1/sst_343.vlog.tmp → l1/sst_343.vlog (renamed once finalized) │
-│  wal file is removed after flush                                │
+│  232.wal file is removed after flush                            │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
-
-### Advanced Configuration
-Wildcat provides several configuration options for fine-tuning.
-```go
-opts := &wildcat.Options{
-    Directory:                   "/path/to/database",     // Directory for database files
-    WriteBufferSize:             64 * 1024 * 1024,        // 64MB memtable size
-    SyncOption:                  wildcat.SyncFull,        // Full sync for maximum durability
-    SyncInterval:                128 * time.Millisecond,  // Only set when using SyncPartial
-    LevelCount:                  7,                       // Number of LSM levels
-    LevelMultiplier:             10,                      // Size multiplier between levels
-    BlockManagerLRUSize:         1024,                    // Cache size for block managers
-    SSTableBTreeOrder:           10,                      // BTree order for SSTable klog
-    LogChannel:                  make(chan string, 1000), // Channel for real time logging
-    BloomFilter:                 false,                   // Enable/disable sstable bloom filters
-    MaxCompactionConcurrency:    4,                       // Maximum concurrent compactions
-    CompactionCooldownPeriod:    5 * time.Second,         // Cooldown between compactions
-    CompactionBatchSize:         8,                       // Max SSTables per compaction
-    CompactionSizeRatio:         1.1,                     // Level size ratio trigger
-    CompactionSizeThreshold:     8,                       // File count trigger
-    CompactionScoreSizeWeight:   0.8,                     // Weight for size-based scoring
-    CompactionScoreCountWeight:  0.2,                     // Weight for count-based scoring
-    CompactionSizeTieredSimilarityRatio: 1.5,             // Similarity ratio for size-tiered compaction
-    FlusherTickerInterval:       1 * time.Millisecond,    // Flusher check interval
-    CompactorTickerInterval:     250 * time.Millisecond,  // Compactor check interval
-    BloomFilterFPR:              0.01,                    // Bloom filter false positive rate
-    WalAppendRetry:              10,                      // WAL append retry count
-    WalAppendBackoff:            128 * time.Microsecond,  // WAL append retry backoff
-    BlockManagerLRUEvictRatio:   0.20,                    // LRU eviction ratio
-    BlockManagerLRUAccesWeight:  0.8,                     // LRU access weight
-    STDOutLogging:               false,                   // Log to stdout instead of channel
-    MaxConcurrentTxns            65536                    // Maximum concurrent transactions (ring buffer size)
-    TxnBeginRetry                10                       // Number of retries for Begin() when buffer full
-    TxnBeginBackoff              1 * time.Microsecond     // Initial backoff duration for Begin() retries
-    TxnBeginMaxBackoff           100 * time.Millisecond   // Maximum backoff duration for Begin() retries
-}
-```
-
-#### Configuration Options Explained
-1. **Directory** The path where the database files will be stored
-2. **WriteBufferSize** Size threshold for memtable before flushing to disk
-3. **SyncOption** Controls durability vs performance tradeoff
-    - **SyncNone** Fastest, but no durability guarantees
-    - **SyncPartial** Balances performance and durability
-    - **SyncFull** Maximum durability, slower performance
-4. **SyncInterval** Time between background sync operations (only for SyncPartial)
-5. **LevelCount** Number of levels in the LSM tree
-6. **LevelMultiplier** Size ratio between adjacent levels
-7. **BlockManagerLRUSize** Number of block managers to cache
-8. **SSTableBTreeOrder** Size of SSTable klog block sets
-9. **LogChannel** Channel for real-time logging, useful for debugging and monitoring
-10. **BloomFilter** Enable or disable bloom filters for SSTables to speed up key lookups. Bloom filters use double hashing with FNV-1a and FNV hash functions.  Is automatically sized based on expected items and desired false positive rate.
-11. **MaxCompactionConcurrency** Maximum number of concurrent compactions
-12. **CompactionCooldownPeriod** Cooldown period between compactions to prevent thrashing
-13. **CompactionBatchSize** Max number of SSTables to compact at once
-14. **CompactionSizeRatio** Level size ratio that triggers compaction
-15. **CompactionSizeThreshold** Number of files to trigger size-tiered compaction
-16. **CompactionScoreSizeWeight** Weight for size-based compaction scoring
-17. **CompactionScoreCountWeight** Weight for count-based compaction scoring
-18. **FlusherTickerInterval** Interval for flusher background process
-19. **CompactorTickerInterval** Interval for compactor background process
-20. **BloomFilterFPR** False positive rate for Bloom filters
-21. **WalAppendRetry** Number of retries for WAL append operations
-22. **WalAppendBackoff** Backoff duration for WAL append retries
-23. **BlockManagerLRUEvictRatio** Ratio for LRU eviction. Determines what percentage of the cache to evict when cleanup is needed.
-24. **BlockManagerLRUAccesWeight** Weight for LRU access eviction. Balances how much to prioritize access frequency vs. age when deciding what to evict.
-25. **STDOutLogging** If true, logs will be printed to stdout instead of the log channel.  Log channel will be ignored if provided.
-25. **CompactionSizeTieredSimilarityRatio**  Similarity ratio for size-tiered compaction.  For grouping SSTables that are "roughly the same size" together for compaction.
-26. **MaxConcurrentTxns** Maximum number of concurrent transactions.  This is the size of the ring buffer used for transaction management.
-27. **TxnBeginRetry** Number of retries for `Begin()` when the transaction buffer is full.
-28. **TxnBeginBackoff** Initial backoff duration for `Begin()` retries when the transaction buffer is full.
-29. **TxnBeginMaxBackoff** Maximum backoff duration for `Begin()` retries when the transaction buffer is full.
 
 ### Simple Key-Value Operations
 The easiest way to interact with Wildcat is through the Update method, which handles transactions automatically.  This means it runs begin, commit, and rollback for you, allowing you to focus on the operations themselves.
@@ -497,6 +425,7 @@ for i := 0; i < 1000; i++ {
 }
 ```
 
+
 ### Transaction Recovery
 ```go
 // After reopening a database, you can access recovered transactions
@@ -598,9 +527,9 @@ fmt.Println(stats)
 ├───────────────────────────────────────────────────────────────────────────┤
 │ ID Generator State                                                        │
 ├───────────────────────────────────────────────────────────────────────────┤
-│ Last SST ID                : 0                                            │
-│ Last WAL ID                : 0                                            │
-│ Last TXN ID                : 0                                            │
+│ Last SST ID                : 5                                            │
+│ Last WAL ID                : 1                                            │
+│ Last TXN ID                : 20                                           │
 ├───────────────────────────────────────────────────────────────────────────┤
 │ Runtime Statistics                                                        │
 ├───────────────────────────────────────────────────────────────────────────┤
@@ -642,6 +571,45 @@ if err != nil {
 }
 ```
 
+### Advanced Configuration
+Wildcat provides many configuration options for fine-tuning.
+
+| Parameter | Example Value | Description |
+|-----------|---------------|-------------|
+| **Directory** | `"/path/to/database"` | The path where the database files will be stored |
+| **WriteBufferSize** | `64 * 1024 * 1024` | Size threshold for memtable before flushing to disk |
+| **SyncOption** | `wildcat.SyncFull` | Controls durability vs performance tradeoff |
+| **SyncNone** | - | Fastest, but no durability guarantees |
+| **SyncPartial** | - | Balances performance and durability |
+| **SyncFull** | - | Maximum durability, slower performance |
+| **SyncInterval** | `128 * time.Millisecond` | Time between background sync operations (only for SyncPartial) |
+| **LevelCount** | `7` | Number of levels in the LSM tree |
+| **LevelMultiplier** | `10` | Size ratio between adjacent levels |
+| **BlockManagerLRUSize** | `1024` | Number of block managers to cache |
+| **SSTableBTreeOrder** | `10` | Size of SSTable klog block sets |
+| **LogChannel** | `make(chan string, 1000)` | Channel for real-time logging, useful for debugging and monitoring |
+| **BloomFilter** | `false` | Enable or disable bloom filters for SSTables to speed up key lookups. Bloom filters use double hashing with FNV-1a and FNV hash functions. Is automatically sized based on expected items and desired false positive rate. |
+| **MaxCompactionConcurrency** | `4` | Maximum number of concurrent compactions |
+| **CompactionCooldownPeriod** | `5 * time.Second` | Cooldown period between compactions to prevent thrashing |
+| **CompactionBatchSize** | `8` | Max number of SSTables to compact at once |
+| **CompactionSizeRatio** | `1.1` | Level size ratio that triggers compaction |
+| **CompactionSizeThreshold** | `8` | Number of files to trigger size-tiered compaction |
+| **CompactionScoreSizeWeight** | `0.8` | Weight for size-based compaction scoring |
+| **CompactionScoreCountWeight** | `0.2` | Weight for count-based compaction scoring |
+| **CompactionSizeTieredSimilarityRatio** | `1.5` | Similarity ratio for size-tiered compaction. For grouping SSTables that are "roughly the same size" together for compaction. |
+| **FlusherTickerInterval** | `1 * time.Millisecond` | Interval for flusher background process |
+| **CompactorTickerInterval** | `250 * time.Millisecond` | Interval for compactor background process |
+| **BloomFilterFPR** | `0.01` | False positive rate for Bloom filters |
+| **WalAppendRetry** | `10` | Number of retries for WAL append operations |
+| **WalAppendBackoff** | `128 * time.Microsecond` | Backoff duration for WAL append retries |
+| **BlockManagerLRUEvictRatio** | `0.20` | Ratio for LRU eviction. Determines what percentage of the cache to evict when cleanup is needed. |
+| **BlockManagerLRUAccesWeight** | `0.8` | Weight for LRU access eviction. Balances how much to prioritize access frequency vs. age when deciding what to evict. |
+| **STDOutLogging** | `false` | If true, logs will be printed to stdout instead of the log channel. Log channel will be ignored if provided. |
+| **MaxConcurrentTxns** | `65536` | Maximum number of concurrent transactions. This is the size of the ring buffer used for transaction management. |
+| **TxnBeginRetry** | `10` | Number of retries for `Begin()` when the transaction buffer is full. |
+| **TxnBeginBackoff** | `1 * time.Microsecond` | Initial backoff duration for `Begin()` retries when the transaction buffer is full. |
+| **TxnBeginMaxBackoff** | `100 * time.Millisecond` | Maximum backoff duration for `Begin()` retries when the transaction buffer is full. |
+
 ## Shared C Library
 You will require the latest Go toolchain to build the shared C library for Wildcat. This allows you to use Wildcat as a C library in other languages.
 ```bash
@@ -664,7 +632,7 @@ Now you can include header
 #include <wildcat.h>
 ```
 
-Then you can link against the library when compiling.  Below is an example compiling `example.c` in repository.
+Then you can link against the library when compiling.  Below is an example compiling `example.c` in repository on Linux.
 ```bash
 gcc -o wildcat_example c/example.c -L. -lwildcat -lpthread
 ```
@@ -2306,7 +2274,7 @@ Each engine taught me something new.
 Each mistake deepened my understanding.
 Each redesign brought me closer to fresh insights and ideas.
 
-And that's where Wildcat came in.
+And that's where Wildcat surfaced.
 
 I wanted to build a storage layer that didn't force you to choose between performance, safety, and usability. A system that embraced concurrency, durability, and simplicity, not as tradeoffs, but as first principles. Wildcat is my answer to the single-writer bottleneck - an MVCC, multi-writer, LSM-tree storage engine built in Go with a fully non-blocking transactional model.
 
