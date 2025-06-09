@@ -63,12 +63,12 @@ type BlockHeader struct {
 
 // BlockManager manages the allocation and deallocation of blocks in a file
 type BlockManager struct {
-	allocationTable *queue.Queue  // An atomic queue we store free available block ids
-	file            *os.File      // File handle for the block manager
-	fd              uintptr       // File descriptor for direct syscalls
-	syncOption      SyncOption    // Synchronization option for the file
-	syncInterval    time.Duration // Interval for background sync (if applicable)
-	closeOnce       sync.Once
+	allocationTable *queue.Queue    // An atomic queue we store free available block ids
+	file            *os.File        // File handle for the block manager
+	fd              uintptr         // File descriptor for direct syscalls
+	syncOption      SyncOption      // Synchronization option for the file
+	syncInterval    time.Duration   // Interval for background sync (if applicable)
+	closeOnce       sync.Once       // Ensures that Close is only called once for concurrency safety
 	closeChan       chan struct{}   // Channel to signal closure of the background sync
 	wg              *sync.WaitGroup // WaitGroup to wait for background sync to finish
 	alottmentFlag   int32           // Atomic flag to prevent multiple goroutines from appending blocks simultaneously
