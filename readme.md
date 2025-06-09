@@ -46,8 +46,6 @@ Join our Discord community to discuss development, design, ask questions, and ge
 - [Version and Compatibility](#version-and-compatibility)
 - [Basic Usage](#basic-usage)
   - [Opening a Wildcat DB instance](#opening-a-wildcat-db-instance)
-  - [Directory Structure](#directory-structure)
-  - [Temporary files](#temporary-files)
   - [Simple Key-Value Operations](#simple-key-value-operations)
   - [Manual Transaction Management](#manual-transaction-management)
   - [Iterating Keys](#iterating-keys)
@@ -64,6 +62,8 @@ Join our Discord community to discuss development, design, ask questions, and ge
   - [Advanced Configuration](#advanced-configuration)
 - [Shared C Library](#shared-c-library)
 - [Overview](#overview)
+    - [Directory Structure](#directory-structure)
+    - [Temporary files](#temporary-files)
     - [MVCC Model](#mvcc-model)
     - [WAL and Durability](#wal-and-durability)
     - [Memtable Lifecycle](#memtable-lifecycle)
@@ -148,44 +148,6 @@ if err != nil {
     // Handle error
 }
 defer db.Close()
-```
-
-### Directory Structure
-When you open a Wildcat instance at a configured directory your structure will look like this initially based on configured levels.
-By default Wildcat uses 6 levels, so you will see directories like this:
-```
-/path/to/db/
-├── l1
-├── l2
-├── l3
-├── l4
-├── l5
-├── l6
-├── 1.wal
-└── idgstate
-```
-
-The `L1`, `L2`, etc. directories are used for storing SSTables(immutable btrees) at different levels of the LSM tree. The `1.wal` file is the **current** Write-Ahead Log (WAL) file tied to the **current** memtable.
-When a memtable reaches a configured write buffer size `WriteBufferSize`, it is enqueued for flushing to disk and becomes immutable. The WAL file is then rotated, and a new one is created for subsequent writes.
-
-Mind you there can be many WAL files pending flush, and they will be named `2.wal`, `3.wal`, etc. as they are created. The WAL files are used to ensure durability and recoverability of transactions.
-
-When the flusher completes a flush operation an immutable memtable becomes an sstable(btree) at L1.
-
-The `idgstate` file holds sstable, wal, and txn id generator state.  So when a restart occurs we can recover last known id's and continue monotonically increasing id's for SSTables, WALs, and transactions.
-
-### Temporary files
-You may see `.tmp` files within level directories.  These are temporary block manager files which are renamed after finalization of a flusher or compactor process.  On start up of a crash say we don't want to persist partial files so their removed based on that extension.  Partial files can cause inconsistencies in the database and unnecessary disk space.
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  232.wal → flushing                                             │
-│        ↓                                                        │
-│  l1/sst_343.klog.tmp → l1/sst_343.klog (renamed once finalized) │
-│  l1/sst_343.vlog.tmp → l1/sst_343.vlog (renamed once finalized) │
-│  232.wal file is removed after flush                            │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
 ```
 
 ### Simple Key-Value Operations
@@ -709,6 +671,78 @@ extern int wildcat_sync(long unsigned int handle);
 
 ## Overview
 
+### Directory Structure
+When you open a Wildcat instance at a configured directory your structure will look like this initially based on configured levels.
+By default Wildcat uses 6 levels, so you will see directories like this:
+```
+/path/to/db/
+├── l1
+├── l2
+├── l3
+├── l4
+├── l5
+├── l6
+├── 1.wal
+└── idgstate
+```
+
+The `l1`, `l2`, etc. directories are used for storing SSTables(immutable btrees) at different levels of the LSM tree. The `1.wal` file is the **current** Write-Ahead Log (WAL) file tied to the **current** memtable.
+When a memtable reaches a configured write buffer size `WriteBufferSize`, it is enqueued for flushing to disk and becomes immutable. The WAL file is then rotated, and a new one is created for subsequent writes.
+
+Mind you there can be many WAL files pending flush, and they will be named `2.wal`, `3.wal`, etc. as they are created. The WAL files are used to ensure durability and recoverability of transactions.
+
+When the flusher completes a flush operation an immutable memtable becomes an sstable(btree) at L1.
+
+The `idgstate` file holds sstable, wal, and txn id generator state.  So when a restart occurs we can recover last known id's and continue monotonically increasing id's for SSTables, WALs, and transactions.
+
+### Temporary files
+You may see `.tmp` files within level directories.  These are temporary block manager files which are renamed after finalization of a flusher or compactor process.  On start up of a crash say we don't want to persist partial files so their removed based on that extension.  Partial files can cause inconsistencies in the database and unnecessary disk space.
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                         Temporary Files Lifecycle                          │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  Background Flush Process:                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                                                                     │   │
+│  │ ┌─────────────┐        ┌──────────────────┐        ┌─────────────┐  │   │
+│  │ │   232.wal   │        │ Create Temporary │        │ Finalized   │  │   │
+│  │ │             │─────▶ │     Files        │─────▶ │  SSTables   │  │   │
+│  │ │ (flushing)  │        │                  │        │             │  │   │
+│  │ └─────────────┘        └──────────────────┘        └─────────────┘  │   │
+│  │                                 │                                   │   │
+│  │                                 ▼                                   │   │
+│  │                     ┌─────────────────────┐                         │   │
+│  │                     │ sst_343.klog.tmp    │                         │   │
+│  │                     │ sst_343.vlog.tmp    │                         │   │
+│  │                     │                     │                         │   │
+│  │                     │ (temporary files)   │                         │   │
+│  │                     └─────────────────────┘                         │   │
+│  │                                 │                                   │   │
+│  │                                 │ Atomic Rename                     │   │
+│  │                                 ▼                                   │   │
+│  │                     ┌─────────────────────┐                         │   │
+│  │                     │ l1/sst_343.klog     │                         │   │
+│  │                     │ l1/sst_343.vlog     │                         │   │
+│  │                     │                     │                         │   │
+│  │                     │ (final files)       │                         │   │
+│  │                     └─────────────────────┘                         │   │
+│  │                                                                     │   │
+│  │ After successful rename: 232.wal is removed                         │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+│  Why .tmp Files?                                                           │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ • Prevent partial files from being read during crashes              │   │
+│  │ • Database startup removes all .tmp files automatically             │   │
+│  │ • Atomic rename ensures consistency                                 │   │
+│  │ • WAL preserved if flush fails, allowing recovery                   │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
 ### MVCC Model
 Optimistic timestamp-based Multi-Version Concurrency Control (MVCC) with Last-Write-Wins (otmvcc-lww).
 
@@ -979,8 +1013,8 @@ We only list the main meta data but there is more for internal use.
 SSTables are prefix and range optimized immutable BTree's.
 
 Structure
-- **KLog** `.klog` Contains BTree with key metadata and pointers to values
-- **VLog** `.vlog` Contains actual value data in append-only format
+- **KLog** `.klog` Contains BTree with key metadata and offsets(block ids) to values within VLog
+- **VLog** `.vlog` Contains actual value data in append-only format.
 
 During lookups
 - **Range check** Min/Max key range validation (skipped if outside bounds)
@@ -1005,9 +1039,9 @@ score = (levelSize / capacity) * sizeWeight + (sstableCount / threshold) * count
 - **Priority-based** Higher scores get priority in the compaction queue
 
 #### Compaction Process
-- **Job scheduling** Background process evaluates all levels every CompactorTickerInterval
+- **Job scheduling** Background process evaluates all levels every `CompactorTickerInterval`
 - **Priority queue** Jobs sorted by compaction score (highest first)
-- **Concurrent execution** Up to MaxCompactionConcurrency jobs run simultaneously
+- **Concurrent execution** Up to `MaxCompactionConcurrency` jobs run simultaneously
 - **Atomic operations** Source SSTables marked as merging, target level updated atomically
 - **Cleanup** Old SSTable files removed after successful compaction
 
@@ -1101,7 +1135,7 @@ Recovery process consists of several steps
 - **WAL scanning** All WAL files are processed in chronological order (sorted by timestamp)
 - **Transaction consolidation** Multiple WAL entries for same transaction ID are merged to final state
 - **State restoration** Final transaction states are applied to memtables and transaction lists
-- **Incomplete transaction preservation** Uncommitted transactions remain accessible via GetTxn(id)
+- **Incomplete transaction preservation** Uncommitted transactions remain accessible via `GetTxn(id)`
 
 #### Durability Order
 - **WAL** All writes recorded atomically with full transaction details (`ReadSet`, `WriteSet`, `DeleteSet`, commit status)
@@ -1126,9 +1160,9 @@ Wildcat's block manager provides a low-level, atomic high-performance file I/O w
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │ Header (32B)                                                        │    │
 │  │ ┌─────────────────────────────────────────────────────────────────┐ │    │
-│  │ │ CRC | Magic | Version | BlockSize | Allotment                   │ │    │
-│  │ │ u32 | u32   | u32     | u32       | u64                         │ │    │
-│  │ │ ... | WILD  | 1       | 512       | 16                          │ │    │
+│  │ │ CRC | Magic       | Version | BlockSize | Allotment             │ │    │
+│  │ │ u32 | u32         | u32     | u32       | u64                   │ │    │
+│  │ │ ... | 0x57494C44  | 1|2     | 512       | 64                    │ │    │
 │  │ └─────────────────────────────────────────────────────────────────┘ │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                                                             │
@@ -1140,9 +1174,9 @@ Wildcat's block manager provides a low-level, atomic high-performance file I/O w
 │  │ │ u32 | u64     | u64      | u64                                  │ │    │
 │  │ └─────────────────────────────────────────────────────────────────┘ │    │
 │  │                                                                     │    │
-│  │ Data Section (480B)                                                 │    │
+│  │ Data Section (484B)                                                 │    │
 │  │ ┌─────────────────────────────────────────────────────────────────┐ │    │
-│  │ │ [User Data - up to 480 bytes]                                   │ │    │
+│  │ │ [User Data - up to 484 bytes]                                   │ │    │
 │  │ │ [Remaining space zeroed out]                                    │ │    │
 │  │ └─────────────────────────────────────────────────────────────────┘ │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
@@ -1151,8 +1185,8 @@ Wildcat's block manager provides a low-level, atomic high-performance file I/O w
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │ Block 5                Block 8                Block 12              │    │
 │  │ ┌─────────────┐        ┌──────────────┐        ┌─────────────┐      │    │
-│  │ │ NextBlock=8 │──────▶│ NextBlock=12 │──────▶│ NextBlock=-1│      │    │
-│  │ │ Data[0:480] │        │ Data[480:960]│        │ Data[960:N] │      │    │
+│  │ │ NextBlock=8 │──────▶│ NextBlock=12 │──────▶│ NextBlock=0xFFFF.. │    │
+│  │ │ Data[0:484] │        │ Data[484:968]│        │ Data[968:N] │      │    │
 │  │ └─────────────┘        └──────────────┘        └─────────────┘      │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                                                             │
@@ -1166,7 +1200,11 @@ Wildcat's block manager provides a low-level, atomic high-performance file I/O w
 │  │   ▲                                                                 │    │
 │  │   │ Atomic Dequeue/Enqueue (Michael & Scott Algorithm)              │    │
 │  │   │                                                                 │    │
-│  │ When half empty: Append 64 new blocks                               │    │
+│  │ Proactive Allocation:                                               │    │
+│  │ • When queue reaches 50% capacity (32 blocks remaining)             │    │
+│  │ • Atomic flag prevents multiple goroutines allocating               │    │
+│  │ • Append 64 new blocks (Allotment) to end of file                   │    │
+│  │ • Block ID 0 is reserved and never allocated                        │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                                                             │
 │  I/O Operations (Direct System Calls):                                      │
@@ -1311,8 +1349,8 @@ Wildcat uses a sophisticated lock-free LRU cache for block manager handles.
 evictionScore = accessWeight * accessCount + timeWeight * age
 ```
 - **Balanced approach** Considers both access frequency and recency
-- **Configurable weights** BlockManagerLRUAccesWeight controls the balance
-- **Gradual eviction** Evicts BlockManagerLRUEvictRatio portion when needed
+- **Configurable weights** `BlockManagerLRUAccesWeight` controls the balance
+- **Gradual eviction** Evicts `BlockManagerLRUEvictRatio` portion when needed
 - **Emergency fallback** Aggressive cleanup when cache becomes unresponsive
 
 #### Performance Optimizations
@@ -1433,7 +1471,7 @@ Wildcat's BTree provides the foundation for SSTable key storage with advanced fe
 │                       Immutable BTree Structure                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  BTree Layout (Order = 10):                                                 │
+│  BTree Layout (Order = 4, MaxKeys = 2*Order-1 = 7):                         │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │                          Root Node (Block 1)                        │    │
 │  │ ┌─────────────────────────────────────────────────────────────────┐ │    │
@@ -1468,7 +1506,7 @@ Wildcat's BTree provides the foundation for SSTable key storage with advanced fe
 │  │ }                                                                   │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                                                             │
-│  Iterator Types:                                                            │
+│  Iterator Types and Methods:                                                │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │ Full Iterator:    ──────▶ [a,c,f,h,i,k,m,p,r,t,v,x,z]              │    │
 │  │                   ◀──────                                          │    │
@@ -1478,6 +1516,21 @@ Wildcat's BTree provides the foundation for SSTable key storage with advanced fe
 │  │                                                                     │    │
 │  │ Prefix Iterator:  ──────▶ [ka,kb,kc,kd] (prefix="k")               │    │
 │  │                   ◀──────                                          │    │
+│  │                                                                     │    │
+│  │ Iterator Methods:                                                   │    │
+│  │ • Next() bool                     // Move forward, return success   │    │
+│  │ • Prev() bool                     // Move backward, return success  │    │
+│  │ • Valid() bool                    // Check if positioned at valid   │    │
+│  │ • Key() []byte                    // Get current key                │    │
+│  │ • Value() interface{}             // Get current value              │    │
+│  │ • NextItem() ([]byte, interface{}, bool) // Get and advance         │    │
+│  │ • Peek() ([]byte, interface{}, bool)     // Get without advancing   │    │
+│  │ • Seek(key []byte) error          // Position at specific key       │    │
+│  │ • SeekToFirst() error             // Go to first key                │    │
+│  │ • SeekToLast() error              // Go to last key                 │    │
+│  │ • SetDirection(ascending bool)    // Change iteration direction     │    │
+│  │ • HasNext() bool                  // Check if more items available  │    │
+│  │ • BTree() *BTree                  // Get associated BTree           │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                                                             │
 │  Insert Algorithm (Immutable - Copy-on-Write):                              │
@@ -1489,9 +1542,17 @@ Wildcat's BTree provides the foundation for SSTable key storage with advanced fe
 │  │ 5. Update root if necessary                                         │    │
 │  │ 6. Update leaf link pointers for iteration                          │    │
 │  │                                                                     │    │
-│  │ Split Example (Order=4, Max keys=7):                                │    │
-│  │ Full Leaf: [a,b,c,d,e,f,g] → Split into:                            │    │
-│  │ Left: [a,b,c,d] Right: [e,f,g] Middle key 'd' goes to parent        │    │
+│  │ Node Full Condition: len(keys) >= 2*order - 1                       │    │
+│  │ Split Point: mid = order - 1                                        │    │
+│  │                                                                     │    │
+│  │ Leaf Split Example (Order=4, MaxKeys=7):                            │    │
+│  │ Full Leaf: [a,b,c,d,e,f,g] → Split at mid=3:                        │    │
+│  │ Left: [a,b,c,d] (keeps mid key) Right: [e,f,g]                      │    │
+│  │ Middle key 'd' stays in left leaf for leaf nodes                    │    │
+│  │                                                                     │    │
+│  │ Internal Split Example (Order=4, MaxKeys=7):                        │    │
+│  │ Full Internal: [a,b,c,d,e,f,g] → Split at mid=3:                    │    │
+│  │ Left: [a,b,c] Right: [e,f,g] Middle key 'd' promoted to parent      │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                                                             │
 │  Bidirectional Iteration:                                                   │
@@ -1504,6 +1565,11 @@ Wildcat's BTree provides the foundation for SSTable key storage with advanced fe
 │  │ │ Block 2 │ ─────────▶ │ Block 3 │ ─────────▶ │ Block 4 │         │    │
 │  │ │ idx: 0  │ ◀───────── │ idx: 0  │ ◀───────── │ idx: 0  │         │    │
 │  │ └─────────┘             └─────────┘             └─────────┘         │    │
+│  │                                                                     │    │
+│  │ Direction Control:                                                  │    │
+│  │ • SetDirection(true): ascending=true, use nextAscending()           │    │
+│  │ • SetDirection(false): ascending=false, use nextDescending()        │    │
+│  │ • Prev(): Always moves backward regardless of direction flag        │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                                                             │
 │  Metadata Storage:                                                          │
@@ -1514,7 +1580,63 @@ Wildcat's BTree provides the foundation for SSTable key storage with advanced fe
 │  │   Extra: interface{}       // Custom metadata (e.g., SSTable info)  │    │
 │  │ }                                                                   │    │
 │  │                                                                     │    │
-│  │ Stored in reserved Block 2, BSON serialized                         │    │
+│  │ Storage: Reserved Block 2, BSON serialized                          │    │
+│  │ const ReservedMetadataBlockID = 2                                   │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Block ID Management:                                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ New Node Creation:                                                  │    │
+│  │ ┌───────────────────────────────────────────────────────────────┐   │    │
+│  │ │ newNode := &Node{                                             │   │    │
+│  │ │   BlockID: -1,        // Indicates new node                   │   │    │
+│  │ │   IsLeaf: true,                                               │   │    │
+│  │ │   // ... other fields                                         │   │    │
+│  │ │ }                                                             │   │    │
+│  │ │                                                               │   │    │
+│  │ │ blockID, err := bt.storeNode(newNode)                         │   │    │
+│  │ │ // Now newNode.BlockID = actual block ID                      │   │    │
+│  │ └───────────────────────────────────────────────────────────────┘   │    │
+│  │                                                                     │    │
+│  │ Update Existing Node:                                               │    │
+│  │ ┌───────────────────────────────────────────────────────────────┐   │    │
+│  │ │ if node.BlockID != -1 && node.BlockID != 0 {                  │   │    │
+│  │ │   blockID, err := bt.blockManager.Update(node.BlockID, data)  │   │    │
+│  │ │ } else {                                                      │   │    │
+│  │ │   blockID, err := bt.blockManager.Append(data)                │   │    │
+│  │ │ }                                                             │   │    │
+│  │ └───────────────────────────────────────────────────────────────┘   │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Error Handling and Validation:                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ Invalid Block ID Handling:                                          │    │
+│  │ ┌───────────────────────────────────────────────────────────────┐   │    │
+│  │ │ if blockID == -1 {                                            │   │    │
+│  │ │   return nil, errors.New("invalid block ID")                  │   │    │
+│  │ │ }                                                             │   │    │
+│  │ └───────────────────────────────────────────────────────────────┘   │    │
+│  │                                                                     │    │
+│  │ Order Validation:                                                   │    │
+│  │ ┌───────────────────────────────────────────────────────────────┐   │    │
+│  │ │ if order < 2 {                                                │   │    │
+│  │ │   return nil, errors.New("order must be at least 2")          │   │    │
+│  │ │ }                                                             │   │    │
+│  │ │                                                               │   │    │
+│  │ │ if bt.metadata.Order != order {                               │   │    │
+│  │ │   return nil, fmt.Errorf("existing tree has order %d, "       │   │    │
+│  │ │                         "requested %d", existing, requested)  │   │    │
+│  │ │ }                                                             │   │    │
+│  │ └───────────────────────────────────────────────────────────────┘   │    │
+│  │                                                                     │    │
+│  │ Root Verification:                                                  │    │
+│  │ ┌───────────────────────────────────────────────────────────────┐   │    │
+│  │ │ _, err = bt.loadNode(bt.metadata.RootBlockID)                 │   │    │
+│  │ │ if err != nil {                                               │   │    │
+│  │ │   return nil, fmt.Errorf("failed to load existing root: %v",  │   │    │
+│  │ │                         err)                                  │   │    │
+│  │ │ }                                                             │   │    │
+│  │ └───────────────────────────────────────────────────────────────┘   │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -1522,7 +1644,7 @@ Wildcat's BTree provides the foundation for SSTable key storage with advanced fe
 
 #### Core
 - **Immutable design** Once written, BTrees are never modified, ensuring consistency
-- **Configurable order** SSTableBTreeOrder controls node size and tree depth
+- **Configurable order** `SSTableBTreeOrder` controls node size and tree depth
 - **Metadata storage** Supports arbitrary metadata attachment for SSTable information
 - **Block-based storage** Integrates seamlessly with the block manager for efficient I/O
 
@@ -1530,7 +1652,7 @@ Wildcat's BTree provides the foundation for SSTable key storage with advanced fe
 - **Bidirectional iteration** Full support for forward and reverse traversal
 - **Range queries** Efficient RangeIterator with start/end key bounds
 - **Prefix iteration** Optimized PrefixIterator for prefix-based searches
-- **Seek operations** Direct positioning to any key with Seek, SeekToFirst, SeekToLast
+- **Seek operations** Direct positioning to any key with `Seek`, `SeekToFirst`, `SeekToLast`
 - **BSON serialization** Automatic serialization/deserialization of nodes and values
 
 #### Iterator Capabilities
@@ -1541,11 +1663,16 @@ rangeIter, err := btree.RangeIterator(start, end, ascending)    // Range-bounded
 prefixIter, err := btree.PrefixIterator(prefix, ascending)      // Prefix-based
 
 // All iterators support
-iter.Next()           // Advance in configured direction
-iter.Prev()           // Move opposite to configured direction
+iter.Next()           // Advance in configured direction, returns bool
+iter.Prev()           // Move opposite direction, returns bool  
+iter.NextItem()       // Get current and advance: ([]byte, interface{}, bool)
+iter.Peek()           // Get current without advancing: ([]byte, interface{}, bool)
 iter.Seek(key)        // Position at specific key
 iter.SetDirection()   // Change iteration direction
 iter.Valid()          // Check if positioned at valid entry
+iter.Key()            // Get current key: []byte
+iter.Value()          // Get current value: interface{}
+iter.HasNext()        // Check if more items available
 ```
 
 #### Performance Optimizations
@@ -1558,6 +1685,14 @@ iter.Valid()          // Check if positioned at valid entry
 - **Internal nodes** Store keys and child pointers for navigation
 - **Leaf nodes** Store actual key-value pairs with next/prev links
 - **BSON encoding** Consistent serialization format across all node types
+- **Copy-on-write** New nodes created for modifications, originals preserved
+
+#### Split Behavior
+- **Node full condition** len(keys) >= 2*order - 1
+- **Split point** mid = order - 1
+- **Leaf splits** Middle key remains in left node (different from internal splits)
+- **Internal splits** Middle key promoted to parent node
+- **Link maintenance** NextLeaf/PrevLeaf pointers updated during leaf splits
 
 ### SkipList
 Wildcat's SkipList serves as the core data structure for memtables, providing concurrent MVCC access with lock-free operations.
@@ -1706,8 +1841,8 @@ iter.Peek()    // Non-destructive current value inspection
 - **O(log n)** average case for all operations
 - **Lock-free design** High concurrency with minimal contention
 - **Memory efficient** Optimized node structure with atomic pointers
-- **Skip probability** Configurable level distribution (p=0.25)
-- **Maximum levels** Bounded height (MaxLevel=16) for predictable performance
+- **Skip probability** Configurable level distribution (`p=0.25`)
+- **Maximum levels** Bounded height (`MaxLevel=16`) for predictable performance
 
 #### MVCC Semantics
 - **Read consistency** Transactions see stable snapshots throughout their lifetime
@@ -2231,7 +2366,7 @@ Wildcat supports two file format versions to balance backward compatibility with
 When opening a database, Wildcat automatically detects the file format version by reading the version field in the file header. This version is stored in `BlockManager.fileVersion` and determines how CRC calculations are performed throughout the session.
 
 #### V1 Format (Header-Only CRC)
-The original format calculates CRC32 checksums only on block headers (metadata like BlockID, DataSize, NextBlock). The actual data payload is not included in the checksum calculation.
+The original format calculates CRC32 checksums only on block headers (metadata like `BlockID`, `DataSize`, `NextBlock`). The actual data payload is not included in the checksum calculation.
 
 #### V2 Format (Header + Data CRC)
 The enhanced format calculates CRC32 checksums on both the block header AND the actual data content, providing comprehensive block integrity protection.
