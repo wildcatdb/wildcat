@@ -82,7 +82,6 @@ const (
 	DefaultTxnBeginRetry                       = 10                     // Default retries for Begin()
 	DefaultTxnBeginBackoff                     = 1 * time.Microsecond   // Default initial backoff
 	DefaultTxnBeginMaxBackoff                  = 100 * time.Millisecond // Default max backoff
-	DefaultRecoverUncommittedTxns              = true                   // Default whether to recover uncommitted transactions on startup
 )
 
 // Options represents the configuration options for Wildcat
