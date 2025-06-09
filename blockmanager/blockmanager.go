@@ -255,7 +255,7 @@ func (bm *BlockManager) readHeader() error {
 func (bm *BlockManager) backgroundSync() {
 	defer bm.wg.Done()
 
-	if bm.syncInterval == 0 && bm.syncOption == SyncNone {
+	if bm.syncInterval <= 0 || (bm.syncOption == SyncNone || bm.syncOption == SyncFull) {
 		return // No background sync set
 	}
 	ticker := time.NewTicker(bm.syncInterval)
