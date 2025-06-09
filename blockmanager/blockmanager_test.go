@@ -2271,6 +2271,44 @@ func TestV1FileWithCorruptedData(t *testing.T) {
 	t.Log("✓ V1 file with corrupted data demonstrates header-only CRC limitation")
 }
 
+func TestConcurrentClose(t *testing.T) {
+	tempFilePath := os.TempDir() + "/blockmanager_concurrent_close_test"
+	defer os.RemoveAll(tempFilePath)
+
+	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncPartial, time.Millisecond*10)
+	if err != nil {
+		t.Fatalf("Failed to open file: %v", err)
+	}
+
+	// Start multiple goroutines that try to close simultaneously
+	var wg sync.WaitGroup
+	numGoroutines := 10
+	errors := make(chan error, numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := bm.Close()
+			if err != nil {
+				errors <- err
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errors)
+
+	// Check if any goroutine panicked or returned an error
+	for err := range errors {
+		if err != nil {
+			t.Errorf("Close() returned error: %v", err)
+		}
+	}
+
+	t.Log("Concurrent close test passed - no panics or errors")
+}
+
 func BenchmarkUpdate(b *testing.B) {
 	tempFilePath := os.TempDir() + "/blockmanager_update_bench"
 
