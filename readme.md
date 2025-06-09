@@ -633,6 +633,7 @@ typedef struct {
     int txn_begin_retry;
     long txn_begin_backoff_ns;
     long txn_begin_max_backoff_ns;
+    int recover_uncommitted_txns;
 } wildcat_opts_t;
 ```
 
