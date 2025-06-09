@@ -28,7 +28,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - Optional Bloom filters per SSTable for improved key lookup performance
 - Key-value separation optimization (`.klog` for keys, `.vlog` for values)
 - Tombstone-aware compaction with retention based on active transaction windows
-- Transaction recovery preserves incomplete transactions for post-crash inspection and resolution
+- Transaction recovery preserves incomplete transactions for post-crash inspection and resolution if db configured with `RecoverUncommittedTxns`
 - Keys and values stored as opaque byte sequences
 - Single-node embedded storage engine with no network or replication overhead
 
@@ -824,7 +824,7 @@ Optimistic timestamp-based Multi-Version Concurrency Control (MVCC) with Last-Wr
 ```
 
 - Shared WAL per memtable; transactions append full state.
-- WAL replay restores all committed and in-flight transactions.
+- WAL replay restores all committed and in-flight transactions (if db configured with `RecoverUncommittedTxns`)
 - WALs rotate when memtables flush.
 - When a successful flush occurs the corresponding WAL file is removed.
 
