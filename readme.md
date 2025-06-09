@@ -87,6 +87,14 @@ Join our Discord community to discuss development, design, ask questions, and ge
 - [Motivation](#motivation)
 - [Contributing](#contributing)
 
+## Samples
+You can find sample programs at the repository below
+[samples](https://github.com/wildcatdb/samples)
+
+## Benchmarks
+You can find the benchmarking repository below
+[bench](https://github.com/wildcatdb/bench)
+
 ## Version and Compatibility
 - Go 1.24+
 - Linux/macOS/Windows (64-bit)
