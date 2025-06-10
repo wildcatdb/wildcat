@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/wildcatdb/wildcat/v2/blockmanager"
+	"github.com/wildcatdb/wildcat/v2/buffer"
 	"github.com/wildcatdb/wildcat/v2/lru"
 	"github.com/wildcatdb/wildcat/v2/skiplist"
 	"math"
@@ -123,7 +124,7 @@ type Options struct {
 // DB represents the main Wildcat structure
 type DB struct {
 	opts             *Options                 // Configuration options
-	txnRing          *TxnRingBuffer           // Ring buffer for transactions
+	txnBuffer        *buffer.Buffer           // Atomic buffer for transactions
 	levels           atomic.Pointer[[]*Level] // Atomic pointer to the levels
 	lru              *lru.LRU                 // LRU cache for block managers
 	flusher          *Flusher                 // Flusher for memtables
@@ -163,12 +164,17 @@ func Open(opts *Options) (*DB, error) {
 	// Set default values for what options are not set
 	opts.setDefaults()
 
+	buff, err := buffer.New(opts.MaxConcurrentTxns)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transaction buffer: %w", err)
+	}
+
 	// We create a db instance with the provided options
 	db := &DB{
 		lru:            lru.New(int64(opts.BlockManagerLRUSize), opts.BlockManagerLRUEvictRatio, opts.BlockManagerLRUAccesWeight), // New block manager LRU cache
 		wg:             &sync.WaitGroup{},                                                                                         // Wait group for background operations
 		opts:           opts,                                                                                                      // Set the options
-		txnRing:        newTxnRingBuffer(uint64(opts.MaxConcurrentTxns)),                                                          // Create a new ring buffer for transactions with the specified size
+		txnBuffer:      buff,                                                                                                      // Create a new buffer for transactions with the specified cap
 		closeCh:        make(chan struct{}),                                                                                       // Channel for closing the database
 		txnTSGenerator: newIDGeneratorWithTimestamp(),                                                                             // We use timestamp generator for monotonic generation (1579134612000000004, next ID will be 1579134612000000005)
 	}
@@ -722,7 +728,8 @@ func (db *DB) reinstate() error {
 			}
 
 			// Add the correct txnCopy variable to ring buffer
-			if !db.txnRing.add(txnCopy) {
+			txnCopy.Id, err = db.txnBuffer.Add(txnCopy)
+			if err != nil {
 				db.log(fmt.Sprintf("Warning: Failed to add transaction %d to ring buffer during recovery - buffer full", txn.Id))
 			} else {
 				activeCount++
@@ -1018,7 +1025,7 @@ func (db *DB) Stats() string {
 			Values: []any{
 				atomic.LoadInt64(&db.memtable.Load().(*Memtable).size),
 				db.memtable.Load().(*Memtable).skiplist.Count(time.Now().UnixNano() + 10000000000),
-				db.txnRing.count(), db.oldestActiveRead, len(db.flusher.immutable.List()), func() int {
+				db.txnBuffer.Count(), db.oldestActiveRead, len(db.flusher.immutable.List()), func() int {
 					sstables := 0
 					levels := db.levels.Load()
 					if levels != nil {
