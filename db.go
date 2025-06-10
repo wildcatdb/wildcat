@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/wildcatdb/wildcat/v2/blockmanager"
+	"github.com/wildcatdb/wildcat/v2/buffer"
 	"github.com/wildcatdb/wildcat/v2/lru"
 	"github.com/wildcatdb/wildcat/v2/skiplist"
 	"math"
@@ -113,7 +114,7 @@ type Options struct {
 	WalAppendBackoff                    time.Duration // Backoff duration for WAL append
 	SSTableBTreeOrder                   int           // Order of the B-tree for SSTables
 	STDOutLogging                       bool          // Enable logging to standard output (default is false and if set, channel is ignored)
-	MaxConcurrentTxns                   int           // Maximum concurrent transactions (ring buffer size)
+	MaxConcurrentTxns                   int           // Maximum concurrent transactions (buffer size)
 	TxnBeginRetry                       int           // Number of retries for Begin() when buffer full
 	TxnBeginBackoff                     time.Duration // Initial backoff duration for Begin() retries
 	TxnBeginMaxBackoff                  time.Duration // Maximum backoff duration for Begin() retries
@@ -123,7 +124,7 @@ type Options struct {
 // DB represents the main Wildcat structure
 type DB struct {
 	opts             *Options                 // Configuration options
-	txnRing          *TxnRingBuffer           // Ring buffer for transactions
+	txnBuffer        *buffer.Buffer           // Atomic buffer for transactions
 	levels           atomic.Pointer[[]*Level] // Atomic pointer to the levels
 	lru              *lru.LRU                 // LRU cache for block managers
 	flusher          *Flusher                 // Flusher for memtables
@@ -133,7 +134,6 @@ type DB struct {
 	closeCh          chan struct{}            // Channel for closing up
 	sstIdGenerator   *IDGenerator             // ID generator for SSTables
 	walIdGenerator   *IDGenerator             // ID generator for WAL files
-	txnIdGenerator   *IDGenerator             // ID generator for transactions
 	txnTSGenerator   *IDGenerator             // Generator for transaction timestamps
 	logChannel       chan string              // Log channel, instead of log file or standard output we log to a channel
 	idgs             *IDGeneratorState        // ID generator state
@@ -163,12 +163,17 @@ func Open(opts *Options) (*DB, error) {
 	// Set default values for what options are not set
 	opts.setDefaults()
 
+	buff, err := buffer.New(opts.MaxConcurrentTxns)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transaction buffer: %w", err)
+	}
+
 	// We create a db instance with the provided options
 	db := &DB{
 		lru:            lru.New(int64(opts.BlockManagerLRUSize), opts.BlockManagerLRUEvictRatio, opts.BlockManagerLRUAccesWeight), // New block manager LRU cache
 		wg:             &sync.WaitGroup{},                                                                                         // Wait group for background operations
 		opts:           opts,                                                                                                      // Set the options
-		txnRing:        newTxnRingBuffer(uint64(opts.MaxConcurrentTxns)),                                                          // Create a new ring buffer for transactions with the specified size
+		txnBuffer:      buff,                                                                                                      // Create a new buffer for transactions with the specified cap
 		closeCh:        make(chan struct{}),                                                                                       // Channel for closing the database
 		txnTSGenerator: newIDGeneratorWithTimestamp(),                                                                             // We use timestamp generator for monotonic generation (1579134612000000004, next ID will be 1579134612000000005)
 	}
@@ -212,7 +217,6 @@ func Open(opts *Options) (*DB, error) {
 			db:        db,
 		}
 
-		db.txnIdGenerator = newIDGenerator()
 		db.walIdGenerator = newIDGenerator()
 		db.sstIdGenerator = newIDGenerator()
 	} else {
@@ -385,16 +389,7 @@ func (opts *Options) setDefaults() {
 		opts.TxnBeginBackoff = DefaultTxnBeginBackoff
 	}
 
-	// Ensure ring buffer capacity is power of 2
-	if opts.MaxConcurrentTxns&(opts.MaxConcurrentTxns-1) != 0 {
-		// Round up to next power of 2
-		n := 1
-		for n < opts.MaxConcurrentTxns {
-			n <<= 1
-		}
-		opts.MaxConcurrentTxns = n
-	} else {
-		// Already a power of 2, just use it
+	if opts.MaxConcurrentTxns == 0 {
 		opts.MaxConcurrentTxns = DefaultMaxConcurrentTxns
 	}
 
@@ -692,7 +687,7 @@ func (db *DB) reinstate() error {
 	// Store the active memtable
 	db.memtable.Store(activeMemt)
 
-	// Collect active (uncommitted) transactions and add to ring buffer
+	// Collect active (uncommitted) transactions and add to buffer
 	var activeCount int64
 	for _, txn := range globalTxnMap {
 		if !txn.Committed &&
@@ -721,16 +716,15 @@ func (db *DB) reinstate() error {
 				txnCopy.ReadSet[k] = v
 			}
 
-			// Add the correct txnCopy variable to ring buffer
-			if !db.txnRing.add(txnCopy) {
-				db.log(fmt.Sprintf("Warning: Failed to add transaction %d to ring buffer during recovery - buffer full", txn.Id))
+			txnCopy.Id, err = db.txnBuffer.Add(txnCopy)
+			if err != nil {
+				db.log(fmt.Sprintf("Warning: Failed to add transaction %d to buffer during recovery - buffer full", txn.Id))
 			} else {
 				activeCount++
 			}
 		}
 	}
 
-	// Log summary statistics with accurate counts
 	committedCount := int64(len(globalTxnMap)) - activeCount
 	db.log(fmt.Sprintf("Reinstatement completed: processed %d total entries across %d WAL files",
 		totalEntries, len(walFiles)))
@@ -1005,8 +999,8 @@ func (db *DB) Stats() string {
 		},
 		{
 			Title:  "ID Generator State",
-			Labels: []string{"Last SST ID", "Last WAL ID", "Last TXN ID"},
-			Values: []any{db.sstIdGenerator.last(), db.walIdGenerator.last(), db.txnIdGenerator.last()},
+			Labels: []string{"Last SST ID", "Last WAL ID"},
+			Values: []any{db.sstIdGenerator.last(), db.walIdGenerator.last()},
 		},
 		{
 			Title: "Runtime Statistics",
@@ -1018,7 +1012,7 @@ func (db *DB) Stats() string {
 			Values: []any{
 				atomic.LoadInt64(&db.memtable.Load().(*Memtable).size),
 				db.memtable.Load().(*Memtable).skiplist.Count(time.Now().UnixNano() + 10000000000),
-				db.txnRing.count(), db.oldestActiveRead, len(db.flusher.immutable.List()), func() int {
+				db.txnBuffer.Count(), db.oldestActiveRead, len(db.flusher.immutable.List()), func() int {
 					sstables := 0
 					levels := db.levels.Load()
 					if levels != nil {
@@ -1131,7 +1125,6 @@ func (idgs *IDGeneratorState) loadState() error {
 		return fmt.Errorf("failed to read ID generator state: %w", err)
 	}
 
-	idgs.db.txnIdGenerator = reloadIDGenerator(idgs.lastTxnID)
 	idgs.db.walIdGenerator = reloadIDGenerator(idgs.lastWalID)
 	idgs.db.sstIdGenerator = reloadIDGenerator(idgs.lastSstID)
 
@@ -1146,7 +1139,6 @@ func (idgs *IDGeneratorState) saveState() error {
 		return errors.New("IDGeneratorState is nil")
 	}
 
-	idgs.lastTxnID = idgs.db.txnIdGenerator.save()
 	idgs.lastWalID = idgs.db.walIdGenerator.save()
 	idgs.lastSstID = idgs.db.sstIdGenerator.save()
 	idgs.db.log(fmt.Sprintf("Saving ID generator state:\nLAST SST ID: %d\nLAST WAL ID: %d\nLAST TXN ID: %d", idgs.lastSstID, idgs.lastWalID, idgs.lastTxnID))

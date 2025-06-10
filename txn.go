@@ -12,24 +12,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unsafe"
 )
-
-// TxnRingBuffer implements a lock-free ring buffer for transactions
-type TxnRingBuffer struct {
-	buffer   []*TxnSlot // Ring buffer of *TxnSlot pointers
-	mask     uint64     // Size mask (size must be power of 2)
-	head     uint64     // Next position to write
-	tail     uint64     // Next position to read/search from
-	capacity uint64     // Buffer capacity
-}
-
-// TxnSlot represents a slot in the transaction ring buffer
-type TxnSlot struct {
-	txn     unsafe.Pointer // *Txn pointer
-	version uint64         // Version for ABA prevention
-	active  uint64         // 1 if active, 0 if free
-}
 
 // Txn represents a transaction in Wildcat
 type Txn struct {
@@ -41,231 +24,11 @@ type Txn struct {
 	Committed bool              // Whether the transaction is committed
 	db        *DB               // Not exported for serialization
 	mutex     sync.Mutex        // Not exported for serialization
-	slotPos   uint64            // Position in ring buffer
-}
-
-// newTxnRingBuffer creates a new TxnRingBuffer with the specified capacity for transactions
-func newTxnRingBuffer(capacity uint64) *TxnRingBuffer {
-
-	// Ensure capacity is power of 2
-	if capacity&(capacity-1) != 0 {
-		// Round up to next power of 2
-		capacity = 1 << (64 - uint64(countLeadingZeros(capacity-1)))
-	}
-
-	// Properly initialize the buffer slice
-	buffer := make([]*TxnSlot, capacity)
-	for i := uint64(0); i < capacity; i++ {
-		buffer[i] = &TxnSlot{}
-	}
-
-	return &TxnRingBuffer{
-		buffer:   buffer,
-		mask:     capacity - 1,
-		capacity: capacity,
-		head:     0,
-		tail:     0,
-	}
-}
-
-// add adds a transaction to the ring buffer
-func (rb *TxnRingBuffer) add(txn *Txn) bool {
-	// Safety check
-	if rb == nil || rb.buffer == nil || len(rb.buffer) == 0 || txn == nil {
-		return false
-	}
-
-	// Try to find a free slot
-	for attempts := uint64(0); attempts < rb.capacity*4; attempts++ {
-		// First, try to advance tail to free up inactive slots
-		rb.advanceTail()
-
-		head := atomic.LoadUint64(&rb.head)
-		tail := atomic.LoadUint64(&rb.tail)
-
-		// Check if buffer is full
-		if head-tail >= rb.capacity {
-			return false // Buffer is full
-		}
-
-		// Try each slot starting from tail (to reuse freed slots first)
-		for offset := uint64(0); offset < rb.capacity; offset++ {
-			pos := (tail + offset) & rb.mask
-
-			// Safety bounds check
-			if pos >= uint64(len(rb.buffer)) {
-				continue
-			}
-
-			slot := rb.buffer[pos]
-			if slot == nil {
-				continue
-			}
-
-			// Check if slot is free and try to claim it
-			if atomic.CompareAndSwapUint64(&slot.active, 0, 1) {
-
-				// Successfully claimed the slot
-				atomic.AddUint64(&slot.version, 1)
-
-				atomic.StorePointer(&slot.txn, unsafe.Pointer(txn))
-
-				// Store slot position in transaction for fast removal
-				txn.slotPos = pos
-
-				// Update head to be at least past this position
-				for {
-					currentHead := atomic.LoadUint64(&rb.head)
-					newHead := pos + 1
-					if newHead <= currentHead {
-						break // Head is already past this position
-					}
-					if atomic.CompareAndSwapUint64(&rb.head, currentHead, newHead) {
-						break // Successfully updated head
-					}
-					// Retry if CAS failed
-				}
-				return true
-			}
-		}
-
-		// No free slots found, try to advance head and retry
-		if !atomic.CompareAndSwapUint64(&rb.head, head, head+1) {
-			// Someone else advanced head, retry immediately
-			continue
-		}
-	}
-
-	return false // Couldn't find a free slot after many attempts
-}
-
-// advanceTail tries to advance the tail pointer past inactive slots
-func (rb *TxnRingBuffer) advanceTail() {
-	maxAdvances := rb.capacity / 4 // Limit how much we advance to prevent infinite loops**
-	if maxAdvances == 0 {
-		maxAdvances = 1 // Ensure we advance at least once for small buffers
-	}
-
-	for advances := uint64(0); advances < maxAdvances; advances++ {
-		tail := atomic.LoadUint64(&rb.tail)
-		head := atomic.LoadUint64(&rb.head)
-
-		// Don't advance past head
-		if tail >= head {
-			break
-		}
-
-		pos := tail & rb.mask
-
-		// Safety bounds check
-		if pos >= uint64(len(rb.buffer)) {
-			break
-		}
-
-		slot := rb.buffer[pos]
-		if slot == nil {
-			break
-		}
-
-		// If this slot is inactive, we can advance tail
-		if atomic.LoadUint64(&slot.active) == 0 {
-			if atomic.CompareAndSwapUint64(&rb.tail, tail, tail+1) {
-				continue // Successfully advanced, try next
-			} else {
-				break // Someone else changed tail, stop trying
-			}
-		} else {
-			break // Found an active slot, can't advance further
-		}
-	}
-}
-
-// remove removes a transaction from the ring buffer
-func (rb *TxnRingBuffer) remove(txn *Txn) bool {
-	if rb == nil || rb.buffer == nil || txn == nil {
-		return false
-	}
-
-	if txn.slotPos >= rb.capacity {
-		return false
-	}
-
-	slot := rb.buffer[txn.slotPos]
-	if slot == nil {
-		return false
-	}
-
-	// Check if this is still our transaction
-	storedTxn := (*Txn)(atomic.LoadPointer(&slot.txn))
-	if storedTxn != txn {
-		return false
-	}
-
-	// Clear the slot atomically - order matters here
-	atomic.StorePointer(&slot.txn, nil)
-	atomic.AddUint64(&slot.version, 1)  // Increment version on removal
-	atomic.StoreUint64(&slot.active, 0) // Mark as inactive last to ensure cleanup
-
-	return true
-}
-
-// findByID finds a transaction by ID
-func (rb *TxnRingBuffer) findByID(id int64) *Txn {
-	if rb == nil || rb.buffer == nil {
-		return nil
-	}
-
-	for i := uint64(0); i < rb.capacity; i++ {
-		slot := rb.buffer[i]
-		if slot != nil && atomic.LoadUint64(&slot.active) == 1 {
-			txn := (*Txn)(atomic.LoadPointer(&slot.txn))
-			if txn != nil && txn.Id == id {
-				return txn
-			}
-		}
-	}
-	return nil
-}
-
-// forEach iterates over all active transactions
-func (rb *TxnRingBuffer) forEach(fn func(*Txn) bool) {
-	if rb == nil || rb.buffer == nil {
-		return
-	}
-
-	for i := uint64(0); i < rb.capacity; i++ {
-		slot := rb.buffer[i]
-		if slot != nil && atomic.LoadUint64(&slot.active) == 1 {
-			txn := (*Txn)(atomic.LoadPointer(&slot.txn))
-			if txn != nil {
-				if !fn(txn) {
-					break
-				}
-			}
-		}
-	}
-}
-
-// count returns the approximate number of active transactions
-func (rb *TxnRingBuffer) count() uint64 {
-	if rb == nil || rb.buffer == nil {
-		return 0
-	}
-
-	count := uint64(0)
-	for i := uint64(0); i < rb.capacity; i++ {
-		slot := rb.buffer[i]
-		if slot != nil && atomic.LoadUint64(&slot.active) == 1 {
-			count++
-		}
-	}
-	return count
 }
 
 // Begin starts a new transaction
 func (db *DB) Begin() (*Txn, error) {
 	txn := &Txn{
-		Id:        db.txnIdGenerator.nextID(),
 		db:        db,
 		ReadSet:   make(map[string]int64),
 		WriteSet:  make(map[string][]byte),
@@ -280,7 +43,10 @@ func (db *DB) Begin() (*Txn, error) {
 	backoff := db.opts.TxnBeginBackoff
 
 	for attempt := 0; attempt <= db.opts.TxnBeginRetry; attempt++ {
-		if db.txnRing.add(txn) {
+		var err error
+		txn.Id, err = db.txnBuffer.Add(txn)
+		if err == nil {
+			// Successfully added to the transaction ring buffer
 			return txn, nil
 		}
 
@@ -316,11 +82,11 @@ func (db *DB) Begin() (*Txn, error) {
 // GetTxn retrieves a transaction by ID.
 // Can be used on system recovery.  You can recover an incomplete transaction.
 func (db *DB) GetTxn(id int64) (*Txn, error) {
-	txn := db.txnRing.findByID(id)
+	txn, err := db.txnBuffer.Get(id)
 	if txn == nil {
-		return nil, fmt.Errorf("transaction not found")
+		return nil, fmt.Errorf("transaction with ID %d not found", id)
 	}
-	return txn, nil
+	return txn.(*Txn), err
 }
 
 // Put adds key-value pair to database
@@ -881,8 +647,8 @@ func (txn *Txn) remove() {
 	txn.DeleteSet = make(map[string]bool)
 	txn.Committed = false
 
-	// Remove from ring buffer
-	txn.db.txnRing.remove(txn)
+	// Remove from buffer
+	_ = txn.db.txnBuffer.Remove(txn.Id)
 }
 
 // appendWal appends the transaction state to a Write-Ahead Log (WAL)
@@ -980,36 +746,4 @@ func (txn *Txn) appendWal() error {
 	}
 
 	return lastErr
-}
-
-// countLeadingZeros counts the number of leading zeros in an uint64 value.
-func countLeadingZeros(x uint64) int {
-	if x == 0 {
-		return 64
-	}
-	n := 0
-	if x <= 0x00000000FFFFFFFF {
-		n += 32
-		x <<= 32
-	}
-	if x <= 0x0000FFFFFFFFFFFF {
-		n += 16
-		x <<= 16
-	}
-	if x <= 0x00FFFFFFFFFFFFFF {
-		n += 8
-		x <<= 8
-	}
-	if x <= 0x0FFFFFFFFFFFFFFF {
-		n += 4
-		x <<= 4
-	}
-	if x <= 0x3FFFFFFFFFFFFFFF {
-		n += 2
-		x <<= 2
-	}
-	if x <= 0x7FFFFFFFFFFFFFFF {
-		n += 1
-	}
-	return n
 }

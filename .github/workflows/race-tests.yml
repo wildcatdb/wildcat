@@ -29,5 +29,7 @@ jobs:
         run: go test ./skiplist -race -v
       - name: Run btree race tests
         run: go test ./tree -race -v
+      - name: Run buffer race tests
+        run: go test ./buffer -race -v
       - name: Run core race tests
         run: go test -race -v
