@@ -80,7 +80,7 @@ go get github.com/wildcatdb/wildcat/v2
 
 Specific major version i.e `v2.x.x` can be downloaded using
 ```bash
-go get github.com/wildcatdb/wildcat/v2@v2.1.3
+go get github.com/wildcatdb/wildcat/v2@v2.1.4
 ```
 
 ### Import
@@ -92,7 +92,7 @@ import (
 
 When importing different majors you can do
 ```go
-// v1
+// v1 (not recommended, use v2+)
 import (
     "github.com/wildcatdb/wildcat"
 )
