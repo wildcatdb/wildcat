@@ -4,6 +4,8 @@
 
 ![License](https://img.shields.io/badge/license-MPL_2.0-blue)
 
+![GitHub Release](https://img.shields.io/github/v/release/wildcatdb/wildcat)
+
 Wildcat is a high-performance embedded key-value database (or storage engine) written in Go with C interoptibility. It incorporates modern database design principles including LSM (Log-Structured Merge) tree architecture, MVCC (Multi-Version Concurrency Control), and lock-free data structures for its critical paths, along with automatic background operations to deliver excellent read/write performance with immediate consistency and durability.
 
 ## Features
