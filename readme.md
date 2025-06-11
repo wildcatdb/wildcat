@@ -2,9 +2,7 @@
     <h1 align="left"><img width="128" src="artwork/wildcat-logo.png"></h1>
 </div>
 
-![License](https://img.shields.io/badge/license-MPL_2.0-blue)
-
-![GitHub Release](https://img.shields.io/github/v/release/wildcatdb/wildcat)
+![License](https://img.shields.io/badge/license-MPL_2.0-blue) ![GitHub Release](https://img.shields.io/github/v/release/wildcatdb/wildcat)
 
 Wildcat is a high-performance embedded key-value database (or storage engine) written in Go with C interoptibility. It incorporates modern database design principles including LSM (Log-Structured Merge) tree architecture, MVCC (Multi-Version Concurrency Control), and lock-free data structures for its critical paths, along with automatic background operations to deliver excellent read/write performance with immediate consistency and durability.
 
@@ -440,49 +438,47 @@ fmt.Println(stats)
 
 **Output example**
 ```bash
-┌──────────────────────────────────────────────────────────────┐
-│ Wildcat DB Stats and Configuration                           │
-├──────────────────────────────────────────────────────────────┤
-│ Write Buffer Size          : 33554432                        │
-│ Sync Option                : 2                               │
-│ Level Count                : 6                               │
-│ Bloom Filter Enabled       : false                           │
-│ Max Compaction Concurrency : 2                               │
-│ Compaction Cooldown        : 3s                              │
-│ Compaction Batch Size      : 8                               │
-│ Compaction Size Ratio      : 1.1                             │
-│ Compaction Threshold       : 8                               │
-│ Score Size Weight          : 0.8                             │
-│ Score Count Weight         : 0.2                             │
-│ Flusher Interval           : 1ms                             │
-│ Compactor Interval         : 250ms                           │
-│ Bloom FPR                  : 0.01                            │
-│ WAL Retry                  : 10                              │
-│ WAL Backoff                : 128µs                           │
-│ SSTable B-Tree Order       : 16                              │
-│ LRU Size                   : 1024                            │
-│ LRU Evict Ratio            : 0.2                             │
-│ LRU Access Weight          : 0.8                             │
-│ File Version               : 2                               │
-│ Magic Number               : 1464421444                      │
-│ Directory                  : /tmp/wildcat_stats_example/     │
-├──────────────────────────────────────────────────────────────┤
-│ ID Generator State                                           │
-├──────────────────────────────────────────────────────────────┤
-│ Last SST ID                : 1                               │
-│ Last WAL ID                : 1                               │
-│ Last TXN ID                : 22                              │
-├──────────────────────────────────────────────────────────────┤
-│ Runtime Statistics                                           │
-├──────────────────────────────────────────────────────────────┤
-│ Active Memtable Size       : 15479                           │
-│ Active Memtable Entries    : 126                             │
-│ Active Transactions        : 0                               │
-│ Oldest Read Timestamp      : 1749434695512449925             │
-│ WAL Files                  : 0                               │
-│ Total SSTables             : 1                               │
-│ Total Entries              : 249                             │
-└──────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────┐
+│ Wildcat DB Stats and Configuration                                        │
+├───────────────────────────────────────────────────────────────────────────┤
+│ Write Buffer Size          : 25                                           │
+│ Sync Option                : 1                                            │
+│ Level Count                : 6                                            │
+│ Bloom Filter Enabled       : false                                        │
+│ Max Compaction Concurrency : 4                                            │
+│ Compaction Cooldown        : 5s                                           │
+│ Compaction Batch Size      : 8                                            │
+│ Compaction Size Ratio      : 1.1                                          │
+│ Compaction Threshold       : 8                                            │
+│ Score Size Weight          : 0.8                                          │
+│ Score Count Weight         : 0.2                                          │
+│ Flusher Interval           : 1ms                                          │
+│ Compactor Interval         : 250ms                                        │
+│ Bloom FPR                  : 0.01                                         │
+│ WAL Retry                  : 10                                           │
+│ WAL Backoff                : 128µs                                        │
+│ SSTable B-Tree Order       : 10                                           │
+│ LRU Size                   : 1024                                         │
+│ LRU Evict Ratio            : 0.2                                          │
+│ LRU Access Weight          : 0.8                                          │
+│ File Version               : 2                                            │
+│ Magic Number               : 1464421444                                   │
+│ Directory                  : /tmp/wildcat_stats_example/                  │
+├───────────────────────────────────────────────────────────────────────────┤
+│ ID Generator State                                                        │
+├───────────────────────────────────────────────────────────────────────────┤
+│ Last SST ID                : 5                                            │
+│ Last WAL ID                : 11                                           │
+├───────────────────────────────────────────────────────────────────────────┤
+│ Runtime Statistics                                                        │
+├───────────────────────────────────────────────────────────────────────────┤
+│ Active Memtable Size       : 0                                            │
+│ Active Memtable Entries    : 0                                            │
+│ Active Transactions        : 0                                            │
+│ WAL Files                  : 5                                            │
+│ Total SSTables             : 4                                            │
+│ Total Entries              : 20                                           │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
 This returns detailed information including
