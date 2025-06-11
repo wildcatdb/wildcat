@@ -73,7 +73,7 @@ const (
 	DefaultCompactionScoreSizeWeight           = 0.8                  // Default weight for size-based score
 	DefaultCompactionScoreCountWeight          = 0.2                  // Default weight for count-based score
 	DefaultCompactionSizeTieredSimilarityRatio = 1.5                  // Default similarity ratio for size-tiered compaction
-	DefaultCompactionActiveSSTReadWaitBackoff  = 8 * time.Microsecond // Default backoff time for active SSTable read wait during compaction
+	DefaultCompactionActiveSSTReadWaitBackoff  = 8 * time.Microsecond // Backoff is used to avoid busy waiting when checking if sstables are safe to remove during compaction process final steps
 	DefaultFlusherTickerInterval               = 1 * time.Millisecond
 	DefaultCompactorTickerInterval             = 250 * time.Millisecond // Default interval for compactor ticker
 	DefaultBloomFilterFPR                      = 0.01                   // Default false positive rate for Bloom filter
