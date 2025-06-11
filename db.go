@@ -60,19 +60,20 @@ const (
 	DefaultLevelCount      = 6                    // Default number of levels in the LSM tree
 	DefaultLevelMultiplier = 10                   // Multiplier for the number of levels
 	// 64MB -> 640MB -> 6.4GB ->  64GB -> 640GB ->  6.4TB
-	DefaultBlockManagerLRUSize                 = 1024            // Size of the LRU cache for block managers
-	DefaultBlockManagerLRUEvictRatio           = 0.20            // Eviction ratio for the LRU cache
-	DefaultBlockManagerLRUAccessWeight         = 0.8             // Access weight for the LRU cache
-	DefaultPermission                          = 0750            // Default permission for created files
-	DefaultBloomFilter                         = false           // Default Bloom filter option
-	DefaultMaxCompactionConcurrency            = 4               // Default max compaction concurrency
-	DefaultCompactionCooldownPeriod            = 5 * time.Second // Default cooldown period for compaction
-	DefaultCompactionBatchSize                 = 8               // Default max number of SSTables to compact at once
-	DefaultCompactionSizeRatio                 = 1.1             // Default level size ratio that triggers compaction
-	DefaultCompactionSizeThreshold             = 8               // Default number of files to trigger size-tiered compaction
-	DefaultCompactionScoreSizeWeight           = 0.8             // Default weight for size-based score
-	DefaultCompactionScoreCountWeight          = 0.2             // Default weight for count-based score
-	DefaultCompactionSizeTieredSimilarityRatio = 1.5             // Default similarity ratio for size-tiered compaction
+	DefaultBlockManagerLRUSize                 = 1024                 // Size of the LRU cache for block managers
+	DefaultBlockManagerLRUEvictRatio           = 0.20                 // Eviction ratio for the LRU cache
+	DefaultBlockManagerLRUAccessWeight         = 0.8                  // Access weight for the LRU cache
+	DefaultPermission                          = 0750                 // Default permission for created files
+	DefaultBloomFilter                         = false                // Default Bloom filter option
+	DefaultMaxCompactionConcurrency            = 4                    // Default max compaction concurrency
+	DefaultCompactionCooldownPeriod            = 5 * time.Second      // Default cooldown period for compaction
+	DefaultCompactionBatchSize                 = 8                    // Default max number of SSTables to compact at once
+	DefaultCompactionSizeRatio                 = 1.1                  // Default level size ratio that triggers compaction
+	DefaultCompactionSizeThreshold             = 8                    // Default number of files to trigger size-tiered compaction
+	DefaultCompactionScoreSizeWeight           = 0.8                  // Default weight for size-based score
+	DefaultCompactionScoreCountWeight          = 0.2                  // Default weight for count-based score
+	DefaultCompactionSizeTieredSimilarityRatio = 1.5                  // Default similarity ratio for size-tiered compaction
+	DefaultCompactionActiveSSTReadWaitBackoff  = 8 * time.Microsecond // Default backoff time for active SSTable read wait during compaction
 	DefaultFlusherTickerInterval               = 1 * time.Millisecond
 	DefaultCompactorTickerInterval             = 250 * time.Millisecond // Default interval for compactor ticker
 	DefaultBloomFilterFPR                      = 0.01                   // Default false positive rate for Bloom filter
@@ -107,6 +108,7 @@ type Options struct {
 	CompactionScoreSizeWeight           float64       // Weight for size-based score
 	CompactionScoreCountWeight          float64       // Weight for count-based score
 	CompactionSizeTieredSimilarityRatio float64       // Similarity ratio for size-tiered compaction.  For grouping SSTables that are "roughly the same size" together for compaction.
+	CompactionActiveSSTReadWaitBackoff  time.Duration // Backoff time for active SSTable read wait during compaction, to avoid busy waiting
 	FlusherTickerInterval               time.Duration // Interval for flusher ticker
 	CompactorTickerInterval             time.Duration // Interval for compactor ticker
 	BloomFilterFPR                      float64       // False positive rate for Bloom filter
@@ -123,21 +125,20 @@ type Options struct {
 
 // DB represents the main Wildcat structure
 type DB struct {
-	opts             *Options                 // Configuration options
-	txnBuffer        *buffer.Buffer           // Atomic buffer for transactions
-	levels           atomic.Pointer[[]*Level] // Atomic pointer to the levels
-	lru              *lru.LRU                 // LRU cache for block managers
-	flusher          *Flusher                 // Flusher for memtables
-	compactor        *Compactor               // Compactor for SSTables
-	memtable         atomic.Value             // The current memtable
-	wg               *sync.WaitGroup          // WaitGroup for synchronization
-	closeCh          chan struct{}            // Channel for closing up
-	sstIdGenerator   *IDGenerator             // ID generator for SSTables
-	walIdGenerator   *IDGenerator             // ID generator for WAL files
-	txnTSGenerator   *IDGenerator             // Generator for transaction timestamps
-	logChannel       chan string              // Log channel, instead of log file or standard output we log to a channel
-	idgs             *IDGeneratorState        // ID generator state
-	oldestActiveRead int64                    // Oldest active read timestamp
+	opts           *Options                 // Configuration options
+	txnBuffer      *buffer.Buffer           // Atomic buffer for transactions
+	levels         atomic.Pointer[[]*Level] // Atomic pointer to the levels
+	lru            *lru.LRU                 // LRU cache for block managers
+	flusher        *Flusher                 // Flusher for memtables
+	compactor      *Compactor               // Compactor for SSTables
+	memtable       atomic.Value             // The current memtable
+	wg             *sync.WaitGroup          // WaitGroup for synchronization
+	closeCh        chan struct{}            // Channel for closing up
+	sstIdGenerator *IDGenerator             // ID generator for SSTables
+	walIdGenerator *IDGenerator             // ID generator for WAL files
+	txnTSGenerator *IDGenerator             // Generator for transaction timestamps
+	logChannel     chan string              // Log channel, instead of log file or standard output we log to a channel
+	idgs           *IDGeneratorState        // ID generator state
 }
 
 // IDGeneratorState represents the state of the ID generator.
@@ -391,6 +392,10 @@ func (opts *Options) setDefaults() {
 
 	if opts.MaxConcurrentTxns == 0 {
 		opts.MaxConcurrentTxns = DefaultMaxConcurrentTxns
+	}
+
+	if opts.CompactionActiveSSTReadWaitBackoff <= 0 {
+		opts.CompactionActiveSSTReadWaitBackoff = DefaultCompactionActiveSSTReadWaitBackoff
 	}
 
 }
@@ -969,8 +974,6 @@ func (db *DB) Stats() string {
 		Values []any
 	}
 
-	oldestActiveRead := atomic.LoadInt64(&db.oldestActiveRead)
-
 	// Define sections
 	sections := []Section{
 		{
@@ -1008,13 +1011,13 @@ func (db *DB) Stats() string {
 			Title: "Runtime Statistics",
 			Labels: []string{
 				"Active Memtable Size", "Active Memtable Entries", "Active Transactions",
-				"Oldest Read Timestamp", "WAL Files", "Total SSTables",
+				"WAL Files", "Total SSTables",
 				"Total Entries",
 			},
 			Values: []any{
 				atomic.LoadInt64(&db.memtable.Load().(*Memtable).size),
 				db.memtable.Load().(*Memtable).skiplist.Count(time.Now().UnixNano() + 10000000000),
-				db.txnBuffer.Count(), oldestActiveRead, len(db.flusher.immutable.List()), func() int {
+				db.txnBuffer.Count(), len(db.flusher.immutable.List()), func() int {
 					sstables := 0
 					levels := db.levels.Load()
 					if levels != nil {

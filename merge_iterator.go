@@ -8,6 +8,7 @@ import (
 	"github.com/wildcatdb/wildcat/v2/tree"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"sync/atomic"
 )
 
 // MergeIterator combines multiple iterators into a single iterator
@@ -69,6 +70,10 @@ func NewMergeIterator(db *DB, iterators []*iterator, ts int64, ascending bool) (
 
 // initializeIterator sets up the iterator with its first key-value pair
 func (mi *MergeIterator) initializeIterator(it *iterator) error {
+	if it.sst != nil {
+		atomic.CompareAndSwapInt32(&it.sst.isBeingRead, 0, 1)
+	}
+
 	switch t := it.underlyingIterator.(type) {
 	case *skiplist.Iterator:
 		if t == nil {
@@ -413,6 +418,10 @@ func (mi *MergeIterator) seekIterator(it *iterator, seekKey []byte) error {
 	case *tree.Iterator:
 		if err := t.Seek(seekKey); err != nil {
 			it.exhausted = true
+			// Release the isBeingRead flag on error
+			if it.sst != nil {
+				atomic.CompareAndSwapInt32(&it.sst.isBeingRead, 1, 0)
+			}
 			return err
 		}
 
@@ -422,6 +431,8 @@ func (mi *MergeIterator) seekIterator(it *iterator, seekKey []byte) error {
 			if err != nil {
 				if it.sst != nil {
 					mi.db.log(fmt.Sprintf("Potential block corruption detected for SSTable %d at Level %d: %v", it.sst.Id, it.sst.Level, err))
+					// Release the isBeingRead flag on error
+					atomic.CompareAndSwapInt32(&it.sst.isBeingRead, 1, 0)
 				}
 				it.exhausted = true
 				return err
@@ -434,9 +445,17 @@ func (mi *MergeIterator) seekIterator(it *iterator, seekKey []byte) error {
 				it.exhausted = false
 			} else {
 				it.exhausted = true
+				// Release the isBeingRead flag if we can't find a valid entry
+				if it.sst != nil {
+					atomic.CompareAndSwapInt32(&it.sst.isBeingRead, 1, 0)
+				}
 			}
 		} else {
 			it.exhausted = true
+			// Release the isBeingRead flag if iterator is invalid
+			if it.sst != nil {
+				atomic.CompareAndSwapInt32(&it.sst.isBeingRead, 1, 0)
+			}
 		}
 	}
 
