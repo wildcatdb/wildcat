@@ -539,6 +539,7 @@ Wildcat provides many configuration options for fine-tuning.
 | **CompactionScoreSizeWeight** | `0.8` | Weight for size-based compaction scoring |
 | **CompactionScoreCountWeight** | `0.2` | Weight for count-based compaction scoring |
 | **CompactionSizeTieredSimilarityRatio** | `1.5` | Similarity ratio for size-tiered compaction. For grouping SSTables that are "roughly the same size" together for compaction. |
+| **CompactionActiveSSTReadWaitBackoff** | `8 * time.Microsecond` |  Backoff is used to avoid busy waiting when checking if sstables are safe to remove during compaction process final steps |
 | **FlusherTickerInterval** | `1 * time.Millisecond` | Interval for flusher background process |
 | **CompactorTickerInterval** | `250 * time.Millisecond` | Interval for compactor background process |
 | **BloomFilterFPR** | `0.01` | False positive rate for Bloom filters |

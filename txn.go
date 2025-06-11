@@ -215,10 +215,6 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 	txn.mutex.Lock()
 	defer txn.mutex.Unlock()
 
-	// We always update oldestActiveRead to latest read which could be the oldest if that makes sense :)
-	// On background compactions we don't just want to blindly merge sstables that could be part of active reads transactions.
-	atomic.StoreInt64(&txn.db.oldestActiveRead, txn.Timestamp)
-
 	// Check write set first (transaction's own writes)
 	if val, exists := txn.WriteSet[string(key)]; exists {
 		return val, nil
@@ -348,8 +344,6 @@ func (db *DB) View(fn func(txn *Txn) error) error {
 func (txn *Txn) NewIterator(asc bool) (*MergeIterator, error) {
 	var items []*iterator
 
-	atomic.StoreInt64(&txn.db.oldestActiveRead, txn.Timestamp)
-
 	// Active memtable
 	active := txn.db.memtable.Load().(*Memtable)
 	iter, err := active.skiplist.NewIterator(nil, txn.Timestamp)
@@ -445,8 +439,6 @@ func (txn *Txn) NewIterator(asc bool) (*MergeIterator, error) {
 func (txn *Txn) NewRangeIterator(startKey []byte, endKey []byte, asc bool) (*MergeIterator, error) {
 	var items []*iterator
 
-	atomic.StoreInt64(&txn.db.oldestActiveRead, txn.Timestamp)
-
 	// Active memtable
 	active := txn.db.memtable.Load().(*Memtable)
 	iter, err := active.skiplist.NewRangeIterator(startKey, endKey, txn.Timestamp)
@@ -541,8 +533,6 @@ func (txn *Txn) NewRangeIterator(startKey []byte, endKey []byte, asc bool) (*Mer
 // NewPrefixIterator creates a new prefix bidirectional iterator
 func (txn *Txn) NewPrefixIterator(prefix []byte, asc bool) (*MergeIterator, error) {
 	var items []*iterator
-
-	atomic.StoreInt64(&txn.db.oldestActiveRead, txn.Timestamp)
 
 	// Active memtable
 	active := txn.db.memtable.Load().(*Memtable)

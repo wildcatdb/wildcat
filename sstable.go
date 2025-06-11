@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 // SSTable represents a sorted string table
@@ -23,6 +24,7 @@ type SSTable struct {
 	BloomFilter *bloomfilter.BloomFilter // Optional bloom filter for fast lookups
 	Timestamp   int64                    // Timestamp of latest entry in the SSTable
 	isMerging   int32                    // Atomic flag indicating if the SSTable is being merged
+	isBeingRead int32                    // Atomic flag indicating if the SSTable is being read
 	db          *DB                      // Reference to the database (not exported)
 }
 
@@ -35,6 +37,10 @@ type KLogEntry struct {
 
 // get retrieves a value from the SSTable using the key and timestamp
 func (sst *SSTable) get(key []byte, readTimestamp int64) ([]byte, int64) {
+
+	atomic.CompareAndSwapInt32(&sst.isBeingRead, 0, 1)
+	defer atomic.CompareAndSwapInt32(&sst.isBeingRead, 1, 0)
+
 	// Get the KLog block manager
 	klogPath := sst.kLogPath()
 	var klogBm *blockmanager.BlockManager

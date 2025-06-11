@@ -143,29 +143,21 @@ func (compactor *Compactor) scheduleSizeTieredCompaction(level *Level, levelNum 
 
 	compactor.db.log(fmt.Sprintf("Scheduling size-tiered compaction for level %d with score %.2f", levelNum, score))
 
-	// Filter out SSTables that active transactions might need
-	safeTables := compactor.filterSafeTablesForCompaction(*sstables)
-	if len(safeTables) < 2 {
-		compactor.db.log(fmt.Sprintf("Not enough safe SSTables for compaction in level %d (%d safe, need 2+)",
-			levelNum, len(safeTables)))
-		return
-	}
-
 	// Sort safe SSTables by size for size-tiered compaction
-	sort.Slice(safeTables, func(i, j int) bool {
-		return safeTables[i].Size < safeTables[j].Size
+	sort.Slice(*sstables, func(i, j int) bool {
+		return (*sstables)[i].Size < (*sstables)[j].Size
 	})
 
 	// Find similar-sized SSTables among the safe ones
 	var selectedTables []*SSTable
 
-	for i := 0; i < len(safeTables); {
-		size := safeTables[i].Size
-		similarSized := []*SSTable{safeTables[i]}
+	for i := 0; i < len(*sstables); {
+		size := (*sstables)[i].Size
+		similarSized := []*SSTable{(*sstables)[i]}
 
 		j := i + 1
-		for j < len(safeTables) && float64(safeTables[j].Size)/float64(size) <= compactor.db.opts.CompactionSizeTieredSimilarityRatio && len(similarSized) < compactor.db.opts.CompactionBatchSize {
-			similarSized = append(similarSized, safeTables[j])
+		for j < len(*sstables) && float64((*sstables)[j].Size)/float64(size) <= compactor.db.opts.CompactionSizeTieredSimilarityRatio && len(similarSized) < compactor.db.opts.CompactionBatchSize {
+			similarSized = append(similarSized, (*sstables)[j])
 			j++
 		}
 
@@ -178,8 +170,8 @@ func (compactor *Compactor) scheduleSizeTieredCompaction(level *Level, levelNum 
 	}
 
 	// If we couldn't find similar-sized tables, just take the smallest safe ones
-	if len(selectedTables) < 2 && len(safeTables) >= 2 {
-		selectedTables = safeTables[:min(compactor.db.opts.CompactionBatchSize, len(safeTables))]
+	if len(selectedTables) < 2 && len(*sstables) >= 2 {
+		selectedTables = (*sstables)[:min(compactor.db.opts.CompactionBatchSize, len(*sstables))]
 	}
 
 	if len(selectedTables) >= 2 {
@@ -204,18 +196,11 @@ func (compactor *Compactor) scheduleLeveledCompaction(level *Level, levelNum int
 		return
 	}
 
-	// Filter safe tables first
-	safeTables := compactor.filterSafeTablesForCompaction(*sstables)
-	if len(safeTables) == 0 {
-		compactor.db.log(fmt.Sprintf("No safe SSTables for leveled compaction in level %d", levelNum))
-		return
-	}
-
 	// Pick the SSTable with the smallest key range among safe tables
 	var selectedTable *SSTable
 	var smallestRange int
 
-	for i, table := range safeTables {
+	for i, table := range *sstables {
 		keyRangeSize := bytes.Compare(table.Max, table.Min)
 
 		if i == 0 || keyRangeSize < smallestRange {
@@ -226,8 +211,8 @@ func (compactor *Compactor) scheduleLeveledCompaction(level *Level, levelNum int
 
 	// If we couldn't determine by key range, fall back to oldest safe table
 	if selectedTable == nil {
-		selectedTable = safeTables[0]
-		for _, table := range safeTables {
+		selectedTable = (*sstables)[0]
+		for _, table := range *sstables {
 			if table.Id < selectedTable.Id {
 				selectedTable = table
 			}
@@ -253,9 +238,7 @@ func (compactor *Compactor) scheduleLeveledCompaction(level *Level, levelNum int
 			}
 		}
 
-		// Filter overlapping tables for safety too
-		safeOverlappingTables := compactor.filterSafeTablesForCompaction(overlappingTables)
-		selectedTables = append(selectedTables, safeOverlappingTables...)
+		selectedTables = append(selectedTables, overlappingTables...)
 	}
 
 	compactor.compactionQueue = append(compactor.compactionQueue, &compactorJob{
@@ -267,7 +250,7 @@ func (compactor *Compactor) scheduleLeveledCompaction(level *Level, levelNum int
 	})
 
 	compactor.db.log(fmt.Sprintf("Scheduled leveled compaction for level %d with %d SSTables (%d safe)",
-		levelNum, len(selectedTables), len(safeTables)))
+		levelNum, len(selectedTables), len(*sstables)))
 }
 
 // executeCompactions processes pending compaction jobs
@@ -404,6 +387,9 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 	} else {
 		newSSTables = []*SSTable{newSSTable}
 	}
+
+	// Wait for any active reads to merged sstables to complete before updating the level
+	compactor.waitForActiveReads(sstables)
 
 	targetLevelPtr.sstables.Store(&newSSTables)
 
@@ -802,32 +788,29 @@ func getOrOpenBM(db *DB, path string) (*blockmanager.BlockManager, error) {
 	return bmInterface.(*blockmanager.BlockManager), nil
 }
 
-// isSafeToCompact checks if an SSTable is safe to compact based on active reads
-func (compactor *Compactor) isSafeToCompact(table *SSTable) bool {
-	oldestActiveRead := atomic.LoadInt64(&compactor.db.oldestActiveRead)
+// waitForActiveReads waits for any active reads on the given SSTables to complete
+func (compactor *Compactor) waitForActiveReads(sstables []*SSTable) {
 
-	// If there are no active reads, safe to compact
-	if oldestActiveRead == 0 {
-		return true
-	}
+	for {
+		select {
+		case <-compactor.db.closeCh:
+			return
+		default:
+			allClear := true
 
-	// Only compact SSTables whose newest data is older than the oldest active read
-	// Ensures active transactions won't lose access to data they might need
-	return table.Timestamp < oldestActiveRead
-}
+			for _, table := range sstables {
+				if atomic.LoadInt32(&table.isBeingRead) == 1 {
+					allClear = false
+					break
+				}
+			}
 
-// filterSafeTablesForCompaction filters out SSTables that are safe to compact
-func (compactor *Compactor) filterSafeTablesForCompaction(tables []*SSTable) []*SSTable {
-	var safeTables []*SSTable
+			if allClear {
+				return
+			}
 
-	for _, table := range tables {
-		if compactor.isSafeToCompact(table) {
-			safeTables = append(safeTables, table)
-		} else {
-			compactor.db.log(fmt.Sprintf("Skipping SSTable %d for compaction - needed by active reads (newest: %d, oldest active: %d)",
-				table.Id, table.Timestamp, atomic.LoadInt64(&compactor.db.oldestActiveRead)))
+			time.Sleep(compactor.db.opts.CompactionActiveSSTReadWaitBackoff)
 		}
 	}
 
-	return safeTables
 }
