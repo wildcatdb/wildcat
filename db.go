@@ -969,6 +969,8 @@ func (db *DB) Stats() string {
 		Values []any
 	}
 
+	oldestActiveRead := atomic.LoadInt64(&db.oldestActiveRead)
+
 	// Define sections
 	sections := []Section{
 		{
@@ -1012,7 +1014,7 @@ func (db *DB) Stats() string {
 			Values: []any{
 				atomic.LoadInt64(&db.memtable.Load().(*Memtable).size),
 				db.memtable.Load().(*Memtable).skiplist.Count(time.Now().UnixNano() + 10000000000),
-				db.txnBuffer.Count(), db.oldestActiveRead, len(db.flusher.immutable.List()), func() int {
+				db.txnBuffer.Count(), oldestActiveRead, len(db.flusher.immutable.List()), func() int {
 					sstables := 0
 					levels := db.levels.Load()
 					if levels != nil {

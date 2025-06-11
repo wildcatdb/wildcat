@@ -341,6 +341,8 @@ func TestLevel_SizeMethods(t *testing.T) {
 		return
 	}
 
+	time.Sleep(1 * time.Second)
+
 	// After data insertion and flush, size should have increased
 	currentSize := level1.getSize()
 	t.Logf("Level 1 size after data insertion: %d", currentSize)
