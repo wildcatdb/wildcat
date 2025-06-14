@@ -655,7 +655,7 @@ func (db *DB) reinstate() error {
 		populateMemtableFromTxns(immutableMemt, globalTxnMap, db.opts.RecoverUncommittedTxns)
 
 		// Enqueue the memtable for flushing
-		db.flusher.enqueueMemtable(immutableMemt)
+		db.flusher.immutable.Enqueue(immutableMemt)
 		db.log(fmt.Sprintf("Enqueued immutable memtable %d of %d from %s for flushing",
 			i+1, len(walFiles)-1, walPath))
 	}
