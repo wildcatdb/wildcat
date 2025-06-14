@@ -47,6 +47,9 @@ func (l *Level) reopen() error {
 			if err := os.Remove(tempFilePath); err != nil {
 				l.db.log(fmt.Sprintf("Warning: Failed to remove temporary file %s: %v", tempFilePath, err))
 			}
+
+			l.db.log(fmt.Sprintf("Removed temporary file: %s", tempFilePath))
+
 			continue
 		}
 
@@ -123,7 +126,8 @@ func (l *Level) reopen() error {
 		t, err := tree.Open(klogBm, l.db.opts.SSTableBTreeOrder, nil)
 		if err != nil {
 			l.db.log(fmt.Sprintf("Warning: Failed to open B-tree for SSTable %d: %v - using file system metadata only", id, err))
-			// Set basic metadata and continue
+
+			// Set basic metadata and continue, the system is still usable and will attempt to search the tree still if no metadata is found
 			sstable.Min = []byte{}
 			sstable.Max = []byte{}
 			sstable.EntryCount = 0
@@ -134,10 +138,8 @@ func (l *Level) reopen() error {
 		// Get the extra metadata from the B-tree
 		extraMeta := t.GetExtraMeta()
 		if extraMeta != nil {
-			// Handle different types that might be returned
 			switch meta := extraMeta.(type) {
 			case *SSTable:
-				// Perfect - we got the SSTable directly
 				sstable.Min = meta.Min
 				sstable.Max = meta.Max
 				sstable.EntryCount = meta.EntryCount
@@ -147,21 +149,20 @@ func (l *Level) reopen() error {
 				}
 
 			case primitive.D:
-				// BSON document - need to extract fields manually
 				l.extractSSTableFromBSON(sstable, meta)
 
 			case map[string]interface{}:
-				// Map interface - extract fields
 				l.extractSSTableFromMap(sstable, meta)
 
 			default:
+				// This should not occur but if it does log a warning
 				l.db.log(fmt.Sprintf("Warning: Unknown metadata type %T for SSTable %d - using file system metadata", extraMeta, id))
+
 				sstable.Min = []byte{}
 				sstable.Max = []byte{}
 				sstable.EntryCount = 0
 			}
 		} else {
-			// No metadata available - use empty values
 			sstable.Min = []byte{}
 			sstable.Max = []byte{}
 			sstable.EntryCount = 0
@@ -173,7 +174,6 @@ func (l *Level) reopen() error {
 		sstables = append(sstables, sstable)
 	}
 
-	// Sort SSTables by ID
 	sort.Slice(sstables, func(i, j int) bool {
 		return sstables[i].Id < sstables[j].Id
 	})

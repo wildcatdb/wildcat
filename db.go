@@ -125,12 +125,12 @@ type Options struct {
 
 // DB represents the main Wildcat structure
 type DB struct {
-	opts           *Options                 // Configuration options
+	opts           *Options                 // Configuration options for db instance
 	txnBuffer      *buffer.Buffer           // Atomic buffer for transactions
 	levels         atomic.Pointer[[]*Level] // Atomic pointer to the levels
 	lru            *lru.LRU                 // LRU cache for block managers
-	flusher        *Flusher                 // Flusher for memtables
-	compactor      *Compactor               // Compactor for SSTables
+	flusher        *Flusher                 // Flusher queues memtables and flushes them to disk to level 1
+	compactor      *Compactor               // Compactor for compacting levels
 	memtable       atomic.Value             // The current memtable
 	wg             *sync.WaitGroup          // WaitGroup for synchronization
 	closeCh        chan struct{}            // Channel for closing up
@@ -138,7 +138,7 @@ type DB struct {
 	walIdGenerator *IDGenerator             // ID generator for WAL files
 	txnTSGenerator *IDGenerator             // Generator for transaction timestamps
 	logChannel     chan string              // Log channel, instead of log file or standard output we log to a channel
-	idgs           *IDGeneratorState        // ID generator state
+	idgs           *IDGeneratorState        // ID state for sstable, wal, and txn timestamps
 }
 
 // IDGeneratorState represents the state of the ID generator.
@@ -152,7 +152,9 @@ type IDGeneratorState struct {
 
 // Open initializes a new Wildcat instance with the provided options
 func Open(opts *Options) (*DB, error) {
-	// Options are required when opening a new instance of Wildcat.  Only a directory is required, the rest are automatically set.
+	// Options are required when opening a new Wildcat db instance.
+	// Only a directory is required, a user can choose what options they want to set; The system set's defaults to what
+	// options are not set.
 	if opts == nil {
 		return nil, errors.New("options cannot be nil")
 	}
@@ -181,7 +183,7 @@ func Open(opts *Options) (*DB, error) {
 
 	// Initialize flusher and compactor
 	db.flusher = newFlusher(db)
-	db.compactor = newCompactor(db, db.opts.MaxCompactionConcurrency)
+	db.compactor = newCompactor(db)
 
 	// Check if the DB path does not end with i.e an /
 	// We add one if not
@@ -199,18 +201,9 @@ func Open(opts *Options) (*DB, error) {
 		}
 	}
 
-	// Initialize default state
-	db.idgs = &IDGeneratorState{
-		lastSstID: 0,
-		lastWalID: 0,
-		lastTxnID: 0,
-		db:        db,
-	}
-
 	// Check if the ID generator state file exists
 	idgsFilePath := fmt.Sprintf("%s%s", db.opts.Directory, IDGSTFileName)
 	if _, err := os.Stat(idgsFilePath); os.IsNotExist(err) {
-		// Initialize new id generator
 		db.idgs = &IDGeneratorState{
 			lastSstID: 0,
 			lastWalID: 0,
@@ -221,6 +214,13 @@ func Open(opts *Options) (*DB, error) {
 		db.walIdGenerator = newIDGenerator()
 		db.sstIdGenerator = newIDGenerator()
 	} else {
+		db.idgs = &IDGeneratorState{
+			lastSstID: 0,
+			lastWalID: 0,
+			lastTxnID: 0,
+			db:        db,
+		}
+
 		// Directory exists, load persisted ID generator state
 		if err := db.idgs.loadState(); err != nil {
 			return nil, fmt.Errorf("failed to load ID generator state: %w", err)
@@ -497,6 +497,8 @@ func (db *DB) reinstate() error {
 		return nil // No WAL files, just return as we created a new memtable and WAL
 	}
 
+	db.log(fmt.Sprintf("Found %d WAL files, processing them...", len(walFiles)))
+
 	// Global transaction map to track transactions across all WAL files
 	txnTimeline := make(map[int64][]*Txn)
 	var totalEntries int
@@ -653,7 +655,7 @@ func (db *DB) reinstate() error {
 		populateMemtableFromTxns(immutableMemt, globalTxnMap, db.opts.RecoverUncommittedTxns)
 
 		// Enqueue the memtable for flushing
-		db.flusher.enqueueMemtable(immutableMemt)
+		db.flusher.immutable.Enqueue(immutableMemt)
 		db.log(fmt.Sprintf("Enqueued immutable memtable %d of %d from %s for flushing",
 			i+1, len(walFiles)-1, walPath))
 	}

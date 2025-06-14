@@ -42,6 +42,7 @@ func (flusher *Flusher) queueMemtable() error {
 	defer atomic.StoreInt32(&flusher.swapping, 0)
 
 	walId := flusher.db.walIdGenerator.nextID()
+
 	// Create a new memtable
 	newMemtable := &Memtable{
 		db:       flusher.db,
@@ -320,12 +321,4 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 		sstable.Id, string(sstable.Min), string(sstable.Max), entryCount))
 
 	return nil
-}
-
-// enqueueMemtable enqueues an immutable memtable for flushing
-func (flusher *Flusher) enqueueMemtable(memt *Memtable) {
-
-	// Add the immutable memtable to the queue
-	flusher.immutable.Enqueue(memt)
-
 }

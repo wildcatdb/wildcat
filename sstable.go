@@ -46,19 +46,14 @@ func (sst *SSTable) get(key []byte, readTimestamp int64) ([]byte, int64) {
 	var klogBm *blockmanager.BlockManager
 	var err error
 
-	// Skip range check if Min or Max are empty
-	// Empty Min/Max indicate either an empty SSTable (which we can skip safely)
-	// or a corrupted range
-	if len(sst.Min) > 0 && len(sst.Max) > 0 {
+	if sst.EntryCount == 0 {
+		return nil, 0 // Empty SSTable
+	}
 
-		// Only skip if key is definitely outside the range
-		if bytes.Compare(key, sst.Min) < 0 || bytes.Compare(key, sst.Max) > 0 {
-			return nil, 0 // Key not in range
-		}
-	} else if sst.EntryCount == 0 {
-		// If the SSTable is empty (as confirmed by EntryCount),
-		// we can safely skip it regardless of Min/Max
-		return nil, 0
+	// Skip if key is outside known bounds
+	if (len(sst.Min) > 0 && bytes.Compare(key, sst.Min) < 0) ||
+		(len(sst.Max) > 0 && bytes.Compare(key, sst.Max) > 0) {
+		return nil, 0 // Key not in range
 	}
 
 	// If bloom filters are configured
