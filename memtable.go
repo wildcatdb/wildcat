@@ -14,7 +14,7 @@ import (
 
 // WAL is a write-ahead log structure
 type WAL struct {
-	path string // The WAL path i.e <db dir><timestamp>.wal
+	path string // The WAL path i.e <db dir><id>.wal
 }
 
 // Memtable is a memory table structure
@@ -36,22 +36,18 @@ func (memtable *Memtable) replay(activeTxns *[]*Txn) error {
 	walQueueEntry, ok := memtable.db.lru.Get(memtable.wal.path)
 	if !ok {
 		memtable.db.log(fmt.Sprintf("WAL file not in LRU cache, opening: %s", memtable.wal.path))
-		// Open the WAL file
 		walBm, err = blockmanager.Open(memtable.wal.path, os.O_RDWR|os.O_CREATE, memtable.db.opts.Permission, blockmanager.SyncOption(memtable.db.opts.SyncOption))
 		if err != nil {
 			return fmt.Errorf("failed to open WAL block manager: %w", err)
 		}
 
-		// Add to LRU cache
 		memtable.db.lru.Put(memtable.wal.path, walBm, func(key, value interface{}) {
-			// Close the block manager when evicted from LRU
 			if bm, ok := value.(*blockmanager.BlockManager); ok {
 				_ = bm.Close()
 			}
 		})
 	} else {
 		memtable.db.log(fmt.Sprintf("Found WAL file in LRU cache: %s", memtable.wal.path))
-		// Use the cached WAL file handle
 		walBm = walQueueEntry.(*blockmanager.BlockManager)
 	}
 

@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// Txn represents a transaction in Wildcat
+// Txn represents a transaction in a Wildcat DB instance
 type Txn struct {
 	Id        int64             // The transactions id, can be recovered
 	ReadSet   map[string]int64  // Key -> Timestamp

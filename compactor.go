@@ -46,15 +46,12 @@ type iterState struct {
 }
 
 // newCompactor creates a new compactor
-func newCompactor(db *DB, maxConcurrency int) *Compactor {
-	if maxConcurrency <= 0 {
-		maxConcurrency = db.opts.MaxCompactionConcurrency
-	}
+func newCompactor(db *DB) *Compactor {
 
 	return &Compactor{
 		db:              db,
 		compactionQueue: make([]*compactorJob, 0),
-		maxConcurrency:  maxConcurrency,
+		maxConcurrency:  db.opts.MaxCompactionConcurrency,
 		lastCompaction:  time.Now(),
 	}
 }
