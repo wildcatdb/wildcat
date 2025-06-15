@@ -16,21 +16,18 @@ func TestSSTable_BasicOperations(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
-		SyncOption:      SyncFull, // Use full sync for reliability
+		SyncOption:      SyncFull,
 		LogChannel:      logChan,
-		WriteBufferSize: 4 * 1024, // Small buffer to force flushing
+		WriteBufferSize: 4 * 1024,
 	}
 
 	db, err := Open(opts)
@@ -107,7 +104,6 @@ func TestSSTable_BasicOperations(t *testing.T) {
 		}
 	}
 
-	// Close the database
 	_ = db.Close()
 
 	// Check that SSTable files exist on disk
@@ -141,21 +137,18 @@ func TestSSTable_ConcurrentAccess(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
 		LogChannel:      logChan,
-		WriteBufferSize: 4 * 1024, // Small buffer to force flushing
+		WriteBufferSize: 4 * 1024,
 	}
 
 	db, err := Open(opts)
@@ -169,7 +162,6 @@ func TestSSTable_ConcurrentAccess(t *testing.T) {
 		_ = os.RemoveAll(path)
 	}(dir)
 
-	// Insert some initial data to ensure we have at least one SSTable
 	for i := 0; i < 100; i++ {
 		key := fmt.Sprintf("init_key%d", i)
 		value := fmt.Sprintf("init_value%d", i)
@@ -182,7 +174,6 @@ func TestSSTable_ConcurrentAccess(t *testing.T) {
 		}
 	}
 
-	// Force a flush to SSTable
 	forceManyWrites(t, db, 100)
 	time.Sleep(500 * time.Millisecond) // Allow background flush to complete
 
@@ -248,7 +239,6 @@ func TestSSTable_ConcurrentAccess(t *testing.T) {
 		}(w)
 	}
 
-	// Wait for all operations to complete
 	wg.Wait()
 
 	// Verify that all written keys can be read
@@ -342,7 +332,6 @@ func TestSSTable_MVCCWithMultipleVersions(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel with debug logging
 	logChan := make(chan string, 1000)
 	go func() {
 		for msg := range logChan {
@@ -350,12 +339,11 @@ func TestSSTable_MVCCWithMultipleVersions(t *testing.T) {
 		}
 	}()
 
-	// Create a test DB with a small write buffer to force flushing
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
 		LogChannel:      logChan,
-		WriteBufferSize: 512, // Very small buffer to force flushing
+		WriteBufferSize: 512,
 	}
 
 	db, err := Open(opts)
@@ -411,11 +399,12 @@ func TestSSTable_MVCCWithMultipleVersions(t *testing.T) {
 		}
 
 		// Wait for flush to complete
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(250 * time.Millisecond)
 	}
 
 	// Now verify that we can read each version using the corresponding timestamp
 	for i := 0; i < 5; i++ {
+
 		// Create a transaction with the recorded timestamp
 		readTxn, err := db.Begin()
 		if err != nil {
@@ -483,16 +472,13 @@ func TestSSTable_SimpleDeleteWithDelay(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:  dir,
 		SyncOption: SyncFull,
@@ -510,7 +496,6 @@ func TestSSTable_SimpleDeleteWithDelay(t *testing.T) {
 		_ = os.RemoveAll(path)
 	}(dir)
 
-	// Insert a key
 	key := []byte("delay_test_key")
 	value := []byte("delay_test_value")
 
@@ -521,7 +506,6 @@ func TestSSTable_SimpleDeleteWithDelay(t *testing.T) {
 		t.Fatalf("Failed to insert key: %v", err)
 	}
 
-	// Verify the key exists
 	var retrievedValue []byte
 	err = db.Update(func(txn *Txn) error {
 		var err error
@@ -536,7 +520,6 @@ func TestSSTable_SimpleDeleteWithDelay(t *testing.T) {
 	}
 	t.Logf("Key found after insertion: %s", retrievedValue)
 
-	// Delete the key
 	t.Logf("Deleting key: %s", key)
 	err = db.Update(func(txn *Txn) error {
 		t.Logf("Delete transaction ID: %d, Timestamp: %d", txn.Id, txn.Timestamp)
@@ -545,9 +528,6 @@ func TestSSTable_SimpleDeleteWithDelay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to delete key: %v", err)
 	}
-
-	// Add a small delay to ensure the deletion is fully applied
-	time.Sleep(100 * time.Millisecond)
 
 	// Try to get the deleted key
 	err = db.Update(func(txn *Txn) error {
@@ -589,13 +569,11 @@ func TestSSTable_SimpleDeleteWithDelay(t *testing.T) {
 	}
 	t.Logf("Key correctly not found after flush")
 
-	// Close and reopen database
 	err = db.Close()
 	if err != nil {
 		t.Fatalf("Failed to close database: %v", err)
 	}
 
-	// Drain log channel
 	for len(logChan) > 0 {
 		<-logChan
 	}

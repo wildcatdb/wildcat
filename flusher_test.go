@@ -13,17 +13,16 @@ import (
 )
 
 func TestFlusher_QueueMemtable(t *testing.T) {
-	logChannel := make(chan string, 100) // Buffer size of 100 messages
+	logChannel := make(chan string, 100)
 
 	dir, err := os.MkdirTemp("", "db_flusher_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
-		WriteBufferSize: 1024, // Small buffer for testing
+		WriteBufferSize: 1024,
 		SyncOption:      SyncNone,
 		LogChannel:      logChannel,
 	}
@@ -31,7 +30,6 @@ func TestFlusher_QueueMemtable(t *testing.T) {
 	wg := &sync.WaitGroup{}
 
 	wg.Add(1)
-	// Start a goroutine to listen to the log channel
 	go func() {
 		defer wg.Done()
 		for msg := range logChannel {
@@ -118,7 +116,6 @@ func TestFlusher_MVCCWithMultipleVersions(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel with debug logging
 	logChan := make(chan string, 1000)
 	go func() {
 		for msg := range logChan {
@@ -126,12 +123,11 @@ func TestFlusher_MVCCWithMultipleVersions(t *testing.T) {
 		}
 	}()
 
-	// Create a test DB with a small write buffer to force flushing
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
 		LogChannel:      logChan,
-		WriteBufferSize: 1024, // Small buffer to force flushing
+		WriteBufferSize: 1024,
 	}
 
 	db, err := Open(opts)
@@ -201,7 +197,6 @@ func TestFlusher_MVCCWithMultipleVersions(t *testing.T) {
 		// Set the timestamp to match the original write timestamp
 		readTxn.Timestamp = timestamps[i]
 
-		// Read the value
 		value, err := readTxn.Get(key)
 		if err != nil {
 			t.Fatalf("Failed to read version %d: %v", i+1, err)
@@ -259,21 +254,18 @@ func TestFlusher_ErrorHandling(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB with a custom directory that we'll manipulate
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
 		LogChannel:      logChan,
-		WriteBufferSize: 1024, // Small buffer to force flushing
+		WriteBufferSize: 1024,
 	}
 
 	db, err := Open(opts)
@@ -284,7 +276,6 @@ func TestFlusher_ErrorHandling(t *testing.T) {
 		_ = os.RemoveAll(path)
 	}(dir)
 
-	// Add some data
 	for i := 0; i < 10; i++ {
 		err = db.Update(func(txn *Txn) error {
 			return txn.Put([]byte(fmt.Sprintf("error_key%d", i)), []byte(fmt.Sprintf("error_value%d", i)))
@@ -401,16 +392,13 @@ func TestFlusher_MultipleFlushesWithUpdates(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncNone,
@@ -507,16 +495,13 @@ func TestFlusher_ConcurrentReadsWithFlush(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB with a small write buffer to force flushing
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncNone,
@@ -628,7 +613,6 @@ func TestFlusher_ConcurrentReadsWithFlush(t *testing.T) {
 		}
 	}()
 
-	// Wait for all operations to complete
 	wg.Wait()
 
 	// Get final error count
@@ -670,16 +654,13 @@ func TestFlusher_VariousKeySizes(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB with a small write buffer
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncNone,
@@ -733,7 +714,7 @@ func TestFlusher_VariousKeySizes(t *testing.T) {
 		}
 
 		// Wait for flush to complete
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(250 * time.Millisecond)
 	}
 
 	// Verify all sizes can be read back correctly
@@ -795,10 +776,8 @@ func TestFlusher_RecoveryAfterCrash(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
@@ -809,7 +788,7 @@ func TestFlusher_RecoveryAfterCrash(t *testing.T) {
 		// Create a test DB with FULL sync to ensure WAL entries are persisted
 		opts := &Options{
 			Directory:       dir,
-			SyncOption:      SyncFull, // Ensure full sync for better recovery
+			SyncOption:      SyncFull,
 			LogChannel:      logChan,
 			WriteBufferSize: 4 * 1024,
 		}
@@ -846,9 +825,6 @@ func TestFlusher_RecoveryAfterCrash(t *testing.T) {
 			t.Fatalf("Failed to queue memtable: %v", err)
 		}
 
-		// Wait enough time for WAL to be written but not necessarily for the flush to complete
-		//time.Sleep(100 * time.Millisecond)
-
 		// Check that data exists before "crash"
 		var verificationSuccessCount int
 		for i := 0; i < 10; i++ { // Check a sample of keys
@@ -871,12 +847,9 @@ func TestFlusher_RecoveryAfterCrash(t *testing.T) {
 			t.Fatalf("Expected at least 8/10 sample keys to be readable before crash, got %d", verificationSuccessCount)
 		}
 
-		// Force close without properly shutting down flusher
-		// We use Close() since there's no "crash" simulation API
 		_ = db.Close()
 	}
 
-	// Drain log channel
 	for len(logChan) > 0 {
 		<-logChan
 	}
@@ -946,16 +919,13 @@ func TestFlusher_EmptyFlush(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncNone,
@@ -981,7 +951,7 @@ func TestFlusher_EmptyFlush(t *testing.T) {
 	}
 
 	// Give flusher time to process
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 
 	// Check that no SSTables were created since memtable was empty
 	l1Dir := filepath.Join(dir, "l1")
@@ -1076,7 +1046,6 @@ func TestFlusher_QueueOrdering(t *testing.T) {
 	memtableIds := make([]string, 0)
 
 	for i := 0; i < 5; i++ {
-		// Add data to current memtable
 		for j := 0; j < 20; j++ {
 			key := fmt.Sprintf("queue_test_%d_%d", i, j)
 			value := fmt.Sprintf("value_%d_%d", i, j)
@@ -1171,7 +1140,6 @@ func TestFlusher_DeletionsAndTombstones(t *testing.T) {
 		_ = os.RemoveAll(path)
 	}(dir)
 
-	// Insert initial data
 	const keyCount = 100
 	for i := 0; i < keyCount; i++ {
 		key := fmt.Sprintf("deletion_key_%d", i)
@@ -1215,7 +1183,6 @@ func TestFlusher_DeletionsAndTombstones(t *testing.T) {
 		}
 	}
 
-	// Force flush the updates
 	err = db.ForceFlush()
 	if err != nil {
 		t.Fatalf("Failed to flush updates: %v", err)

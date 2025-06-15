@@ -33,7 +33,7 @@ func (l *Level) reopen() error {
 		return fmt.Errorf("failed to read level directory: %w", err)
 	}
 
-	// Find KLog files to identify SSTables
+	// We find KLog files to identify SSTables
 	var sstables []*SSTable
 
 	for _, file := range files {
@@ -185,7 +185,6 @@ func (l *Level) reopen() error {
 	}
 	l.setSize(totalSize)
 
-	// Store the sorted SSTables
 	l.sstables.Store(&sstables)
 
 	l.db.log(fmt.Sprintf("Level %d reopen completed: %d SSTables, total size %d bytes",

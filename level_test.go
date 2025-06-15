@@ -14,21 +14,18 @@ func TestLevel_BasicOperations(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
-		SyncOption:      SyncFull, // Use full sync for reliability
+		SyncOption:      SyncFull,
 		LogChannel:      logChan,
-		WriteBufferSize: 4 * 1024, // Small buffer to force flushing
+		WriteBufferSize: 4 * 1024,
 	}
 
 	db, err := Open(opts)
@@ -95,7 +92,6 @@ func TestLevel_BasicOperations(t *testing.T) {
 
 	t.Logf("Level 1 size reported as: %d", level1.getSize())
 
-	// Close the DB to ensure all data is flushed
 	err = db.Close()
 	if err != nil {
 		t.Fatalf("Failed to close database: %v", err)
@@ -139,16 +135,14 @@ func TestLevel_Reopen(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel that won't be closed in this test
 	logChan := make(chan string, 100)
 
-	// First DB instance to create data
 	{
 		opts := &Options{
 			Directory:       dir,
 			SyncOption:      SyncFull,
 			LogChannel:      logChan,
-			WriteBufferSize: 4 * 1024, // Small buffer to force flushing
+			WriteBufferSize: 4 * 1024,
 		}
 
 		db, err := Open(opts)
@@ -205,7 +199,6 @@ func TestLevel_Reopen(t *testing.T) {
 
 	// Second DB instance to test reopening
 	{
-		// Create new log channel for second instance
 		logChan = make(chan string, 100)
 		defer func() {
 			for len(logChan) > 0 {
@@ -257,7 +250,6 @@ func TestLevel_Reopen(t *testing.T) {
 			}
 		}
 
-		// Close properly
 		err = db2.Close()
 		if err != nil {
 			t.Fatalf("Failed to close second database instance: %v", err)
@@ -271,21 +263,18 @@ func TestLevel_SizeMethods(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
 		LogChannel:      logChan,
-		WriteBufferSize: 4 * 1024, // Small buffer to force flushing
+		WriteBufferSize: 4 * 1024,
 	}
 
 	db, err := Open(opts)
@@ -351,7 +340,6 @@ func TestLevel_SizeMethods(t *testing.T) {
 		t.Errorf("Expected level size to increase after data insertion")
 	}
 
-	// Close the database
 	err = db.Close()
 	if err != nil {
 		t.Fatalf("Failed to close database: %v", err)
@@ -364,21 +352,18 @@ func TestLevel_ErrorHandling(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
 		LogChannel:      logChan,
-		WriteBufferSize: 4 * 1024, // Small buffer to force flushing
+		WriteBufferSize: 4 * 1024,
 	}
 
 	db, err := Open(opts)
@@ -408,7 +393,6 @@ func TestLevel_ErrorHandling(t *testing.T) {
 
 	}
 
-	// Close the database
 	err = db.Close()
 	if err != nil {
 		t.Fatalf("Failed to close database: %v", err)
@@ -477,7 +461,6 @@ func TestLevel_ErrorHandling(t *testing.T) {
 	}
 	t.Logf("Successfully read %d of 50 keys after corruption", successCount)
 
-	// Close the database
 	err = db2.Close()
 	if err != nil {
 		t.Fatalf("Failed to close reopened database: %v", err)
