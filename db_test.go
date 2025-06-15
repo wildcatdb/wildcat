@@ -33,8 +33,7 @@ func TestOpen(t *testing.T) {
 
 	}()
 
-	// Create a log channel
-	logChannel := make(chan string, 100) // Buffer size of 100 messages
+	logChannel := make(chan string, 100)
 
 	opts := &Options{
 		Directory:  "testdb",
@@ -45,7 +44,6 @@ func TestOpen(t *testing.T) {
 
 	wg.Add(1)
 
-	// Start a goroutine to listen to the log channel
 	go func() {
 		defer wg.Done()
 		for msg := range logChannel {
@@ -53,7 +51,6 @@ func TestOpen(t *testing.T) {
 		}
 	}()
 
-	// Open or create the database
 	db, err := Open(opts)
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)

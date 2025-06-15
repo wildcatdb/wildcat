@@ -319,7 +319,6 @@ func (mi *MergeIterator) extractKLogEntry(value interface{}) (*KLogEntry, error)
 	} else if doc, ok := value.(primitive.D); ok {
 		entry = &KLogEntry{}
 
-		// Extract fields from primitive.D (bson)
 		for _, elem := range doc {
 			switch elem.Key {
 			case "key":
@@ -337,7 +336,6 @@ func (mi *MergeIterator) extractKLogEntry(value interface{}) (*KLogEntry, error)
 			}
 		}
 	} else {
-		// Unknown type, try to convert via BSON
 		bsonData, err := bson.Marshal(value)
 		if err != nil {
 			return nil, err
@@ -494,7 +492,6 @@ func (mi *MergeIterator) nextAscending() ([]byte, []byte, int64, bool) {
 		}
 	}
 
-	// Advance the current iterator
 	mi.advanceIterator(current)
 	if !current.exhausted {
 		heap.Push(&mi.heap, current)
@@ -531,7 +528,6 @@ func (mi *MergeIterator) nextDescending() ([]byte, []byte, int64, bool) {
 		}
 	}
 
-	// Advance the current iterator
 	mi.advanceIterator(current)
 	if !current.exhausted {
 		heap.Push(&mi.reverseHeap, current)
@@ -546,7 +542,6 @@ func (mi *MergeIterator) nextDescending() ([]byte, []byte, int64, bool) {
 
 // Prev returns the previous key-value pair (opposite of configured direction)
 func (mi *MergeIterator) Prev() ([]byte, []byte, int64, bool) {
-	// Check if we have any iterators at all
 	if len(mi.allIterators) == 0 {
 		return nil, nil, 0, false
 	}
@@ -735,6 +730,7 @@ func (h iteratorHeap) Less(i, j int) bool {
 	if cmp != 0 {
 		return cmp < 0
 	}
+
 	// If keys are equal, prioritize by timestamp (newer first)
 	return h[i].currentTimestamp > h[j].currentTimestamp
 }

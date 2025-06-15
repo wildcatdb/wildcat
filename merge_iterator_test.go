@@ -16,16 +16,13 @@ func TestMergeIterator_MVCC(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
@@ -112,24 +109,21 @@ func TestMergeIterator_LargeScale(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	keys := [][]byte{}
-	values := [][]byte{}
+	var keys [][]byte
+	var values [][]byte
 
 	for i := 0; i < 20; i++ {
 		keys = append(keys, []byte(fmt.Sprintf("key%d", i)))
 		values = append(values, []byte(fmt.Sprintf("value%d_v1", i)))
 	}
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
@@ -148,7 +142,6 @@ func TestMergeIterator_LargeScale(t *testing.T) {
 		_ = os.RemoveAll(path)
 	}(dir)
 
-	// Insert a large number of keys
 	numKeys := 20
 	for i := 0; i < numKeys; i++ {
 		err = db.Update(func(txn *Txn) error {
@@ -164,7 +157,6 @@ func TestMergeIterator_LargeScale(t *testing.T) {
 		t.Fatalf("Failed to insert initial data: %v", err)
 	}
 
-	// Print sstable count
 	fmt.Println(db.Stats())
 
 	// Update the same keys with newer values
@@ -223,16 +215,13 @@ func TestMergeIterator_Bidirectional(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
@@ -457,21 +446,18 @@ func TestMergeIterator_BidirectionalWithMVCC(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
 		LogChannel:      logChan,
-		WriteBufferSize: 2 * 1024, // Small buffer to force flushing
+		WriteBufferSize: 2 * 1024,
 	}
 
 	db, err := Open(opts)
@@ -543,6 +529,7 @@ func TestMergeIterator_BidirectionalWithMVCC(t *testing.T) {
 			keyStr := fmt.Sprintf("key%02d", i)
 			var expectedValue string
 			if i%2 == 0 && i < 10 {
+
 				// Even keys were updated
 				expectedValue = fmt.Sprintf("value%02d_v2", i)
 			} else {
@@ -615,16 +602,13 @@ func TestMergeIterator_EdgeCases(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
@@ -671,7 +655,6 @@ func TestMergeIterator_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("Single Item", func(t *testing.T) {
-		// Insert one item
 		err = db.Update(func(txn *Txn) error {
 			return txn.Put([]byte("single"), []byte("item"))
 		})
@@ -760,16 +743,13 @@ func TestMergeIterator_BidirectionalMultipleSources(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
@@ -1044,16 +1024,13 @@ func TestMergeIterator_BidirectionalStressTest(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
@@ -1079,6 +1056,7 @@ func TestMergeIterator_BidirectionalStressTest(t *testing.T) {
 	for batch := 0; batch < numBatches; batch++ {
 		err = db.Update(func(txn *Txn) error {
 			for i := 0; i < keysPerBatch; i++ {
+
 				// Create overlapping keys across batches
 				keyIndex := (batch*keysPerBatch/2 + i) % (keysPerBatch * 2)
 				key := fmt.Sprintf("stress_key_%03d", keyIndex)
@@ -1245,16 +1223,13 @@ func TestMergeIterator_RangeBasic(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
@@ -1419,21 +1394,18 @@ func TestMergeIterator_RangeWithMVCC(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
 		LogChannel:      logChan,
-		WriteBufferSize: 2 * 1024, // Small buffer to force flushing
+		WriteBufferSize: 2 * 1024,
 	}
 
 	db, err := Open(opts)
@@ -1447,7 +1419,6 @@ func TestMergeIterator_RangeWithMVCC(t *testing.T) {
 		_ = os.RemoveAll(path)
 	}(dir)
 
-	// Insert initial data
 	err = db.Update(func(txn *Txn) error {
 		for i := 0; i < 20; i++ {
 			key := fmt.Sprintf("key%02d", i)
@@ -1551,7 +1522,6 @@ func TestMergeIterator_RangeWithMVCC(t *testing.T) {
 			}
 		}
 
-		// Verify MVCC
 		for i := 5; i < 15; i++ {
 			keyStr := fmt.Sprintf("key%02d", i)
 			expectedValue := fmt.Sprintf("value%02d_v2", i)
@@ -1570,16 +1540,13 @@ func TestMergeIterator_PrefixBasic(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
@@ -1750,16 +1717,13 @@ func TestMergeIterator_PrefixWithMVCC(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
@@ -1915,16 +1879,13 @@ func TestMergeIterator_RangeBidirectional(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
@@ -1943,7 +1904,6 @@ func TestMergeIterator_RangeBidirectional(t *testing.T) {
 		_ = os.RemoveAll(path)
 	}(dir)
 
-	// Insert test data
 	testKeys := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
 	err = db.Update(func(txn *Txn) error {
 		for _, key := range testKeys {
@@ -2034,16 +1994,13 @@ func TestMergeIterator_RangeMultipleSources(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
@@ -2098,7 +2055,6 @@ func TestMergeIterator_RangeMultipleSources(t *testing.T) {
 		t.Fatalf("Failed to insert second batch: %v", err)
 	}
 
-	// Force another flush
 	err = db.ForceFlush()
 	if err != nil {
 		t.Fatalf("Failed to force second flush: %v", err)
@@ -2250,16 +2206,13 @@ func TestMergeIterator_PrefixMultipleSources(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
@@ -2299,7 +2252,6 @@ func TestMergeIterator_PrefixMultipleSources(t *testing.T) {
 		t.Fatalf("Failed to insert initial data: %v", err)
 	}
 
-	// Force flush
 	err = db.ForceFlush()
 	if err != nil {
 		t.Fatalf("Failed to force flush: %v", err)
@@ -2320,7 +2272,6 @@ func TestMergeIterator_PrefixMultipleSources(t *testing.T) {
 		t.Fatalf("Failed to insert second batch: %v", err)
 	}
 
-	// Force another flush
 	err = db.ForceFlush()
 	if err != nil {
 		t.Fatalf("Failed to force second flush: %v", err)
@@ -2341,7 +2292,6 @@ func TestMergeIterator_PrefixMultipleSources(t *testing.T) {
 		t.Fatalf("Failed to insert third batch: %v", err)
 	}
 
-	// Print stats
 	log.Println("Prefix multi-source database stats:")
 	log.Println(db.Stats())
 
@@ -2479,16 +2429,13 @@ func TestMergeIterator_RangeAndPrefixEdgeCases(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,

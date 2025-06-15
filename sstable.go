@@ -41,7 +41,6 @@ func (sst *SSTable) get(key []byte, readTimestamp int64) ([]byte, int64) {
 	atomic.CompareAndSwapInt32(&sst.isBeingRead, 0, 1)
 	defer atomic.CompareAndSwapInt32(&sst.isBeingRead, 1, 0)
 
-	// Get the KLog block manager
 	klogPath := sst.kLogPath()
 	var klogBm *blockmanager.BlockManager
 	var err error

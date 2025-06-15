@@ -552,8 +552,32 @@ Wildcat provides many configuration options for fine-tuning.
 
 ## Shared C Library
 You will require the latest Go toolchain to build the shared C library for Wildcat. This allows you to use Wildcat as a C library in other languages.
+
+### Building the C Library
 ```bash
-go build -buildmode=c-shared -o libwildcat.so wildcat_c.go
+# Linux x64
+GOOS=linux GOARCH=amd64 go build -buildmode=c-shared -o libwildcat.so wildcat_c.go
+
+# Linux ARM64
+GOOS=linux GOARCH=arm64 go build -buildmode=c-shared -o libwildcat.so wildcat_c.go
+
+# Windows x64
+GOOS=windows GOARCH=amd64 go build -buildmode=c-shared -o wildcat.dll wildcat_c.go
+
+# Windows ARM64
+GOOS=windows GOARCH=arm64 go build -buildmode=c-shared -o wildcat.dll wildcat_c.go
+
+# macOS x64 (Intel)
+GOOS=darwin GOARCH=amd64 go build -buildmode=c-shared -o libwildcat.dylib wildcat_c.go
+
+# macOS ARM64 (Apple Silicon)
+GOOS=darwin GOARCH=arm64 go build -buildmode=c-shared -o libwildcat.dylib wildcat_c.go
+
+# FreeBSD x64
+GOOS=freebsd GOARCH=amd64 go build -buildmode=c-shared -o libwildcat.so wildcat_c.go
+
+# FreeBSD ARM64
+GOOS=freebsd GOARCH=arm64 go build -buildmode=c-shared -o libwildcat.so wildcat_c.go
 ```
 
 ### C API

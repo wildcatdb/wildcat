@@ -144,7 +144,7 @@ func (txn *Txn) Commit() error {
 
 	txn.mutex.Lock()
 	defer txn.mutex.Unlock()
-	defer txn.remove() // Ensure cleanup happens
+	defer txn.remove()
 
 	if txn.Committed {
 		return nil // Already committed
@@ -175,7 +175,6 @@ func (txn *Txn) Commit() error {
 
 	// Check if we need to enqueue the memtable for flush
 	if atomic.LoadInt64(&txn.db.memtable.Load().(*Memtable).size) > txn.db.opts.WriteBufferSize {
-		// Enqueue the memtable for flush and swap
 		err = txn.db.flusher.queueMemtable()
 		if err != nil {
 			return fmt.Errorf("failed to queue memtable: %w", err)
@@ -307,6 +306,8 @@ func (db *DB) Update(fn func(txn *Txn) error) error {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
+	defer txn.remove()
+
 	fnErr := fn(txn)
 	if fnErr != nil {
 		rollbackErr := txn.Rollback()
@@ -329,7 +330,7 @@ func (db *DB) View(fn func(txn *Txn) error) error {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
-	defer txn.remove() // Ensure transaction is cleaned up
+	defer txn.remove()
 
 	fnErr := fn(txn)
 	if fnErr != nil {
@@ -637,7 +638,6 @@ func (txn *Txn) remove() {
 	txn.DeleteSet = make(map[string]bool)
 	txn.Committed = false
 
-	// Remove from buffer
 	_ = txn.db.txnBuffer.Remove(txn.Id)
 }
 
@@ -655,7 +655,6 @@ func (txn *Txn) appendWal() error {
 		wal, ok := txn.db.lru.Get(walPath)
 		if !ok {
 
-			// Open the WAL file
 			walBm, err := blockmanager.Open(walPath, os.O_WRONLY|os.O_APPEND,
 				txn.db.opts.Permission, blockmanager.SyncOption(txn.db.opts.SyncOption))
 			if err != nil {
@@ -667,15 +666,12 @@ func (txn *Txn) appendWal() error {
 				continue
 			}
 
-			// Add to LRU cache
 			txn.db.lru.Put(walPath, walBm, func(key, value interface{}) {
-				// Close the block manager when evicted from LRU
 				if bm, ok := value.(*blockmanager.BlockManager); ok {
 					_ = bm.Close()
 				}
 			})
 
-			// Use the newly opened WAL
 			wal = walBm
 		}
 
@@ -687,15 +683,12 @@ func (txn *Txn) appendWal() error {
 
 		lastErr = err
 
-		// Special handling for bad file descriptor errors
 		needsReopen := errors.Is(err, syscall.EBADF) ||
 			strings.Contains(err.Error(), "bad file descriptor")
 
 		if needsReopen {
-			// Remove the bad file descriptor from cache first
 			txn.db.lru.Delete(walPath)
 
-			// Reopen the WAL file
 			walBm, err := blockmanager.Open(walPath, os.O_WRONLY|os.O_APPEND,
 				txn.db.opts.Permission, blockmanager.SyncOption(txn.db.opts.SyncOption))
 			if err != nil {
@@ -707,14 +700,12 @@ func (txn *Txn) appendWal() error {
 				continue
 			}
 
-			// Add to LRU cache
 			txn.db.lru.Put(walPath, walBm, func(key, value interface{}) {
 				if bm, ok := value.(*blockmanager.BlockManager); ok {
 					_ = bm.Close()
 				}
 			})
 
-			// Try to append again immediately with the new descriptor
 			_, err = walBm.Append(data)
 			if err == nil {
 				// Success after reopen EXIT!!
@@ -726,12 +717,10 @@ func (txn *Txn) appendWal() error {
 			lastErr = fmt.Errorf("failed to append transaction to WAL: %w", err)
 		}
 
-		// Check if we've used all our retries
 		if attempt == txn.db.opts.WalAppendRetry {
 			return lastErr
 		}
 
-		// Wait before next retry
 		time.Sleep(txn.db.opts.WalAppendBackoff)
 	}
 

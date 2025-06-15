@@ -15,10 +15,8 @@ func TestMemtable_BasicOperations(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel that won't be closed in this test
 	logChan := make(chan string, 100)
 
-	// Create a test DB
 	opts := &Options{
 		Directory:  dir,
 		SyncOption: SyncNone,
@@ -33,7 +31,6 @@ func TestMemtable_BasicOperations(t *testing.T) {
 		_ = os.RemoveAll(path)
 	}(dir)
 
-	// Test basic write operations
 	testData := map[string]string{
 		"key1": "value1",
 		"key2": "value2",
@@ -42,7 +39,6 @@ func TestMemtable_BasicOperations(t *testing.T) {
 		"key5": "value5",
 	}
 
-	// Write data through transactions
 	for key, value := range testData {
 		err = db.Update(func(txn *Txn) error {
 			return txn.Put([]byte(key), []byte(value))
@@ -91,16 +87,12 @@ func TestMemtable_BasicOperations(t *testing.T) {
 	// Get the current memtable
 	memtable := db.memtable.Load().(*Memtable)
 
-	// Close DB properly
 	_ = db.Close()
 
-	// Drain the log channel to avoid goroutine leaks
 	for len(logChan) > 0 {
 		<-logChan
 	}
 
-	// Verify memtable size tracking
-	// Note: We're just checking it's non-zero since the exact size depends on implementation details
 	if memtable.size <= 0 {
 		t.Errorf("Expected memtable size to be positive, got %d", memtable.size)
 	}
@@ -112,10 +104,8 @@ func TestMemtable_ConcurrentOperations(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 
-	// Create a test DB
 	opts := &Options{
 		Directory:  dir,
 		SyncOption: SyncNone,
@@ -130,9 +120,8 @@ func TestMemtable_ConcurrentOperations(t *testing.T) {
 		_ = os.RemoveAll(path)
 	}(dir)
 
-	// Number of concurrent goroutines - reduced for test stability
 	const numGoroutines = 5
-	// Operations per goroutine - reduced for test stability
+
 	const opsPerGoroutine = 20
 
 	var wg sync.WaitGroup
@@ -165,7 +154,6 @@ func TestMemtable_ConcurrentOperations(t *testing.T) {
 		}(g)
 	}
 
-	// Wait for all writers to finish
 	wg.Wait()
 
 	// Verify all data was written correctly
@@ -196,10 +184,8 @@ func TestMemtable_ConcurrentOperations(t *testing.T) {
 		t.Logf("Concurrent operations: %d out of %d succeeded", successCount, numGoroutines*opsPerGoroutine)
 	}
 
-	// Close properly
 	_ = db.Close()
 
-	// Drain the log channel
 	for len(logChan) > 0 {
 		<-logChan
 	}
@@ -215,10 +201,8 @@ func TestMemtable_MVCC(t *testing.T) {
 
 	}(dir)
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 
-	// Create a test DB
 	opts := &Options{
 		Directory:  dir,
 		SyncOption: SyncNone,
@@ -313,10 +297,8 @@ func TestMemtable_MVCC(t *testing.T) {
 		t.Errorf("Expected 'value3' in new transaction, got '%s'", result3)
 	}
 
-	// Clean up
 	_ = db.Close()
 
-	// Drain the log channel
 	for len(logChan) > 0 {
 		<-logChan
 	}
@@ -328,10 +310,8 @@ func TestMemtable_LargeValues(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 
-	// Create a test DB
 	opts := &Options{
 		Directory:  dir,
 		SyncOption: SyncFull,
@@ -352,7 +332,6 @@ func TestMemtable_LargeValues(t *testing.T) {
 		largeValue[i] = byte(i % 256)
 	}
 
-	// Write the large value
 	err = db.Update(func(txn *Txn) error {
 		return txn.Put([]byte("large_key"), largeValue)
 	})
@@ -360,13 +339,11 @@ func TestMemtable_LargeValues(t *testing.T) {
 		t.Fatalf("Failed to write large value: %v", err)
 	}
 
-	// Check the memtable size
 	memtable := db.memtable.Load().(*Memtable)
 	if memtable.size < int64(len(largeValue)) {
 		t.Errorf("Expected memtable size to be at least %d, got %d", len(largeValue), memtable.size)
 	}
 
-	// Add some verification here before closing
 	var readValue []byte
 	err = db.Update(func(txn *Txn) error {
 		var err error
@@ -377,17 +354,14 @@ func TestMemtable_LargeValues(t *testing.T) {
 		t.Fatalf("Failed to read large value: %v", err)
 	}
 
-	// Verify the value was stored correctly
 	if !bytes.Equal(readValue, largeValue) {
 		t.Errorf("Large value mismatch: expected len=%d, got len=%d", len(largeValue), len(readValue))
 	} else {
 		t.Logf("Successfully verified large value of size %d bytes", len(largeValue))
 	}
 
-	// Close the DB properly
 	_ = db.Close()
 
-	// Drain the log channel
 	for len(logChan) > 0 {
 		<-logChan
 	}
@@ -399,15 +373,13 @@ func TestMemtable_Replay(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 
-	// Create a test DB with very explicit options
 	opts := &Options{
 		Directory:       dir,
-		SyncOption:      SyncFull, // Use full sync for reliable WAL testing
+		SyncOption:      SyncFull,
 		LogChannel:      logChan,
-		WriteBufferSize: 4 * 1024 * 1024, // Set a reasonable size
+		WriteBufferSize: 4 * 1024 * 1024,
 	}
 
 	//  Create and populate the database
@@ -419,12 +391,10 @@ func TestMemtable_Replay(t *testing.T) {
 		_ = os.RemoveAll(path)
 	}(dir)
 
-	// Insert just 5 keys for an even simpler test
 	for i := 1; i <= 5; i++ {
 		key := []byte(fmt.Sprintf("replay_key%d", i))
 		value := []byte(fmt.Sprintf("replay_value%d", i))
 
-		// Write each key in its own transaction for clarity
 		err = db.Update(func(txn *Txn) error {
 			return txn.Put(key, value)
 		})
@@ -432,7 +402,6 @@ func TestMemtable_Replay(t *testing.T) {
 			t.Fatalf("Failed to write key %s: %v", key, err)
 		}
 
-		// Verify it was written correctly
 		var readValue []byte
 		err = db.Update(func(txn *Txn) error {
 			var err error
@@ -449,7 +418,6 @@ func TestMemtable_Replay(t *testing.T) {
 		t.Logf("Successfully wrote and verified key '%s' with value '%s'", key, value)
 	}
 
-	// Add one more key and then delete it to test deletion
 	deleteKey := []byte("delete_test_key")
 	err = db.Update(func(txn *Txn) error {
 		return txn.Put(deleteKey, []byte("to_be_deleted"))
@@ -490,7 +458,6 @@ func TestMemtable_Replay(t *testing.T) {
 		t.Fatalf("Failed to close database: %v", err)
 	}
 
-	// Drain the log channel
 	for len(logChan) > 0 {
 		<-logChan
 	}
@@ -543,14 +510,12 @@ func TestMemtable_Replay(t *testing.T) {
 		}
 	}
 
-	// Close properly
 	t.Log("Closing reopened database...")
 	err = db2.Close()
 	if err != nil {
 		t.Fatalf("Failed to close reopened database: %v", err)
 	}
 
-	// Drain the log channel
 	for len(logChan) > 0 {
 		<-logChan
 	}
@@ -562,10 +527,8 @@ func TestMemtable_UncommittedTransactions(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 
-	// Create a test DB
 	opts := &Options{
 		Directory:  dir,
 		SyncOption: SyncFull,
@@ -621,15 +584,12 @@ func TestMemtable_UncommittedTransactions(t *testing.T) {
 		t.Fatalf("Failed to roll back transaction: %v", err)
 	}
 
-	// Close the database
 	_ = db.Close()
 
-	// Drain the log channel
 	for len(logChan) > 0 {
 		<-logChan
 	}
 
-	// Create a new log channel for the new instance
 	logChan = make(chan string, 100)
 
 	opts2 := &Options{
@@ -684,10 +644,8 @@ func TestMemtable_UncommittedTransactions(t *testing.T) {
 		t.Errorf("Rolled back key check failed: %v", err)
 	}
 
-	// Close properly
 	_ = db2.Close()
 
-	// Drain the log channel
 	for len(logChan) > 0 {
 		<-logChan
 	}

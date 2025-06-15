@@ -7,9 +7,7 @@ import (
 	"testing"
 )
 
-// TestSSTableSerialization tests the serialization and deserialization of SSTable
 func TestSSTableSerialization(t *testing.T) {
-	// Create a test SSTable
 	original := &SSTable{
 		Id:         12345,
 		Min:        []byte("aaaaa"),
@@ -21,20 +19,17 @@ func TestSSTableSerialization(t *testing.T) {
 		db:         nil, // We can't compare functions, so leaving this nil
 	}
 
-	// Serialize the SSTable
 	data, err := original.serializeSSTable()
 	if err != nil {
 		t.Fatalf("Failed to serialize SSTable: %v", err)
 	}
 
-	// Deserialize the SSTable
 	result := &SSTable{}
 	err = result.deserializeSSTable(data)
 	if err != nil {
 		t.Fatalf("Failed to deserialize SSTable: %v", err)
 	}
 
-	// Compare the original and deserialized SSTable
 	if original.Id != result.Id {
 		t.Errorf("Id mismatch: expected %d, got %d", original.Id, result.Id)
 	}
@@ -56,15 +51,13 @@ func TestSSTableSerialization(t *testing.T) {
 	if original.Level != result.Level {
 		t.Errorf("Level mismatch: expected %d, got %d", original.Level, result.Level)
 	}
-	// We don't compare db field as it's a pointer to DB
+
 }
 
-// TestTxnSerialization tests the serialization and deserialization of Txn
 func TestTxnSerialization(t *testing.T) {
-	// Create a test transaction
 	original := &Txn{
 		Id:        123,
-		db:        nil, // We can't compare functions, so leaving this nil
+		db:        nil,
 		ReadSet:   map[string]int64{"key1": 100, "key2": 200},
 		WriteSet:  map[string][]byte{"key3": []byte("value3"), "key4": []byte("value4")},
 		DeleteSet: map[string]bool{"key5": true, "key6": false},
@@ -73,20 +66,17 @@ func TestTxnSerialization(t *testing.T) {
 		Committed: true,
 	}
 
-	// Serialize the transaction
 	data, err := original.serializeTransaction()
 	if err != nil {
 		t.Fatalf("Failed to serialize transaction: %v", err)
 	}
 
-	// Deserialize the transaction
 	result := &Txn{}
 	err = result.deserializeTransaction(data)
 	if err != nil {
 		t.Fatalf("Failed to deserialize transaction: %v", err)
 	}
 
-	// Compare the original and deserialized transaction
 	if original.Id != result.Id {
 		t.Errorf("id mismatch: expected %d, got %d", original.Id, result.Id)
 	}
@@ -116,16 +106,10 @@ func TestTxnSerialization(t *testing.T) {
 	if original.Committed != result.Committed {
 		t.Errorf("Committed mismatch: expected %t, got %t", original.Committed, result.Committed)
 	}
-	// We don't compare db field as it's a pointer to DB
-	// We don't compare mutex as it's not easily comparable
 }
 
-// TestSSTableSerializationError tests error handling in SSTable serialization
 func TestSSTableSerializationError(t *testing.T) {
-	// Create an invalid SSTable that would cause serialization to fail
-	// This is difficult to simulate with gob, but we can test error handling
 
-	// Test deserialize with empty data
 	sst := &SSTable{}
 	err := sst.deserializeSSTable([]byte{})
 	if err == nil {
@@ -133,9 +117,7 @@ func TestSSTableSerializationError(t *testing.T) {
 	}
 }
 
-// TestTxnSerializationError tests error handling in Txn serialization
 func TestTxnSerializationError(t *testing.T) {
-	// Test deserialize with empty data
 	txn := &Txn{}
 	err := txn.deserializeTransaction([]byte{})
 	if err == nil {
@@ -143,7 +125,6 @@ func TestTxnSerializationError(t *testing.T) {
 	}
 }
 
-// Additional test for all three serialization functions with corrupted data
 func TestCorruptedDataDeserialization(t *testing.T) {
 	// Create corrupted data (just some random bytes)
 	corruptedData := []byte{0x1, 0x2, 0x3, 0x4, 0x5}
@@ -162,4 +143,35 @@ func TestCorruptedDataDeserialization(t *testing.T) {
 		t.Errorf("Expected error when deserializing corrupted Txn data, got nil")
 	}
 
+}
+
+func TestSerializeIDGeneratorState(t *testing.T) {
+	original := &IDGeneratorState{
+		LastTxnID: 22,
+		LastSstID: 23,
+		LastWalID: 42,
+	}
+
+	data, err := original.serializeIDGeneratorState()
+	if err != nil {
+		t.Fatalf("Failed to serialize IDGeneratorState: %v", err)
+	}
+
+	result := &IDGeneratorState{}
+	err = result.deserializeIDGeneratorState(data)
+	if err != nil {
+		t.Fatalf("Failed to deserialize IDGeneratorState: %v", err)
+	}
+
+	if original.LastTxnID != result.LastTxnID {
+		t.Errorf("lastTxnID mismatch: expected %d, got %d", original.LastTxnID, result.LastTxnID)
+	}
+
+	if original.LastSstID != result.LastSstID {
+		t.Errorf("lastSstID mismatch: expected %d, got %d", original.LastSstID, result.LastSstID)
+	}
+
+	if original.LastWalID != result.LastWalID {
+		t.Errorf("lastWalID mismatch: expected %d, got %d", original.LastWalID, result.LastWalID)
+	}
 }

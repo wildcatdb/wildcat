@@ -8,7 +8,8 @@ import (
 // extractIDFromFilename extracts the ID from a given filename. <id>.<ext>
 func extractIDFromFilename(filename string) int64 {
 	parts := strings.Split(filename, ".")
-	// File names in wildcat are <id>.<ext>
+
+	// WAL file names in wildcat are <id>.<ext>
 	if len(parts) != 2 {
 		return 0
 	}

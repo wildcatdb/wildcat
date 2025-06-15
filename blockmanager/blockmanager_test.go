@@ -31,13 +31,11 @@ import (
 )
 
 func TestWriteHeader(t *testing.T) {
-	// Create a temporary directory for test files
+
 	tmpDir := os.TempDir()
 
-	// Create a test file path
 	testFilePath := filepath.Join(tmpDir, "test-write-header.db")
 
-	// Open the file for writing
 	file, err := os.OpenFile(testFilePath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
@@ -118,13 +116,11 @@ func TestWriteHeader(t *testing.T) {
 }
 
 func TestReadHeader(t *testing.T) {
-	// Create a temporary directory for test files
+
 	tmpDir := os.TempDir()
 
-	// Create a test file path
 	testFilePath := filepath.Join(tmpDir, "test-read-header.db")
 
-	// Open the file for writing
 	file, err := os.OpenFile(testFilePath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
@@ -327,13 +323,11 @@ func TestReadHeader(t *testing.T) {
 }
 
 func TestHeaderRoundTrip(t *testing.T) {
-	// Create a temporary directory for test files
+
 	tmpDir := os.TempDir()
 
-	// Create a test file path
 	testFilePath := filepath.Join(tmpDir, "test-round-trip.db")
 
-	// Open the file for writing
 	file, err := os.OpenFile(testFilePath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
@@ -392,10 +386,9 @@ func TestHeaderRoundTrip(t *testing.T) {
 }
 
 func TestOpenNewFile(t *testing.T) {
-	// Create a path for a new file
+
 	tempFilePath := os.TempDir() + "/blockmanager_open_test"
 
-	// Open a new file (should create it)
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
 	if err != nil {
 		t.Fatalf("Failed to open new file: %v", err)
@@ -431,11 +424,9 @@ func TestOpenNewFile(t *testing.T) {
 }
 
 func TestAppendSmallData(t *testing.T) {
-	// Create a path for a new file
-	tempFilePath := os.TempDir() + "/blockmanager_append_small_test"
-	// Clean up after test
 
-	// Open a new file
+	tempFilePath := os.TempDir() + "/blockmanager_append_small_test"
+
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)
@@ -472,11 +463,9 @@ func TestAppendSmallData(t *testing.T) {
 }
 
 func TestAppendLargeData(t *testing.T) {
-	// Create a path for a new file
-	tempFilePath := os.TempDir() + "/blockmanager_append_large_test"
-	// Clean up after test
 
-	// Open a new file
+	tempFilePath := os.TempDir() + "/blockmanager_append_large_test"
+
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncPartial, time.Millisecond*24)
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)
@@ -520,11 +509,9 @@ func TestAppendLargeData(t *testing.T) {
 }
 
 func TestMultipleAppendsAndReads(t *testing.T) {
-	// Create a path for a new file
-	tempFilePath := os.TempDir() + "/blockmanager_multiple_test"
-	// Clean up after test
 
-	// Open a new file
+	tempFilePath := os.TempDir() + "/blockmanager_multiple_test"
+
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)
@@ -575,9 +562,8 @@ func TestMultipleAppendsAndReads(t *testing.T) {
 }
 
 func TestReopenFile(t *testing.T) {
-	// Create a path for a new file
+
 	tempFilePath := os.TempDir() + "/blockmanager_reopen_test"
-	// Clean up after test
 
 	// Data to write
 	data := []byte("Test data for reopening file")
@@ -628,11 +614,9 @@ func TestReopenFile(t *testing.T) {
 }
 
 func TestAllotmentExhaustion(t *testing.T) {
-	// Create a path for a new file
-	tempFilePath := os.TempDir() + "/blockmanager_allotment_test"
-	// Clean up after test
 
-	// Open a new file
+	tempFilePath := os.TempDir() + "/blockmanager_allotment_test"
+
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncPartial, time.Millisecond*24)
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)
@@ -677,11 +661,9 @@ func TestAllotmentExhaustion(t *testing.T) {
 }
 
 func TestInvalidBlockRead(t *testing.T) {
-	// Create a path for a new file
-	tempFilePath := os.TempDir() + "/blockmanager_invalid_read_test"
-	// Clean up after test
 
-	// Open a new file
+	tempFilePath := os.TempDir() + "/blockmanager_invalid_read_test"
+
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncPartial, time.Millisecond*24)
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)
@@ -709,11 +691,9 @@ func TestInvalidBlockRead(t *testing.T) {
 }
 
 func TestEmptyAppend(t *testing.T) {
-	// Create a path for a new file
-	tempFilePath := os.TempDir() + "/blockmanager_empty_append_test"
-	// Clean up after test
 
-	// Open a new file
+	tempFilePath := os.TempDir() + "/blockmanager_empty_append_test"
+
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)
@@ -734,11 +714,9 @@ func TestEmptyAppend(t *testing.T) {
 }
 
 func TestGetInitialBlockID(t *testing.T) {
-	// Create a temporary file for testing
-	tempFilePath := os.TempDir() + "/blockmanager_initial_block_test"
-	// Clean up after test
 
-	// Open a new file
+	tempFilePath := os.TempDir() + "/blockmanager_initial_block_test"
+
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)
@@ -766,13 +744,12 @@ func TestGetInitialBlockID(t *testing.T) {
 }
 
 func TestIterator(t *testing.T) {
-	// Create a temporary file for testing
+
 	tempFile, err := os.CreateTemp("", "blockmanager_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
 
-	// Open the BlockManager
 	bm, err := Open(tempFile.Name(), os.O_RDWR|os.O_CREATE, 0644, SyncPartial, time.Millisecond*24)
 	if err != nil {
 		t.Fatalf("Failed to open BlockManager: %v", err)
@@ -879,7 +856,6 @@ func TestIteratorFromBlock(t *testing.T) {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
 
-	// Open the BlockManager
 	bm, err := Open(tempFile.Name(), os.O_RDWR|os.O_CREATE, 0644, SyncNone)
 	if err != nil {
 		t.Fatalf("Failed to open BlockManager: %v", err)
@@ -938,11 +914,9 @@ func TestIteratorFromBlock(t *testing.T) {
 }
 
 func TestScanForFreeBlocks(t *testing.T) {
-	// Create a temporary file for testing
-	tempFilePath := os.TempDir() + "/blockmanager_scan_free_test"
-	// Clean up after test
 
-	// Open a new file
+	tempFilePath := os.TempDir() + "/blockmanager_scan_free_test"
+
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)
@@ -1578,7 +1552,6 @@ func TestUpdatePreservesOtherData(t *testing.T) {
 func TestConcurrentAppends(t *testing.T) {
 	tempFilePath := os.TempDir() + "/blockmanager_concurrent_appends_test"
 
-	// Open a new file
 	bm, err := Open(tempFilePath, os.O_RDWR|os.O_CREATE, 0666, SyncNone)
 	if err != nil {
 		t.Fatalf("Failed to open file: %v", err)

@@ -11,7 +11,6 @@ import (
 )
 
 func TestCompactor_KeyRangeComparison(t *testing.T) {
-
 	// Create mock up of SSTables with different key ranges
 	tables := []*SSTable{
 		{
@@ -76,6 +75,7 @@ func TestCompactor_KeyRangeComparison(t *testing.T) {
 	var actualSmallestRange int
 
 	for i, table := range tables {
+
 		// Calculate actual lexicographic distance
 		rangeSize := len(table.Max) - len(table.Min)
 		if bytes.Equal(table.Max, table.Min) {
@@ -102,7 +102,6 @@ func TestCompactor_KeyRangeComparison(t *testing.T) {
 }
 
 func TestCompactor_SizeTieredRatio(t *testing.T) {
-	// Based on DefaultCompactionSizeTieredSimilarityRatio
 
 	// Create SSTables with different size relationships
 	tables := []*SSTable{
@@ -133,8 +132,6 @@ func TestCompactor_SizeTieredRatio(t *testing.T) {
 	}
 
 	t.Logf("Selected %d tables for size-tiered compaction", len(similarSized))
-
-	// What if the hardcoded 1.5 is too restrictive?
 
 	ratios := []float64{1.2, 1.5, 2.0}
 	for _, testRatio := range ratios {
@@ -199,12 +196,11 @@ func TestCompactor_Basic(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a test DB with a small write buffer to force flushing
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
 		LogChannel:      nil,
-		WriteBufferSize: 4 * 1024, // Small buffer to force flushing
+		WriteBufferSize: 4 * 1024,
 	}
 
 	db, err := Open(opts)
@@ -218,7 +214,6 @@ func TestCompactor_Basic(t *testing.T) {
 		_ = os.RemoveAll(path)
 	}(dir)
 
-	// Insert enough data to trigger multiple flushes
 	t.Log("Inserting data to trigger flushing...")
 	for i := 0; i < 100; i++ {
 		key := fmt.Sprintf("key%03d", i)
@@ -324,7 +319,6 @@ func TestCompactor_LeveledCompaction(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a test DB with smaller sizes to trigger compactions
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
@@ -458,12 +452,11 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a test DB with settings to trigger size-tiered compactions
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncNone,
 		LogChannel:      nil,
-		WriteBufferSize: 4 * 1024, // Small buffer to force flushing
+		WriteBufferSize: 4 * 1024,
 	}
 
 	db, err := Open(opts)
@@ -480,6 +473,7 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 	// Create multiple SSTables with similar sizes in L1
 	// Size-tiered compaction looks for similarly sized tables
 	for j := 0; j < db.opts.CompactionSizeThreshold+1; j++ {
+
 		// Each iteration creates one SSTable
 		valueSize := 50 // Keep values similar in size
 
@@ -604,12 +598,11 @@ func TestCompactor_CompactionQueue(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a test DB
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
 		LogChannel:      nil,
-		WriteBufferSize: 4 * 1024, // Small buffer to force flushing
+		WriteBufferSize: 4 * 1024,
 	}
 
 	db, err := Open(opts)
@@ -753,12 +746,11 @@ func TestCompactor_ConcurrentCompactions(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a test DB with multiple compaction concurrency
 	opts := &Options{
 		Directory:       dir,
 		SyncOption:      SyncFull,
 		LogChannel:      nil,
-		WriteBufferSize: 4 * 1024, // Small buffer to force flushing
+		WriteBufferSize: 4 * 1024,
 	}
 
 	db, err := Open(opts)

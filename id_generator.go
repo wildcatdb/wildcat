@@ -57,14 +57,13 @@ func (g *IDGenerator) nextID() int64 {
 		last := atomic.LoadInt64(&g.lastID)
 		var next int64
 
-		// Check if we're at max int64
 		if last == math.MaxInt64 {
 			if g.idgType == IDGTypeInt64 {
 				// Reset to 1 if using int64 ID generator
 				next = 1
 			} else {
 				// For timestamp-based, just increment by 1 nanosecond
-				next = time.Now().UnixNano()
+				next = time.Now().UnixNano() + 1
 			}
 		} else {
 			if g.idgType == IDGTypeTimestamp {

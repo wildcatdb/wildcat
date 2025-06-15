@@ -32,7 +32,6 @@ func (memtable *Memtable) replay(activeTxns *[]*Txn) error {
 
 	memtable.db.log(fmt.Sprintf("Replaying WAL for memtable: %s", memtable.wal.path))
 
-	// Check if wal file in lru cache and add debug logging
 	walQueueEntry, ok := memtable.db.lru.Get(memtable.wal.path)
 	if !ok {
 		memtable.db.log(fmt.Sprintf("WAL file not in LRU cache, opening: %s", memtable.wal.path))
@@ -73,7 +72,6 @@ func (memtable *Memtable) replay(activeTxns *[]*Txn) error {
 			continue
 		}
 
-		// Set the database reference
 		txn.db = memtable.db
 
 		// Check if we already have a transaction with this ID
@@ -139,7 +137,7 @@ func (memtable *Memtable) replay(activeTxns *[]*Txn) error {
 	return nil
 }
 
-// Creates a bloom filter from skiplist
+// createBloomFilter Creates a bloom filter from skiplist
 func (memtable *Memtable) createBloomFilter(entries int64) (*bloomfilter.BloomFilter, error) {
 	maxPossibleTs := time.Now().UnixNano() + 10000000000 // Far in the future
 	iter, err := memtable.skiplist.NewIterator(nil, maxPossibleTs)
@@ -161,7 +159,7 @@ func (memtable *Memtable) createBloomFilter(entries int64) (*bloomfilter.BloomFi
 		}
 
 		if val == nil {
-			continue // Skip deletion markers
+			continue // Skip deletion markers (tombstones)
 		}
 
 		err = bf.Add(key)

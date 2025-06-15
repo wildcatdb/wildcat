@@ -15,16 +15,13 @@ func TestTxn_BasicOperations(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:  dir,
 		SyncOption: SyncNone,
@@ -42,13 +39,11 @@ func TestTxn_BasicOperations(t *testing.T) {
 		_ = os.RemoveAll(path)
 	}(dir)
 
-	// Test basic transaction operations
 	txn, err := db.Begin()
 	if err != nil {
 		t.Fatalf("Failed to begin transaction 1: %v", err)
 	}
 
-	// Test Put operation
 	err = txn.Put([]byte("key1"), []byte("value1"))
 	if err != nil {
 		t.Fatalf("Failed to put key: %v", err)
@@ -77,7 +72,6 @@ func TestTxn_BasicOperations(t *testing.T) {
 		t.Errorf("Key should not be visible in other transaction before commit")
 	}
 
-	// Test commit
 	err = txn.Commit()
 	if err != nil {
 		t.Fatalf("Failed to commit transaction: %v", err)
@@ -131,22 +125,18 @@ func TestTxn_BasicOperations(t *testing.T) {
 }
 
 func TestTxn_Rollback(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_txn_rollback_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:  dir,
 		SyncOption: SyncNone,
@@ -216,22 +206,18 @@ func TestTxn_Rollback(t *testing.T) {
 }
 
 func TestTxn_Isolation(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_txn_isolation_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:  dir,
 		SyncOption: SyncNone,
@@ -310,22 +296,18 @@ func TestTxn_Isolation(t *testing.T) {
 }
 
 func TestTxn_Update(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_txn_update_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:  dir,
 		SyncOption: SyncNone,
@@ -392,22 +374,18 @@ func TestTxn_Update(t *testing.T) {
 }
 
 func TestTxn_ConcurrentOperations(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_txn_concurrent_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:  dir,
 		SyncOption: SyncNone,
@@ -427,13 +405,13 @@ func TestTxn_ConcurrentOperations(t *testing.T) {
 
 	// Number of concurrent writers
 	const numWriters = 5
+
 	// Keys per writer
 	const keysPerWriter = 20
 
 	var wg sync.WaitGroup
 	wg.Add(numWriters)
 
-	// Start concurrent writers
 	for w := 0; w < numWriters; w++ {
 		go func(writerID int) {
 			defer wg.Done()
@@ -497,29 +475,24 @@ func TestTxn_ConcurrentOperations(t *testing.T) {
 }
 
 func TestTxn_WALRecovery(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_txn_wal_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB with full sync
 	opts := &Options{
 		Directory:  dir,
 		SyncOption: SyncFull, // Use full sync for WAL reliability
 		LogChannel: logChan,
 	}
 
-	// Create DB and write data with different transaction states
 	db, err := Open(opts)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -528,7 +501,6 @@ func TestTxn_WALRecovery(t *testing.T) {
 		_ = os.RemoveAll(path)
 	}(dir)
 
-	// Committed transaction
 	err = db.Update(func(txn *Txn) error {
 		return txn.Put([]byte("committed_key"), []byte("committed_value"))
 	})
@@ -627,22 +599,18 @@ func TestTxn_WALRecovery(t *testing.T) {
 }
 
 func TestTxn_DeleteTimestamp(t *testing.T) {
-	// Create a temporary directory for the test
 	dir, err := os.MkdirTemp("", "db_transaction_delete_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 
-	// Create a log channel
 	logChan := make(chan string, 100)
 	defer func() {
-		// Drain the log channel
 		for len(logChan) > 0 {
 			<-logChan
 		}
 	}()
 
-	// Create a test DB
 	opts := &Options{
 		Directory:  dir,
 		SyncOption: SyncNone,
@@ -660,7 +628,6 @@ func TestTxn_DeleteTimestamp(t *testing.T) {
 		_ = os.RemoveAll(path)
 	}(dir)
 
-	// Insert a key
 	key := []byte("timestamp_test_key")
 	value := []byte("timestamp_test_value")
 
@@ -681,7 +648,6 @@ func TestTxn_DeleteTimestamp(t *testing.T) {
 		t.Fatalf("Failed to commit insert: %v", err)
 	}
 
-	// Verify the key exists
 	txn2, err := db.Begin()
 	if err != nil {
 		t.Fatalf("Failed to begin transaction 1: %v", err)
