@@ -92,9 +92,20 @@ func (compactor *Compactor) checkAndScheduleCompactions() {
 		return
 	}
 
-	// Evaluate each level for compaction
+	// Check if last level needs partitioning first
+	lastLevelIdx := len(*levels) - 1
+	if lastLevelIdx >= 2 {
+		lastLevel := (*levels)[lastLevelIdx]
+		if compactor.shouldPartitionLastLevel(lastLevel) {
+			compactor.scheduleLastLevelPartitioning(lastLevel, lastLevelIdx)
+			compactor.lastCompaction = time.Now()
+			return // Handle partitioning before any other compactions
+		}
+	}
+
+	// Regular compaction logic for all levels except the last
 	for i, level := range *levels {
-		// Skip last level
+		// Skip last level for regular compaction
 		if i == len(*levels)-1 {
 			continue
 		}
@@ -113,14 +124,11 @@ func (compactor *Compactor) checkAndScheduleCompactions() {
 
 		// Schedule compaction if score exceeds threshold
 		if score > 1.0 {
-			// For lower levels (0-2), use size-tiered compaction
 			if i < 2 {
 				compactor.scheduleSizeTieredCompaction(level, i, score)
 			} else {
-				// For higher levels, use leveled compaction
 				compactor.scheduleLeveledCompaction(level, i, score)
 			}
-
 			compactor.lastCompaction = time.Now()
 		}
 	}
@@ -140,21 +148,34 @@ func (compactor *Compactor) scheduleSizeTieredCompaction(level *Level, levelNum 
 
 	compactor.db.log(fmt.Sprintf("Scheduling size-tiered compaction for level %d with score %.2f", levelNum, score))
 
-	// Sort safe SSTables by size for size-tiered compaction
-	sort.Slice(*sstables, func(i, j int) bool {
-		return (*sstables)[i].Size < (*sstables)[j].Size
+	// Filter out SSTables that are already being merged
+	var availableTables []*SSTable
+	for _, table := range *sstables {
+		if atomic.LoadInt32(&table.isMerging) == 0 {
+			availableTables = append(availableTables, table)
+		}
+	}
+
+	if len(availableTables) < 2 {
+		compactor.db.log(fmt.Sprintf("Insufficient available SSTables for compaction on level %d (%d available, need at least 2)", levelNum, len(availableTables)))
+		return
+	}
+
+	// Sort available SSTables by size for size-tiered compaction
+	sort.Slice(availableTables, func(i, j int) bool {
+		return availableTables[i].Size < availableTables[j].Size
 	})
 
-	// Find similar-sized SSTables among the safe ones
+	// Find similar-sized SSTables among the available ones
 	var selectedTables []*SSTable
 
-	for i := 0; i < len(*sstables); {
-		size := (*sstables)[i].Size
-		similarSized := []*SSTable{(*sstables)[i]}
+	for i := 0; i < len(availableTables); {
+		size := availableTables[i].Size
+		similarSized := []*SSTable{availableTables[i]}
 
 		j := i + 1
-		for j < len(*sstables) && float64((*sstables)[j].Size)/float64(size) <= compactor.db.opts.CompactionSizeTieredSimilarityRatio && len(similarSized) < compactor.db.opts.CompactionBatchSize {
-			similarSized = append(similarSized, (*sstables)[j])
+		for j < len(availableTables) && float64(availableTables[j].Size)/float64(size) <= compactor.db.opts.CompactionSizeTieredSimilarityRatio && len(similarSized) < compactor.db.opts.CompactionBatchSize {
+			similarSized = append(similarSized, availableTables[j])
 			j++
 		}
 
@@ -166,22 +187,41 @@ func (compactor *Compactor) scheduleSizeTieredCompaction(level *Level, levelNum 
 		i = j
 	}
 
-	// If we couldn't find similar-sized tables, just take the smallest safe ones
-	if len(selectedTables) < 2 && len(*sstables) >= 2 {
-		selectedTables = (*sstables)[:min(compactor.db.opts.CompactionBatchSize, len(*sstables))]
+	// If we couldn't find similar-sized tables, just take the smallest available ones
+	if len(selectedTables) < 2 && len(availableTables) >= 2 {
+		selectedTables = availableTables[:min(compactor.db.opts.CompactionBatchSize, len(availableTables))]
 	}
 
 	if len(selectedTables) >= 2 {
-		compactor.compactionQueue = append(compactor.compactionQueue, &compactorJob{
-			level:       levelNum,
-			priority:    score,
-			ssTables:    selectedTables,
-			targetLevel: levelNum + 1,
-			inProgress:  false,
-		})
+		var reservedTables []*SSTable
+		for _, table := range selectedTables {
+			if atomic.CompareAndSwapInt32(&table.isMerging, 0, 1) {
+				reservedTables = append(reservedTables, table)
+			} else {
+				// If we can't reserve this table, it's already being merged
+				compactor.db.log(fmt.Sprintf("SSTable %d is already being merged, skipping", table.Id))
+			}
+		}
 
-		compactor.db.log(fmt.Sprintf("Scheduled size-tiered compaction with %d safe SSTables (out of %d total)",
-			len(selectedTables), len(*sstables)))
+		// Only proceed if we have at least 2 reserved tables
+		if len(reservedTables) >= 2 {
+			compactor.compactionQueue = append(compactor.compactionQueue, &compactorJob{
+				level:       levelNum,
+				priority:    score,
+				ssTables:    reservedTables,
+				targetLevel: levelNum + 1,
+				inProgress:  false,
+			})
+
+			compactor.db.log(fmt.Sprintf("Scheduled size-tiered compaction with %d reserved SSTables (out of %d available)",
+				len(reservedTables), len(availableTables)))
+		} else {
+			// Release any tables we managed to reserve
+			for _, table := range reservedTables {
+				atomic.StoreInt32(&table.isMerging, 0)
+			}
+			compactor.db.log(fmt.Sprintf("Could not reserve enough SSTables for compaction on level %d", levelNum))
+		}
 	}
 }
 
@@ -193,11 +233,24 @@ func (compactor *Compactor) scheduleLeveledCompaction(level *Level, levelNum int
 		return
 	}
 
-	// Pick the SSTable with the smallest key range among safe tables
+	// Filter available tables (not being merged)
+	var availableTables []*SSTable
+	for _, table := range *sstables {
+		if atomic.LoadInt32(&table.isMerging) == 0 {
+			availableTables = append(availableTables, table)
+		}
+	}
+
+	if len(availableTables) == 0 {
+		compactor.db.log(fmt.Sprintf("No available SSTables for leveled compaction on level %d", levelNum))
+		return
+	}
+
+	// Pick the SSTable with the smallest key range among available tables
 	var selectedTable *SSTable
 	var smallestRange int
 
-	for i, table := range *sstables {
+	for i, table := range availableTables {
 		keyRangeSize := bytes.Compare(table.Max, table.Min)
 
 		if i == 0 || keyRangeSize < smallestRange {
@@ -206,19 +259,26 @@ func (compactor *Compactor) scheduleLeveledCompaction(level *Level, levelNum int
 		}
 	}
 
-	// If we couldn't determine by key range, fall back to oldest safe table
+	// If we couldn't determine by key range, fall back to oldest available table
 	if selectedTable == nil {
-		selectedTable = (*sstables)[0]
-		for _, table := range *sstables {
+		selectedTable = availableTables[0]
+		for _, table := range availableTables {
 			if table.Id < selectedTable.Id {
 				selectedTable = table
 			}
 		}
 	}
 
-	// Find overlapping SSTables in the next level (and filter those too)
+	// Try to reserve the selected table
+	if !atomic.CompareAndSwapInt32(&selectedTable.isMerging, 0, 1) {
+		compactor.db.log(fmt.Sprintf("Selected SSTable %d is already being merged", selectedTable.Id))
+		return
+	}
+
+	// Find overlapping SSTables in the next level
 	nextLevelNum := levelNum + 1
 	if nextLevelNum > len(*compactor.db.levels.Load()) {
+		atomic.StoreInt32(&selectedTable.isMerging, 0)
 		return
 	}
 
@@ -230,8 +290,16 @@ func (compactor *Compactor) scheduleLeveledCompaction(level *Level, levelNum int
 	if nextLevelTables != nil {
 		var overlappingTables []*SSTable
 		for _, table := range *nextLevelTables {
+
+			// Check if this table overlaps with our selected table
 			if bytes.Compare(table.Max, selectedTable.Min) >= 0 && bytes.Compare(table.Min, selectedTable.Max) <= 0 {
-				overlappingTables = append(overlappingTables, table)
+
+				// Try to reserve this overlapping table
+				if atomic.CompareAndSwapInt32(&table.isMerging, 0, 1) {
+					overlappingTables = append(overlappingTables, table)
+				} else {
+					compactor.db.log(fmt.Sprintf("Overlapping SSTable %d is already being merged", table.Id))
+				}
 			}
 		}
 
@@ -246,13 +314,12 @@ func (compactor *Compactor) scheduleLeveledCompaction(level *Level, levelNum int
 		inProgress:  false,
 	})
 
-	compactor.db.log(fmt.Sprintf("Scheduled leveled compaction for level %d with %d SSTables (%d safe)",
-		levelNum, len(selectedTables), len(*sstables)))
+	compactor.db.log(fmt.Sprintf("Scheduled leveled compaction for level %d with %d SSTables (%d available)",
+		levelNum, len(selectedTables), len(availableTables)))
 }
 
 // executeCompactions processes pending compaction jobs
 func (compactor *Compactor) executeCompactions() {
-	// Skip if we've reached max concurrency
 	if atomic.LoadInt32(&compactor.activeJobs) >= int32(compactor.maxConcurrency) {
 		return
 	}
@@ -285,25 +352,36 @@ func (compactor *Compactor) executeCompactions() {
 
 	// Execute the compaction in a goroutine
 	go func(job *compactorJob, idx int) {
-		compactor.db.log(fmt.Sprintf("Starting compaction job for level %d with %d SSTables", job.level, len(job.ssTables)))
-
 		defer func() {
 			atomic.AddInt32(&compactor.activeJobs, -1)
-
-			// Remove job from queue when done
 			compactor.scoreLock.Lock()
 			defer compactor.scoreLock.Unlock()
 
-			// Only remove if it's still in the queue at the same position
 			if idx < len(compactor.compactionQueue) && compactor.compactionQueue[idx] == job {
 				compactor.compactionQueue = append(compactor.compactionQueue[:idx], compactor.compactionQueue[idx+1:]...)
 			}
+
+			for _, table := range job.ssTables {
+				atomic.StoreInt32(&table.isMerging, 0)
+			}
 		}()
 
-		// Execute the actual compaction
-		err := compactor.compactSSTables(job.ssTables, job.level+1, job.targetLevel)
-		if err != nil {
-			return
+		var err error
+
+		// Check if this is a partitioning job (targetLevel = -1)
+		if job.targetLevel == -1 {
+			compactor.db.log(fmt.Sprintf("Starting partitioning job for level %d with %d SSTables", job.level+1, len(job.ssTables)))
+			err = compactor.partitionLastLevel(job.ssTables, job.level)
+			if err != nil {
+				compactor.db.log(fmt.Sprintf("Partitioning failed for level %d: %v", job.level+1, err))
+			}
+		} else {
+			// Regular compaction
+			compactor.db.log(fmt.Sprintf("Starting compaction job for level %d with %d SSTables", job.level, len(job.ssTables)))
+			err = compactor.compactSSTables(job.ssTables, job.level, job.targetLevel)
+			if err != nil {
+				compactor.db.log(fmt.Sprintf("Compaction failed for level %d: %v", job.level, err))
+			}
 		}
 	}(selectedJob, selectedIdx)
 }
@@ -315,6 +393,13 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 	}
 
 	compactor.db.log(fmt.Sprintf("Compacting %d SSTables from level %d to level %d", len(sstables), sourceLevel, targetLevel))
+
+	// Verify all tables are properly reserved before proceeding
+	for _, table := range sstables {
+		if atomic.LoadInt32(&table.isMerging) != 1 {
+			return fmt.Errorf("SSTable %d is not properly reserved for merging", table.Id)
+		}
+	}
 
 	// Create a new SSTable for the target level
 	newSSTable := &SSTable{
@@ -334,9 +419,6 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 		if bytes.Compare(table.Max, newSSTable.Max) > 0 {
 			newSSTable.Max = table.Max
 		}
-
-		// Mark table as being merged to prevent concurrent access
-		atomic.StoreInt32(&table.isMerging, 1)
 	}
 
 	// Create new SSTable files for the compacted result
@@ -354,23 +436,37 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 	if err != nil {
 		return fmt.Errorf("failed to open KLog block manager: %w", err)
 	}
+	defer func(klogBm *blockmanager.BlockManager) {
+		err := klogBm.Close()
+		if err != nil {
+			compactor.db.log(fmt.Sprintf("Error closing KLog block manager: %v", err))
+		}
+	}(klogBm)
 
 	vlogBm, err := blockmanager.Open(vlogTmpPath, os.O_RDWR|os.O_CREATE, compactor.db.opts.Permission,
 		blockmanager.SyncOption(compactor.db.opts.SyncOption), compactor.db.opts.SyncInterval)
 	if err != nil {
 		return fmt.Errorf("failed to open VLog block manager: %w", err)
 	}
+	defer func(vlogBm *blockmanager.BlockManager) {
+		err := vlogBm.Close()
+		if err != nil {
+			compactor.db.log(fmt.Sprintf("Error closing VLog block manager: %v", err))
+		}
+	}(vlogBm)
 
 	// Merge the SSTables
 	err = compactor.mergeSSTables(sstables, klogBm, vlogBm, newSSTable)
 	if err != nil {
-		// Clean up on error
 		_ = os.Remove(klogTmpPath)
 		_ = os.Remove(vlogTmpPath)
 		return fmt.Errorf("failed to merge SSTables: %w", err)
 	}
 
 	compactor.db.log(fmt.Sprintf("Merged %d SSTables into new SSTable %d", len(sstables), newSSTable.Id))
+
+	// Wait for any active reads to merged sstables to complete before updating the level
+	compactor.waitForActiveReads(sstables)
 
 	// Add the new SSTable to the target level
 	targetLevelPtr := (*compactor.db.levels.Load())[targetLevel-1]
@@ -384,9 +480,6 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 	} else {
 		newSSTables = []*SSTable{newSSTable}
 	}
-
-	// Wait for any active reads to merged sstables to complete before updating the level
-	compactor.waitForActiveReads(sstables)
 
 	targetLevelPtr.sstables.Store(&newSSTables)
 
@@ -447,7 +540,7 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 		_ = os.Remove(oldVlogPath)
 	}
 
-	// Close new KLog and VLog block managers
+	// Close temporary block managers before renaming
 	if err := klogBm.Close(); err != nil {
 		return fmt.Errorf("failed to close KLog block manager: %w", err)
 	}
@@ -480,16 +573,13 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 		return fmt.Errorf("failed to open final VLog block manager: %w", err)
 	}
 
-	// Add KLog and VLog managers to LRU cache
 	compactor.db.lru.Put(klogFinalPath, klogBm, func(key, value interface{}) {
-		// Close the block manager when evicted from LRU
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
 		}
 	})
 
 	compactor.db.lru.Put(vlogFinalPath, vlogBm, func(key, value interface{}) {
-		// Close the block manager when evicted from LRU
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
 		}
@@ -549,7 +639,6 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 			if entry, ok := val.(*KLogEntry); ok {
 				klogEntry = entry
 			} else if doc, ok := val.(primitive.D); ok {
-				// Handle primitive.D case
 				klogEntry = &KLogEntry{}
 				for _, elem := range doc {
 					switch elem.Key {
@@ -774,15 +863,13 @@ func getOrOpenBM(db *DB, path string) (*blockmanager.BlockManager, error) {
 				_ = bm.Close()
 			}
 		})
-	} else {
-		if bm, ok := bmInterface.(*blockmanager.BlockManager); ok {
-			return bm, nil
-		} else {
-			return nil, errors.New("invalid type in LRU cache")
-		}
 	}
 
-	return bmInterface.(*blockmanager.BlockManager), nil
+	if bm, ok := bmInterface.(*blockmanager.BlockManager); ok {
+		return bm, nil
+	}
+
+	return nil, errors.New("failed to retrieve BlockManager from LRU cache")
 }
 
 // waitForActiveReads waits for any active reads on the given SSTables to complete
@@ -810,4 +897,384 @@ func (compactor *Compactor) waitForActiveReads(sstables []*SSTable) {
 		}
 	}
 
+}
+
+// shouldPartitionLastLevel checks if the last level should be partitioned
+func (compactor *Compactor) shouldPartitionLastLevel(lastLevel *Level) bool {
+	currentSize := atomic.LoadInt64(&lastLevel.currentSize)
+
+	// Check if last level has exceeded its capacity
+	if currentSize > int64(lastLevel.capacity) {
+		compactor.db.log(fmt.Sprintf("Last level size (%d) exceeds capacity (%d), considering partitioning",
+			currentSize, lastLevel.capacity))
+		return true
+	}
+
+	return false
+}
+
+// scheduleLastLevelPartitioning schedules partitioning of the last level if needed
+func (compactor *Compactor) scheduleLastLevelPartitioning(lastLevel *Level, levelNum int) {
+	sstables := lastLevel.sstables.Load()
+	if sstables == nil || len(*sstables) == 0 {
+		return
+	}
+
+	compactor.db.log(fmt.Sprintf("Scheduling last level partitioning for level %d with %d SSTables",
+		levelNum+1, len(*sstables)))
+
+	// Filter available SSTables (not currently being merged)
+	var availableTables []*SSTable
+	for _, table := range *sstables {
+		if atomic.LoadInt32(&table.isMerging) == 0 {
+			availableTables = append(availableTables, table)
+		}
+	}
+
+	if len(availableTables) == 0 {
+		compactor.db.log("No available SSTables for partitioning")
+		return
+	}
+
+	// Sort by timestamp to prioritize older data for movement
+	sort.Slice(availableTables, func(i, j int) bool {
+		return availableTables[i].Timestamp < availableTables[j].Timestamp
+	})
+
+	// Calculate how much data to partition
+	totalSize := atomic.LoadInt64(&lastLevel.currentSize)
+	targetSize := int64(float64(totalSize) * compactor.db.opts.PartitionRatio)
+
+	// Select SSTables to partition (starting with oldest)
+	var selectedTables []*SSTable
+	var selectedSize int64
+
+	for _, table := range availableTables {
+		if selectedSize >= targetSize {
+			break
+		}
+		selectedTables = append(selectedTables, table)
+		selectedSize += table.Size
+	}
+
+	if len(selectedTables) == 0 {
+		compactor.db.log("No suitable SSTables selected for partitioning")
+		return
+	}
+
+	// Reserve the selected tables
+	var reservedTables []*SSTable
+	for _, table := range selectedTables {
+		if atomic.CompareAndSwapInt32(&table.isMerging, 0, 1) {
+			reservedTables = append(reservedTables, table)
+		}
+	}
+
+	if len(reservedTables) == 0 {
+		compactor.db.log("Could not reserve any SSTables for partitioning")
+		return
+	}
+
+	// Create high-priority partitioning job
+	compactor.compactionQueue = append(compactor.compactionQueue, &compactorJob{
+		level:       levelNum,
+		priority:    10.0, // Highest priority
+		ssTables:    reservedTables,
+		targetLevel: -1, // Special marker for partitioning job
+		inProgress:  false,
+	})
+
+	compactor.db.log(fmt.Sprintf("Scheduled partitioning job with %d SSTables (%.2f MB)",
+		len(reservedTables), float64(selectedSize)/(1024*1024)))
+}
+
+// groupSSTablesByKeyRange groups SSTables by overlapping key ranges
+func (compactor *Compactor) groupSSTablesByKeyRange(sstables []*SSTable) [][]*SSTable {
+	if len(sstables) == 0 {
+		return nil
+	}
+
+	// Sort by min key for grouping
+	sortedTables := make([]*SSTable, len(sstables))
+	copy(sortedTables, sstables)
+	sort.Slice(sortedTables, func(i, j int) bool {
+		return bytes.Compare(sortedTables[i].Min, sortedTables[j].Min) < 0
+	})
+
+	var groups [][]*SSTable
+	currentGroup := []*SSTable{sortedTables[0]}
+
+	for i := 1; i < len(sortedTables); i++ {
+		// Check if current SSTable overlaps with the group's key range
+		groupMax := currentGroup[len(currentGroup)-1].Max
+		if bytes.Compare(sortedTables[i].Min, groupMax) <= 0 {
+			// Overlapping, add to current group
+
+			currentGroup = append(currentGroup, sortedTables[i])
+		} else {
+			// No overlap, start new group
+			groups = append(groups, currentGroup)
+			currentGroup = []*SSTable{sortedTables[i]}
+		}
+	}
+
+	// Add the last group
+	groups = append(groups, currentGroup)
+
+	return groups
+}
+
+// distributeTableGroups distributes SSTables into two levels based on the PartitionDistributionRatio
+func (compactor *Compactor) distributeTableGroups(groups [][]*SSTable) ([]*SSTable, []*SSTable) {
+	var level1Tables []*SSTable
+	var level2Tables []*SSTable
+
+	// Calculate total size
+	totalSize := int64(0)
+	for _, group := range groups {
+		for _, table := range group {
+			totalSize += table.Size
+		}
+	}
+
+	// Distribute based on PartitionDistributionRatio
+	targetLevel1Size := int64(float64(totalSize) * compactor.db.opts.PartitionDistributionRatio)
+	currentLevel1Size := int64(0)
+
+	for _, group := range groups {
+		groupSize := int64(0)
+		for _, table := range group {
+			groupSize += table.Size
+		}
+
+		// Decide which level gets this group
+		if currentLevel1Size+groupSize <= targetLevel1Size {
+			level1Tables = append(level1Tables, group...)
+			currentLevel1Size += groupSize
+		} else {
+			level2Tables = append(level2Tables, group...)
+		}
+	}
+
+	return level1Tables, level2Tables
+}
+
+// removeSSTablesFromLevel removes specified SSTables from a given level
+func (compactor *Compactor) removeSSTablesFromLevel(tablesToRemove []*SSTable, levelNum int) error {
+	levels := compactor.db.levels.Load()
+	level := (*levels)[levelNum]
+	currentSSTables := level.sstables.Load()
+
+	if currentSSTables == nil {
+		return nil
+	}
+
+	// Create map for quick lookup
+	toRemove := make(map[int64]bool)
+	var totalRemovedSize int64
+	for _, table := range tablesToRemove {
+		toRemove[table.Id] = true
+		totalRemovedSize += table.Size
+	}
+
+	// Filter out removed tables
+	var remainingTables []*SSTable
+	for _, table := range *currentSSTables {
+		if !toRemove[table.Id] {
+			remainingTables = append(remainingTables, table)
+		}
+	}
+
+	// Update level
+	level.sstables.Store(&remainingTables)
+	atomic.AddInt64(&level.currentSize, -totalRemovedSize)
+
+	for _, table := range tablesToRemove {
+		klogPath := fmt.Sprintf("%s%s%d%s%s%d%s", compactor.db.opts.Directory, LevelPrefix, levelNum+1,
+			string(os.PathSeparator), SSTablePrefix, table.Id, KLogExtension)
+		vlogPath := fmt.Sprintf("%s%s%d%s%s%d%s", compactor.db.opts.Directory, LevelPrefix, levelNum+1,
+			string(os.PathSeparator), SSTablePrefix, table.Id, VLogExtension)
+
+		if bm, ok := compactor.db.lru.Get(klogPath); ok {
+			if bm, ok := bm.(*blockmanager.BlockManager); ok {
+				_ = bm.Close()
+			}
+			compactor.db.lru.Delete(klogPath)
+		}
+
+		if bm, ok := compactor.db.lru.Get(vlogPath); ok {
+			if bm, ok := bm.(*blockmanager.BlockManager); ok {
+				_ = bm.Close()
+			}
+			compactor.db.lru.Delete(vlogPath)
+		}
+
+		_ = os.Remove(klogPath)
+		_ = os.Remove(vlogPath)
+	}
+
+	compactor.db.log(fmt.Sprintf("Removed %d SSTables from level %d, freed %.2f MB",
+		len(tablesToRemove), levelNum+1, float64(totalRemovedSize)/(1024*1024)))
+
+	return nil
+}
+
+// partitionLastLevel partitions SSTables from the last level into L-1 and L-2
+func (compactor *Compactor) partitionLastLevel(sstables []*SSTable, lastLevelNum int) error {
+	if len(sstables) == 0 {
+		return nil
+	}
+
+	compactor.db.log(fmt.Sprintf("Starting partitioning of %d SSTables from last level %d", len(sstables), lastLevelNum+1))
+
+	// Group SSTables by overlapping key ranges to maintain data locality
+	groups := compactor.groupSSTablesByKeyRange(sstables)
+	compactor.db.log(fmt.Sprintf("Grouped %d SSTables into %d key range groups", len(sstables), len(groups)))
+
+	// Distribute groups between L-1 and L-2 based on PartitionDistributionRatio
+	toLevel1, toLevel2 := compactor.distributeTableGroups(groups)
+
+	compactor.db.log(fmt.Sprintf("Distribution: %d SSTables to L%d, %d SSTables to L%d",
+		len(toLevel1), lastLevelNum, len(toLevel2), lastLevelNum-1))
+
+	// Move SSTables to L-1 (one level up)
+	if len(toLevel1) > 0 {
+		err := compactor.redistributeToLevel(toLevel1, lastLevelNum-1)
+		if err != nil {
+			return fmt.Errorf("failed to redistribute SSTables to level %d: %w", lastLevelNum, err)
+		}
+	}
+
+	// Move SSTables to L-2 (two levels up)
+	if len(toLevel2) > 0 && lastLevelNum >= 2 {
+		err := compactor.redistributeToLevel(toLevel2, lastLevelNum-2)
+		if err != nil {
+			return fmt.Errorf("failed to redistribute SSTables to level %d: %w", lastLevelNum-1, err)
+		}
+	}
+
+	// Remove the original SSTables from the last level
+	err := compactor.removeSSTablesFromLevel(sstables, lastLevelNum)
+	if err != nil {
+		return fmt.Errorf("failed to remove SSTables from last level: %w", err)
+	}
+
+	compactor.db.log(fmt.Sprintf("Partitioning completed: moved %d SSTables from last level", len(sstables)))
+	return nil
+}
+
+// redistributeToLevel redistributes SSTables to a target level by merging them into a new SSTable
+func (compactor *Compactor) redistributeToLevel(tables []*SSTable, targetLevelNum int) error {
+	if len(tables) == 0 {
+		return nil
+	}
+
+	// Validate target level exists
+	levels := compactor.db.levels.Load()
+	if targetLevelNum < 0 || targetLevelNum >= len(*levels) {
+		return fmt.Errorf("invalid target level %d", targetLevelNum)
+	}
+
+	// Create a new SSTable by merging the selected tables
+	newSSTable := &SSTable{
+		Id:    compactor.db.sstIdGenerator.nextID(),
+		db:    compactor.db,
+		Level: targetLevelNum,
+	}
+
+	// Find min and max keys across all tables
+	newSSTable.Min = make([]byte, len(tables[0].Min))
+	copy(newSSTable.Min, tables[0].Min)
+	newSSTable.Max = make([]byte, len(tables[0].Max))
+	copy(newSSTable.Max, tables[0].Max)
+
+	for _, table := range tables {
+		if bytes.Compare(table.Min, newSSTable.Min) < 0 {
+			newSSTable.Min = make([]byte, len(table.Min))
+			copy(newSSTable.Min, table.Min)
+		}
+		if bytes.Compare(table.Max, newSSTable.Max) > 0 {
+			newSSTable.Max = make([]byte, len(table.Max))
+			copy(newSSTable.Max, table.Max)
+		}
+	}
+
+	targetPath := fmt.Sprintf("%s%s%d%s", compactor.db.opts.Directory, LevelPrefix, targetLevelNum+1, string(os.PathSeparator))
+	err := os.MkdirAll(targetPath, compactor.db.opts.Permission)
+	if err != nil {
+		return fmt.Errorf("failed to create target level directory: %w", err)
+	}
+
+	// Create paths for the new SSTable
+	klogPath := fmt.Sprintf("%s%s%d%s", targetPath, SSTablePrefix, newSSTable.Id, KLogExtension)
+	vlogPath := fmt.Sprintf("%s%s%d%s", targetPath, SSTablePrefix, newSSTable.Id, VLogExtension)
+
+	// Create block managers for new files
+	klogBm, err := blockmanager.Open(klogPath, os.O_RDWR|os.O_CREATE, compactor.db.opts.Permission,
+		blockmanager.SyncOption(compactor.db.opts.SyncOption), compactor.db.opts.SyncInterval)
+	if err != nil {
+		return fmt.Errorf("failed to create KLog: %w", err)
+	}
+	defer func(klogBm *blockmanager.BlockManager) {
+		err := klogBm.Close()
+		if err != nil {
+			compactor.db.log(fmt.Sprintf("Error closing KLog block manager: %v", err))
+		}
+	}(klogBm)
+
+	vlogBm, err := blockmanager.Open(vlogPath, os.O_RDWR|os.O_CREATE, compactor.db.opts.Permission,
+		blockmanager.SyncOption(compactor.db.opts.SyncOption), compactor.db.opts.SyncInterval)
+	if err != nil {
+		return fmt.Errorf("failed to create VLog: %w", err)
+	}
+	defer func(vlogBm *blockmanager.BlockManager) {
+		err := vlogBm.Close()
+		if err != nil {
+			compactor.db.log(fmt.Sprintf("Error closing VLog block manager: %v", err))
+		}
+	}(vlogBm)
+
+	// Merge the SSTables
+	err = compactor.mergeSSTables(tables, klogBm, vlogBm, newSSTable)
+	if err != nil {
+		_ = os.Remove(klogPath)
+		_ = os.Remove(vlogPath)
+		return fmt.Errorf("failed to merge SSTables: %w", err)
+	}
+
+	// Wait for any active reads to complete
+	compactor.waitForActiveReads(tables)
+
+	// Add new SSTable to target level
+	targetLevel := (*levels)[targetLevelNum]
+	currentSSTables := targetLevel.sstables.Load()
+
+	var newSSTables []*SSTable
+	if currentSSTables != nil {
+		newSSTables = make([]*SSTable, len(*currentSSTables)+1)
+		copy(newSSTables, *currentSSTables)
+		newSSTables[len(*currentSSTables)] = newSSTable
+	} else {
+		newSSTables = []*SSTable{newSSTable}
+	}
+
+	targetLevel.sstables.Store(&newSSTables)
+	atomic.AddInt64(&targetLevel.currentSize, newSSTable.Size)
+
+	compactor.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
+		if bm, ok := value.(*blockmanager.BlockManager); ok {
+			_ = bm.Close()
+		}
+	})
+
+	compactor.db.lru.Put(vlogPath, vlogBm, func(key, value interface{}) {
+		if bm, ok := value.(*blockmanager.BlockManager); ok {
+			_ = bm.Close()
+		}
+	})
+
+	compactor.db.log(fmt.Sprintf("Successfully redistributed %d SSTables to level %d as SSTable %d",
+		len(tables), targetLevelNum+1, newSSTable.Id))
+
+	return nil
 }

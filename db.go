@@ -84,6 +84,8 @@ const (
 	DefaultTxnBeginRetry                       = 10                     // Default retries for Begin()
 	DefaultTxnBeginBackoff                     = 1 * time.Microsecond   // Default initial backoff
 	DefaultTxnBeginMaxBackoff                  = 100 * time.Millisecond // Default max backoff
+	DefaultPartitionRatio                      = 0.2                    // Move 20% of data back when partitioning
+	DefaultPartitionDistributionRatio          = 0.7                    // 70% to L-1, 30% to L-2
 )
 
 // Options represents the configuration options for Wildcat
@@ -121,6 +123,8 @@ type Options struct {
 	TxnBeginBackoff                     time.Duration // Initial backoff duration for Begin() retries
 	TxnBeginMaxBackoff                  time.Duration // Maximum backoff duration for Begin() retries
 	RecoverUncommittedTxns              bool          // Whether to recover uncommitted transactions on startup
+	PartitionRatio                      float64       // How much to move back (0.6 = 60% of data). Used for last level compaction
+	PartitionDistributionRatio          float64       // How to split between L-1 and L-2 (0.7 = 70% to L-1, 30% to L-2)
 }
 
 // DB represents the main Wildcat structure
@@ -396,6 +400,14 @@ func (opts *Options) setDefaults() {
 
 	if opts.CompactionActiveSSTReadWaitBackoff <= 0 {
 		opts.CompactionActiveSSTReadWaitBackoff = DefaultCompactionActiveSSTReadWaitBackoff
+	}
+
+	if opts.PartitionRatio <= 0 || opts.PartitionRatio > 1.0 {
+		opts.PartitionRatio = DefaultPartitionRatio
+	}
+
+	if opts.PartitionDistributionRatio <= 0 || opts.PartitionDistributionRatio > 1.0 {
+		opts.PartitionDistributionRatio = DefaultPartitionDistributionRatio
 	}
 
 }

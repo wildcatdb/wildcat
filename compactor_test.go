@@ -195,6 +195,9 @@ func TestCompactor_Basic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	opts := &Options{
 		Directory:       dir,
@@ -210,9 +213,6 @@ func TestCompactor_Basic(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	t.Log("Inserting data to trigger flushing...")
 	for i := 0; i < 100; i++ {
@@ -269,7 +269,7 @@ func TestCompactor_Basic(t *testing.T) {
 		expectedValue := fmt.Sprintf("value%03d", i)
 
 		var actualValue []byte
-		err = db.Update(func(txn *Txn) error {
+		err = db.View(func(txn *Txn) error {
 			var err error
 			actualValue, err = txn.Get([]byte(key))
 			return err
@@ -282,17 +282,24 @@ func TestCompactor_Basic(t *testing.T) {
 		}
 	}
 
-	// Trigger a compaction by forcing a specific compaction
-	level := (*levels)[0]
-	sstablesToCompact := *level.sstables.Load()
-	if len(sstablesToCompact) >= 2 {
+	// Trigger a compaction by forcing a specific compaction if we have enough tables
+	if len(*sstables) >= 2 {
 		t.Log("Manually triggering compaction...")
 
-		// Take the first 2 SSTables for compaction
-		tablesToCompact := sstablesToCompact[:2]
+		// Take the first 2 SSTables for compaction and mark them as merging
+		tablesToCompact := (*sstables)[:2]
+
+		// Reserve the tables for merging
+		for _, table := range tablesToCompact {
+			atomic.StoreInt32(&table.isMerging, 1)
+		}
 
 		err = db.compactor.compactSSTables(tablesToCompact, 1, 2)
 		if err != nil {
+			// Release the tables if compaction failed
+			for _, table := range tablesToCompact {
+				atomic.StoreInt32(&table.isMerging, 0)
+			}
 			t.Fatalf("Manual compaction failed: %v", err)
 		}
 
@@ -451,6 +458,9 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
 
 	opts := &Options{
 		Directory:       dir,
@@ -466,12 +476,8 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 	defer func(db *DB) {
 		_ = db.Close()
 	}(db)
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(dir)
 
 	// Create multiple SSTables with similar sizes in L1
-	// Size-tiered compaction looks for similarly sized tables
 	for j := 0; j < db.opts.CompactionSizeThreshold+1; j++ {
 
 		// Each iteration creates one SSTable
@@ -515,7 +521,6 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 
 	if sstables == nil {
 		t.Fatalf("Level 1 SSTables not initialized")
-
 	}
 
 	if len(*sstables) < db.opts.CompactionSizeThreshold {
@@ -528,7 +533,6 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 
 	// Force a size-tiered compaction by manually scheduling it
 	if len(*sstables) >= db.opts.CompactionSizeThreshold {
-
 		// Sort tables by size to simulate size-tiered selection
 		sortedTables := make([]*SSTable, len(*sstables))
 		copy(sortedTables, *sstables)
@@ -539,15 +543,27 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 
 		// Select tables for compaction (at least 2)
 		numToCompact := min(db.opts.CompactionBatchSize, len(sortedTables))
+		if numToCompact < 2 {
+			numToCompact = 2
+		}
 
 		// Take the smallest tables for compaction
 		tablesToCompact := sortedTables[:numToCompact]
+
+		// Mark tables as merging
+		for _, table := range tablesToCompact {
+			atomic.StoreInt32(&table.isMerging, 1)
+		}
 
 		t.Logf("Manually triggering size-tiered compaction with %d tables...", numToCompact)
 
 		// Perform compaction
 		err = db.compactor.compactSSTables(tablesToCompact, 1, 2)
 		if err != nil {
+			// Release tables if compaction failed
+			for _, table := range tablesToCompact {
+				atomic.StoreInt32(&table.isMerging, 0)
+			}
 			t.Fatalf("Manual size-tiered compaction failed: %v", err)
 		}
 
@@ -568,7 +584,7 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 			key := fmt.Sprintf("st_batch%d_key%03d", j, i)
 
 			var value []byte
-			err = db.Update(func(txn *Txn) error {
+			err = db.View(func(txn *Txn) error {
 				var err error
 				value, err = txn.Get([]byte(key))
 				return err
@@ -925,4 +941,721 @@ func TestCompactor_ConcurrentCompactions(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestCompactor_LastLevelPartitioning_Detection(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_last_level_detection_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncFull,
+		LogChannel:      nil,
+		WriteBufferSize: 4 * 1024,
+		LevelCount:      4,
+		LevelMultiplier: 2,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	levels := db.levels.Load()
+	if levels == nil {
+		t.Fatalf("Levels not initialized")
+	}
+
+	// Test shouldPartitionLastLevel logic
+	lastLevelIdx := len(*levels) - 1
+	lastLevel := (*levels)[lastLevelIdx]
+
+	// Initially should not need partitioning
+	if db.compactor.shouldPartitionLastLevel(lastLevel) {
+		t.Errorf("Empty last level should not need partitioning")
+	}
+
+	originalCapacity := lastLevel.capacity
+	atomic.StoreInt64(&lastLevel.currentSize, int64(originalCapacity+1000))
+
+	if !db.compactor.shouldPartitionLastLevel(lastLevel) {
+		t.Errorf("Last level exceeding capacity should need partitioning")
+	}
+
+	atomic.StoreInt64(&lastLevel.currentSize, 0)
+
+	t.Logf("Last level detection test passed - capacity: %d", originalCapacity)
+}
+
+func TestCompactor_LastLevelPartitioning_KeyRangeGrouping(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_key_range_grouping_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncFull,
+		LogChannel:      nil,
+		WriteBufferSize: 4 * 1024,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Create mock SSTables with different key ranges
+	testTables := []*SSTable{
+		{
+			Id:   1,
+			Min:  []byte("apple"),
+			Max:  []byte("banana"),
+			Size: 1000,
+		},
+		{
+			Id:   2,
+			Min:  []byte("banana"), // Overlaps with previous
+			Max:  []byte("cherry"),
+			Size: 1000,
+		},
+		{
+			Id:   3,
+			Min:  []byte("dog"), // No overlap - new group
+			Max:  []byte("elephant"),
+			Size: 1000,
+		},
+		{
+			Id:   4,
+			Min:  []byte("elephant"), // Overlaps with previous
+			Max:  []byte("fox"),
+			Size: 1000,
+		},
+		{
+			Id:   5,
+			Min:  []byte("zebra"), // No overlap - new group
+			Max:  []byte("zulu"),
+			Size: 1000,
+		},
+	}
+
+	// Test key range grouping
+	groups := db.compactor.groupSSTablesByKeyRange(testTables)
+
+	expectedGroups := 3 // apple-cherry, dog-fox, zebra-zulu
+	if len(groups) != expectedGroups {
+		t.Errorf("Expected %d groups, got %d", expectedGroups, len(groups))
+	}
+
+	// Verify first group has overlapping tables
+	if len(groups) > 0 {
+		firstGroup := groups[0]
+		if len(firstGroup) != 2 {
+			t.Errorf("First group should have 2 tables, got %d", len(firstGroup))
+		}
+
+		if firstGroup[0].Id != 1 || firstGroup[1].Id != 2 {
+			t.Errorf("First group should contain tables 1 and 2, got %d and %d",
+				firstGroup[0].Id, firstGroup[1].Id)
+		}
+	}
+
+	// Verify second group
+	if len(groups) > 1 {
+		secondGroup := groups[1]
+		if len(secondGroup) != 2 {
+			t.Errorf("Second group should have 2 tables, got %d", len(secondGroup))
+		}
+
+		if secondGroup[0].Id != 3 || secondGroup[1].Id != 4 {
+			t.Errorf("Second group should contain tables 3 and 4, got %d and %d",
+				secondGroup[0].Id, secondGroup[1].Id)
+		}
+	}
+
+	// Verify third group
+	if len(groups) > 2 {
+		thirdGroup := groups[2]
+		if len(thirdGroup) != 1 {
+			t.Errorf("Third group should have 1 table, got %d", len(thirdGroup))
+		}
+
+		if thirdGroup[0].Id != 5 {
+			t.Errorf("Third group should contain table 5, got %d", thirdGroup[0].Id)
+		}
+	}
+
+	t.Logf("Key range grouping test passed - created %d groups as expected", len(groups))
+}
+
+func TestCompactor_LastLevelPartitioning_Distribution(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_distribution_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:                  dir,
+		SyncOption:                 SyncFull,
+		LogChannel:                 nil,
+		WriteBufferSize:            4 * 1024,
+		PartitionDistributionRatio: 0.7, // 70% to L-1, 30% to L-2
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Create mock SSTable groups with known sizes
+	groups := [][]*SSTable{
+		{
+			{Id: 1, Size: 1000}, // Group 1: 1000 bytes
+		},
+		{
+			{Id: 2, Size: 2000}, // Group 2: 2000 bytes
+		},
+		{
+			{Id: 3, Size: 3000}, // Group 3: 3000 bytes
+		},
+		{
+			{Id: 4, Size: 4000}, // Group 4: 4000 bytes
+		},
+	}
+	// Total: 10000 bytes
+	// 70% = 7000 bytes should go to L-1
+	// 30% = 3000 bytes should go to L-2
+
+	level1Tables, level2Tables := db.compactor.distributeTableGroups(groups)
+
+	// Calculate actual distribution
+	var level1Size, level2Size int64
+	for _, table := range level1Tables {
+		level1Size += table.Size
+	}
+	for _, table := range level2Tables {
+		level2Size += table.Size
+	}
+
+	totalSize := level1Size + level2Size
+	level1Ratio := float64(level1Size) / float64(totalSize)
+
+	t.Logf("Distribution results:")
+	t.Logf("  L-1: %d bytes (%d tables) - %.1f%%", level1Size, len(level1Tables), level1Ratio*100)
+	t.Logf("  L-2: %d bytes (%d tables) - %.1f%%", level2Size, len(level2Tables), (1-level1Ratio)*100)
+
+	// Verify distribution is approximately correct (within reasonable bounds)
+	expectedRatio := 0.7
+	tolerance := 0.2 // Allow 20% tolerance due to group-based distribution
+
+	if level1Ratio < expectedRatio-tolerance || level1Ratio > expectedRatio+tolerance {
+		t.Errorf("L-1 ratio %.2f is outside expected range %.2f ± %.2f",
+			level1Ratio, expectedRatio, tolerance)
+	}
+
+	// Verify all tables are accounted for
+	totalTables := len(level1Tables) + len(level2Tables)
+	expectedTables := 4
+	if totalTables != expectedTables {
+		t.Errorf("Expected %d total tables, got %d", expectedTables, totalTables)
+	}
+}
+
+func TestCompactor_LastLevelPartitioning_FullWorkflow(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_full_partitioning_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:                  dir,
+		SyncOption:                 SyncFull,
+		LogChannel:                 nil,
+		WriteBufferSize:            4 * 1024,
+		LevelCount:                 4,
+		LevelMultiplier:            2,
+		PartitionRatio:             0.6,                  // Move 60% of data
+		PartitionDistributionRatio: 0.7,                  // 70% to L-1, 30% to L-2
+		CompactionCooldownPeriod:   1 * time.Millisecond, // Short for testing
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	countSSTables := func() (int, int, int, int) {
+		levels := db.levels.Load()
+		if levels == nil {
+			return 0, 0, 0, 0
+		}
+
+		counts := make([]int, 4)
+		for i := 0; i < 4 && i < len(*levels); i++ {
+			level := (*levels)[i]
+			sstables := level.sstables.Load()
+			if sstables != nil {
+				counts[i] = len(*sstables)
+			}
+		}
+		return counts[0], counts[1], counts[2], counts[3]
+	}
+
+	// Create data in multiple levels by inserting and forcing compactions
+	t.Log("Step 1: Creating data across levels...")
+
+	// Insert data to create SSTables in L1
+	for batch := 0; batch < 5; batch++ {
+		for i := 0; i < 50; i++ {
+			key := fmt.Sprintf("batch%d_key%03d", batch, i)
+			value := fmt.Sprintf("value%03d_batch%d", i, batch)
+
+			err = db.Update(func(txn *Txn) error {
+				return txn.Put([]byte(key), []byte(value))
+			})
+			if err != nil {
+				t.Fatalf("Failed to insert data: %v", err)
+			}
+		}
+
+		// Force flush
+		err = db.ForceFlush()
+		if err != nil {
+			t.Fatalf("Failed to force flush: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	l1, l2, l3, l4 := countSSTables()
+	t.Logf("After initial data: L1=%d, L2=%d, L3=%d, L4=%d", l1, l2, l3, l4)
+
+	// Force compactions to move data to deeper levels
+	t.Log("Step 2: Moving data to deeper levels...")
+
+	levels := db.levels.Load()
+	if levels != nil && len(*levels) >= 4 {
+
+		// Force L1 -> L2 compaction
+		level1 := (*levels)[0]
+		l1tables := level1.sstables.Load()
+		if l1tables != nil && len(*l1tables) >= 2 {
+			err = db.compactor.compactSSTables((*l1tables)[:2], 1, 2)
+			if err != nil {
+				t.Logf("L1->L2 compaction failed: %v", err)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		// Force L2 -> L3 compaction
+		level2 := (*levels)[1]
+		l2tables := level2.sstables.Load()
+		if l2tables != nil && len(*l2tables) >= 2 {
+			err = db.compactor.compactSSTables((*l2tables)[:2], 2, 3)
+			if err != nil {
+				t.Logf("L2->L3 compaction failed: %v", err)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		// Force L3 -> L4 compaction to populate last level
+		level3 := (*levels)[2]
+		l3tables := level3.sstables.Load()
+		if l3tables != nil && len(*l3tables) >= 2 {
+			err = db.compactor.compactSSTables((*l3tables)[:2], 3, 4)
+			if err != nil {
+				t.Logf("L3->L4 compaction failed: %v", err)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	l1, l2, l3, l4 = countSSTables()
+	t.Logf("After compactions: L1=%d, L2=%d, L3=%d, L4=%d", l1, l2, l3, l4)
+
+	// Manually trigger last level capacity exceeded
+	t.Log("Step 3: Triggering last level partitioning...")
+
+	levels = db.levels.Load()
+	if levels != nil && len(*levels) >= 4 {
+		lastLevel := (*levels)[3] // L4
+
+		// Simulate last level exceeding capacity..
+		originalSize := atomic.LoadInt64(&lastLevel.currentSize)
+		atomic.StoreInt64(&lastLevel.currentSize, int64(lastLevel.capacity)*2)
+
+		t.Logf("Set last level size to %d (capacity: %d)",
+			atomic.LoadInt64(&lastLevel.currentSize), lastLevel.capacity)
+
+		// Check if partitioning is detected
+		if !db.compactor.shouldPartitionLastLevel(lastLevel) {
+			t.Errorf("Last level should need partitioning but doesn't")
+		}
+
+		// Reset compaction cooldown to allow immediate scheduling
+		db.compactor.scoreLock.Lock()
+		db.compactor.lastCompaction = time.Now().Add(-2 * db.opts.CompactionCooldownPeriod)
+		db.compactor.scoreLock.Unlock()
+
+		// Trigger scheduling
+		db.compactor.checkAndScheduleCompactions()
+
+		// Check if partitioning job was scheduled
+		db.compactor.scoreLock.Lock()
+		queueLength := len(db.compactor.compactionQueue)
+		var partitioningJobFound bool
+		for _, job := range db.compactor.compactionQueue {
+			if job.targetLevel == -1 {
+				partitioningJobFound = true
+				t.Logf("Found partitioning job with %d SSTables, priority %.1f",
+					len(job.ssTables), job.priority)
+				break
+			}
+		}
+		db.compactor.scoreLock.Unlock()
+
+		if queueLength == 0 {
+			t.Logf("No compaction jobs scheduled (this may be normal if no SSTables available)")
+		} else if !partitioningJobFound {
+			t.Errorf("Partitioning job not found in compaction queue")
+		}
+
+		// Execute any scheduled compactions
+		if queueLength > 0 {
+			t.Log("Executing partitioning job...")
+			db.compactor.executeCompactions()
+			time.Sleep(200 * time.Millisecond)
+
+			// Check final state
+			l1, l2, l3, l4 = countSSTables()
+			t.Logf("After partitioning: L1=%d, L2=%d, L3=%d, L4=%d", l1, l2, l3, l4)
+		}
+
+		// Restore original size
+		atomic.StoreInt64(&lastLevel.currentSize, originalSize)
+	}
+
+	// Verify data integrity
+	t.Log("Step 4: Verifying data integrity...")
+
+	sampleKeys := []string{
+		"batch0_key000", "batch1_key010", "batch2_key020",
+		"batch3_key030", "batch4_key040",
+	}
+
+	for _, key := range sampleKeys {
+		var value []byte
+		err = db.View(func(txn *Txn) error {
+			var err error
+			value, err = txn.Get([]byte(key))
+			return err
+		})
+
+		if err != nil {
+			t.Errorf("Failed to read key %s after partitioning: %v", key, err)
+		} else {
+			t.Logf("Successfully read key %s: %s", key, string(value))
+		}
+	}
+}
+
+func TestCompactor_LastLevelPartitioning_Scheduling(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_partitioning_scheduling_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:                dir,
+		SyncOption:               SyncFull,
+		LogChannel:               nil,
+		WriteBufferSize:          4 * 1024,
+		LevelCount:               4,
+		CompactionCooldownPeriod: 1 * time.Millisecond,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Create mock SSTables for the last level
+	levels := db.levels.Load()
+	if levels == nil || len(*levels) < 3 {
+		t.Fatalf("Need at least 3 levels for partitioning test")
+	}
+
+	lastLevelIdx := len(*levels) - 1
+	lastLevel := (*levels)[lastLevelIdx]
+
+	// Create mock SSTables
+	mockTables := []*SSTable{
+		{
+			Id:        1,
+			Min:       []byte("key001"),
+			Max:       []byte("key100"),
+			Size:      1000,
+			Timestamp: time.Now().UnixNano() - 1000000, // Older
+			isMerging: 0,
+		},
+		{
+			Id:        2,
+			Min:       []byte("key101"),
+			Max:       []byte("key200"),
+			Size:      1500,
+			Timestamp: time.Now().UnixNano() - 500000, // Newer
+			isMerging: 0,
+		},
+		{
+			Id:        3,
+			Min:       []byte("key201"),
+			Max:       []byte("key300"),
+			Size:      2000,
+			Timestamp: time.Now().UnixNano() - 2000000, // Oldest
+			isMerging: 0,
+		},
+	}
+
+	// Set up the last level with mock tables..
+	lastLevel.sstables.Store(&mockTables)
+	totalSize := int64(1000 + 1500 + 2000)
+	atomic.StoreInt64(&lastLevel.currentSize, totalSize*2) // Exceed capacity
+
+	t.Logf("Set up last level with %d SSTables, total size %d", len(mockTables), totalSize*2)
+
+	// Test scheduling
+	db.compactor.scoreLock.Lock()
+	db.compactor.lastCompaction = time.Now().Add(-2 * db.opts.CompactionCooldownPeriod)
+	db.compactor.compactionQueue = make([]*compactorJob, 0) // Clear queue
+	db.compactor.scoreLock.Unlock()
+
+	// Schedule partitioning
+	db.compactor.scheduleLastLevelPartitioning(lastLevel, lastLevelIdx)
+
+	// Verify job was scheduled
+	db.compactor.scoreLock.Lock()
+	queueLength := len(db.compactor.compactionQueue)
+	var partitionJob *compactorJob
+	if queueLength > 0 {
+		partitionJob = db.compactor.compactionQueue[0]
+	}
+	db.compactor.scoreLock.Unlock()
+
+	if queueLength == 0 {
+		t.Fatalf("No partitioning job was scheduled")
+	}
+
+	if partitionJob == nil {
+		t.Fatalf("Partitioning job is nil, expected a valid job")
+
+	}
+
+	if partitionJob.targetLevel != -1 {
+		t.Errorf("Expected targetLevel -1 for partitioning job, got %d", partitionJob.targetLevel)
+	}
+
+	if partitionJob.priority != 10.0 {
+		t.Errorf("Expected priority 10.0 for partitioning job, got %.1f", partitionJob.priority)
+	}
+
+	if len(partitionJob.ssTables) == 0 {
+		t.Errorf("Partitioning job has no SSTables")
+	}
+
+	t.Logf("Partitioning job scheduled successfully:")
+	t.Logf("  Level: %d", partitionJob.level)
+	t.Logf("  Priority: %.1f", partitionJob.priority)
+	t.Logf("  SSTables: %d", len(partitionJob.ssTables))
+	t.Logf("  Target Level: %d", partitionJob.targetLevel)
+
+	// Verify SSTables are sorted by timestamp (oldest first)
+	for i := 0; i < len(partitionJob.ssTables)-1; i++ {
+		current := partitionJob.ssTables[i]
+		next := partitionJob.ssTables[i+1]
+		if current.Timestamp > next.Timestamp {
+			t.Errorf("SSTables not sorted by timestamp: %d > %d",
+				current.Timestamp, next.Timestamp)
+		}
+	}
+
+	// Clean up -- reset merging flags
+	for _, table := range partitionJob.ssTables {
+		atomic.StoreInt32(&table.isMerging, 0)
+	}
+}
+
+func TestCompactor_LastLevelPartitioning_EdgeCases(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_partitioning_edge_cases_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncFull,
+		LogChannel:      nil,
+		WriteBufferSize: 4 * 1024,
+		LevelCount:      4,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	// Empty last level
+	t.Run("EmptyLastLevel", func(t *testing.T) {
+		levels := db.levels.Load()
+		lastLevel := (*levels)[len(*levels)-1]
+
+		if db.compactor.shouldPartitionLastLevel(lastLevel) {
+			t.Errorf("Empty last level should not need partitioning")
+		}
+	})
+
+	// Last level with insufficient SSTables
+	t.Run("InsufficientSSTables", func(t *testing.T) {
+		levels := db.levels.Load()
+		lastLevelIdx := len(*levels) - 1
+		lastLevel := (*levels)[lastLevelIdx]
+
+		// Set capacity exceeded but no SSTables
+		atomic.StoreInt64(&lastLevel.currentSize, int64(lastLevel.capacity*2))
+		lastLevel.sstables.Store(&[]*SSTable{})
+
+		db.compactor.scheduleLastLevelPartitioning(lastLevel, lastLevelIdx)
+
+		// Should not schedule anything
+		db.compactor.scoreLock.Lock()
+		queueLength := len(db.compactor.compactionQueue)
+		db.compactor.scoreLock.Unlock()
+
+		// Reset
+		atomic.StoreInt64(&lastLevel.currentSize, 0)
+
+		t.Logf("Queue length with no SSTables: %d", queueLength)
+	})
+
+	// All SSTables already being merged
+	t.Run("AllTablesBeingMerged", func(t *testing.T) {
+		levels := db.levels.Load()
+		lastLevelIdx := len(*levels) - 1
+		lastLevel := (*levels)[lastLevelIdx]
+
+		// Create SSTables that are all being merged
+		busyTables := []*SSTable{
+			{Id: 1, Size: 1000, isMerging: 1}, // Already merging
+			{Id: 2, Size: 1000, isMerging: 1}, // Already merging
+		}
+
+		lastLevel.sstables.Store(&busyTables)
+		atomic.StoreInt64(&lastLevel.currentSize, int64(lastLevel.capacity*2))
+
+		originalQueueLength := 0
+		db.compactor.scoreLock.Lock()
+		originalQueueLength = len(db.compactor.compactionQueue)
+		db.compactor.scoreLock.Unlock()
+
+		db.compactor.scheduleLastLevelPartitioning(lastLevel, lastLevelIdx)
+
+		db.compactor.scoreLock.Lock()
+		newQueueLength := len(db.compactor.compactionQueue)
+		db.compactor.scoreLock.Unlock()
+
+		if newQueueLength > originalQueueLength {
+			t.Errorf("Should not schedule partitioning when all tables are being merged")
+		}
+
+		// Reset
+		for _, table := range busyTables {
+			atomic.StoreInt32(&table.isMerging, 0)
+		}
+		atomic.StoreInt64(&lastLevel.currentSize, 0)
+
+		t.Logf("Queue length with busy tables: %d -> %d", originalQueueLength, newQueueLength)
+	})
+
+	// Very small partition ratio
+	t.Run("SmallPartitionRatio", func(t *testing.T) {
+		// Temporarily change partition ratio
+		originalRatio := db.opts.PartitionRatio
+		db.opts.PartitionRatio = 0.01 // Only 1%
+
+		tables := []*SSTable{
+			{Id: 1, Size: 10000, Timestamp: 1000},
+		}
+
+		groups := [][]*SSTable{tables}
+		level1Tables, level2Tables := db.compactor.distributeTableGroups(groups)
+
+		totalTables := len(level1Tables) + len(level2Tables)
+		if totalTables != 1 {
+			t.Errorf("Expected 1 total table, got %d", totalTables)
+		}
+
+		// Restore original ratio
+		db.opts.PartitionRatio = originalRatio
+
+		t.Logf("Small partition ratio test: L1=%d, L2=%d tables",
+			len(level1Tables), len(level2Tables))
+	})
+
+	// Single overlapping group
+	t.Run("SingleOverlappingGroup", func(t *testing.T) {
+		overlappingTables := []*SSTable{
+			{Id: 1, Min: []byte("a"), Max: []byte("m"), Size: 1000},
+			{Id: 2, Min: []byte("f"), Max: []byte("r"), Size: 1000}, // Overlaps
+			{Id: 3, Min: []byte("k"), Max: []byte("z"), Size: 1000}, // Overlaps
+		}
+
+		groups := db.compactor.groupSSTablesByKeyRange(overlappingTables)
+
+		if len(groups) != 1 {
+			t.Errorf("Expected 1 group for overlapping tables, got %d", len(groups))
+		}
+
+		if len(groups) > 0 && len(groups[0]) != 3 {
+			t.Errorf("Expected 3 tables in single group, got %d", len(groups[0]))
+		}
+
+		t.Logf("Single overlapping group test: %d groups, first group has %d tables",
+			len(groups), len(groups[0]))
+	})
 }

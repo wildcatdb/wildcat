@@ -58,6 +58,8 @@ typedef struct {
     long txn_begin_backoff_ns;
     long txn_begin_max_backoff_ns;
     int recover_uncommitted_txns;
+	double partition_ratio;
+	double partition_distribution_ratio;
 } wildcat_opts_t;
 
 static void print_error(const char* msg) {
@@ -80,8 +82,6 @@ var (
 	dbMap     = sync.Map{} // map[uint64]*wildcat.DB
 	dbCounter uint64
 )
-
-// Removed txnHandle struct and txnMap - no longer needed!
 
 type iteratorHandle struct {
 	iter  *wildcat.MergeIterator
@@ -150,6 +150,8 @@ func fromCOptions(copts *C.wildcat_opts_t) *wildcat.Options {
 		TxnBeginBackoff:                     time.Duration(copts.txn_begin_backoff_ns),
 		TxnBeginMaxBackoff:                  time.Duration(copts.txn_begin_max_backoff_ns),
 		RecoverUncommittedTxns:              copts.recover_uncommitted_txns != 0,
+		PartitionRatio:                      float64(copts.partition_ratio),
+		PartitionDistributionRatio:          float64(copts.partition_distribution_ratio),
 	}
 }
 
