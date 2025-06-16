@@ -536,6 +536,8 @@ Wildcat provides many configuration options for fine-tuning.
 | **CompactionScoreCountWeight** | `0.2` | Weight for count-based compaction scoring |
 | **CompactionSizeTieredSimilarityRatio** | `1.5` | Similarity ratio for size-tiered compaction. For grouping SSTables that are "roughly the same size" together for compaction. |
 | **CompactionActiveSSTReadWaitBackoff** | `8 * time.Microsecond` |  Backoff is used to avoid busy waiting when checking if sstables are safe to remove during compaction process final steps |
+| **CompactionPartitionRatio** | `0.6` | How much to move back (0.6 = 60% of data) |
+| **CompactionPartitionDistributionRatio** | `0.7` | How to split between L-1 and L-2 (0.7 = 70% to L-1, 30% to L-2) |
 | **FlusherTickerInterval** | `1 * time.Millisecond` | Interval for flusher background process |
 | **CompactorTickerInterval** | `250 * time.Millisecond` | Interval for compactor background process |
 | **BloomFilterFPR** | `0.01` | False positive rate for Bloom filters |
@@ -549,7 +551,6 @@ Wildcat provides many configuration options for fine-tuning.
 | **TxnBeginBackoff** | `1 * time.Microsecond` | Initial backoff duration for `Begin()` retries when the transaction buffer is full. |
 | **TxnBeginMaxBackoff** | `100 * time.Millisecond` | Maximum backoff duration for `Begin()` retries when the transaction buffer is full. |
 | **RecoverUncommittedTxns** | `true` | If true, Wildcat will attempt to recover uncommitted transactions on startup. This allows you to inspect and potentially commit or rollback transactions that were in progress at the time of a crash. |
-
 ## Shared C Library
 You will require the latest Go toolchain to build the shared C library for Wildcat. This allows you to use Wildcat as a C library in other languages.
 
@@ -635,6 +636,8 @@ typedef struct {
     long txn_begin_backoff_ns;
     long txn_begin_max_backoff_ns;
     int recover_uncommitted_txns;
+    double partition_ratio;
+    double partition_distribution_ratio;
 } wildcat_opts_t;
 ```
 
