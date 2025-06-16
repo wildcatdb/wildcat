@@ -378,7 +378,7 @@ func (compactor *Compactor) executeCompactions() {
 		} else {
 			// Regular compaction
 			compactor.db.log(fmt.Sprintf("Starting compaction job for level %d with %d SSTables", job.level, len(job.ssTables)))
-			err = compactor.compactSSTables(job.ssTables, job.level, job.targetLevel)
+			err = compactor.compactSSTables(job.ssTables, job.level+1, job.targetLevel)
 			if err != nil {
 				compactor.db.log(fmt.Sprintf("Compaction failed for level %d: %v", job.level, err))
 			}
@@ -486,8 +486,14 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevel, ta
 	// Update the level size
 	atomic.AddInt64(&targetLevelPtr.currentSize, newSSTable.Size)
 
+	// Ensure the source level is valid
+	if (*compactor.db.levels.Load()) == nil || sourceLevel < 1 || sourceLevel > len(*compactor.db.levels.Load()) {
+		return fmt.Errorf("invalid source level %d for compaction", sourceLevel)
+	}
+
 	// Remove the original SSTables from the source level
 	if sourceLevel != targetLevel {
+
 		sourceLevelPtr := (*compactor.db.levels.Load())[sourceLevel-1]
 		currentSSTables := sourceLevelPtr.sstables.Load()
 
