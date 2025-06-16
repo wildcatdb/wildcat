@@ -60,71 +60,71 @@ const (
 	DefaultLevelCount      = 6                    // Default number of levels in the LSM tree
 	DefaultLevelMultiplier = 10                   // Multiplier for the number of levels
 	// 64MB -> 640MB -> 6.4GB ->  64GB -> 640GB ->  6.4TB
-	DefaultBlockManagerLRUSize                 = 1024                 // Size of the LRU cache for block managers
-	DefaultBlockManagerLRUEvictRatio           = 0.20                 // Eviction ratio for the LRU cache
-	DefaultBlockManagerLRUAccessWeight         = 0.8                  // Access weight for the LRU cache
-	DefaultPermission                          = 0750                 // Default permission for created files
-	DefaultBloomFilter                         = false                // Default Bloom filter option
-	DefaultMaxCompactionConcurrency            = 4                    // Default max compaction concurrency
-	DefaultCompactionCooldownPeriod            = 5 * time.Second      // Default cooldown period for compaction
-	DefaultCompactionBatchSize                 = 8                    // Default max number of SSTables to compact at once
-	DefaultCompactionSizeRatio                 = 1.1                  // Default level size ratio that triggers compaction
-	DefaultCompactionSizeThreshold             = 8                    // Default number of files to trigger size-tiered compaction
-	DefaultCompactionScoreSizeWeight           = 0.8                  // Default weight for size-based score
-	DefaultCompactionScoreCountWeight          = 0.2                  // Default weight for count-based score
-	DefaultCompactionSizeTieredSimilarityRatio = 1.5                  // Default similarity ratio for size-tiered compaction
-	DefaultCompactionActiveSSTReadWaitBackoff  = 8 * time.Microsecond // Backoff is used to avoid busy waiting when checking if sstables are safe to remove during compaction process final steps
-	DefaultFlusherTickerInterval               = 1 * time.Millisecond
-	DefaultCompactorTickerInterval             = 250 * time.Millisecond // Default interval for compactor ticker
-	DefaultBloomFilterFPR                      = 0.01                   // Default false positive rate for Bloom filter
-	DefaultWALAppendRetry                      = 10                     // Default number of retries for WAL append
-	DefaultWALAppendBackoff                    = 128 * time.Microsecond // Default backoff duration for WAL append
-	DefaultSSTableBTreeOrder                   = 10                     // Default order of the B-tree for SSTables
-	DefaultMaxConcurrentTxns                   = 65536                  // Default max concurrent transactions
-	DefaultTxnBeginRetry                       = 10                     // Default retries for Begin()
-	DefaultTxnBeginBackoff                     = 1 * time.Microsecond   // Default initial backoff
-	DefaultTxnBeginMaxBackoff                  = 100 * time.Millisecond // Default max backoff
-	DefaultPartitionRatio                      = 0.2                    // Move 20% of data back when partitioning
-	DefaultPartitionDistributionRatio          = 0.7                    // 70% to L-1, 30% to L-2
+	DefaultBlockManagerLRUSize                  = 1024                 // Size of the LRU cache for block managers
+	DefaultBlockManagerLRUEvictRatio            = 0.20                 // Eviction ratio for the LRU cache
+	DefaultBlockManagerLRUAccessWeight          = 0.8                  // Access weight for the LRU cache
+	DefaultPermission                           = 0750                 // Default permission for created files
+	DefaultBloomFilter                          = false                // Default Bloom filter option
+	DefaultMaxCompactionConcurrency             = 4                    // Default max compaction concurrency
+	DefaultCompactionCooldownPeriod             = 5 * time.Second      // Default cooldown period for compaction
+	DefaultCompactionBatchSize                  = 8                    // Default max number of SSTables to compact at once
+	DefaultCompactionSizeRatio                  = 1.1                  // Default level size ratio that triggers compaction
+	DefaultCompactionSizeThreshold              = 8                    // Default number of files to trigger size-tiered compaction
+	DefaultCompactionScoreSizeWeight            = 0.8                  // Default weight for size-based score
+	DefaultCompactionScoreCountWeight           = 0.2                  // Default weight for count-based score
+	DefaultCompactionSizeTieredSimilarityRatio  = 1.5                  // Default similarity ratio for size-tiered compaction
+	DefaultCompactionActiveSSTReadWaitBackoff   = 8 * time.Microsecond // Backoff is used to avoid busy waiting when checking if sstables are safe to remove during compaction process final steps
+	DefaultFlusherTickerInterval                = 1 * time.Millisecond
+	DefaultCompactorTickerInterval              = 250 * time.Millisecond // Default interval for compactor ticker
+	DefaultBloomFilterFPR                       = 0.01                   // Default false positive rate for Bloom filter
+	DefaultWALAppendRetry                       = 10                     // Default number of retries for WAL append
+	DefaultWALAppendBackoff                     = 128 * time.Microsecond // Default backoff duration for WAL append
+	DefaultSSTableBTreeOrder                    = 10                     // Default order of the B-tree for SSTables
+	DefaultMaxConcurrentTxns                    = 65536                  // Default max concurrent transactions
+	DefaultTxnBeginRetry                        = 10                     // Default retries for Begin()
+	DefaultTxnBeginBackoff                      = 1 * time.Microsecond   // Default initial backoff
+	DefaultTxnBeginMaxBackoff                   = 100 * time.Millisecond // Default max backoff
+	DefaultCompactionPartitionRatio             = 0.2                    // Move 20% of data back when partitioning
+	DefaultCompactionPartitionDistributionRatio = 0.7                    // 70% to L-1, 30% to L-2
 )
 
 // Options represents the configuration options for Wildcat
 type Options struct {
-	Directory                           string        // Directory for Wildcat
-	WriteBufferSize                     int64         // Size of the write buffer
-	SyncOption                          SyncOption    // Sync option for write operations
-	SyncInterval                        time.Duration // Interval for syncing the write buffer
-	LevelCount                          int           // Number of levels in the LSM tree
-	LevelMultiplier                     int           // Multiplier for the number of levels
-	BlockManagerLRUSize                 int           // Size of the LRU cache for block managers
-	BlockManagerLRUEvictRatio           float64       // Eviction ratio for the LRU cache
-	BlockManagerLRUAccesWeight          float64       // Access weight for the LRU cache
-	Permission                          os.FileMode   // Permission for created files
-	LogChannel                          chan string   // Channel for logging
-	BloomFilter                         bool          // Enable Bloom filter for SSTables
-	MaxCompactionConcurrency            int           // Maximum number of concurrent compactions
-	CompactionCooldownPeriod            time.Duration // Cooldown period for compaction
-	CompactionBatchSize                 int           // Max number of SSTables to compact at once
-	CompactionSizeRatio                 float64       // Level size ratio that triggers compaction
-	CompactionSizeThreshold             int           // Number of files to trigger size-tiered compaction
-	CompactionScoreSizeWeight           float64       // Weight for size-based score
-	CompactionScoreCountWeight          float64       // Weight for count-based score
-	CompactionSizeTieredSimilarityRatio float64       // Similarity ratio for size-tiered compaction.  For grouping SSTables that are "roughly the same size" together for compaction.
-	CompactionActiveSSTReadWaitBackoff  time.Duration // Backoff time for active SSTable read wait during compaction, to avoid busy waiting
-	FlusherTickerInterval               time.Duration // Interval for flusher ticker
-	CompactorTickerInterval             time.Duration // Interval for compactor ticker
-	BloomFilterFPR                      float64       // False positive rate for Bloom filter
-	WalAppendRetry                      int           // Number of retries for WAL append
-	WalAppendBackoff                    time.Duration // Backoff duration for WAL append
-	SSTableBTreeOrder                   int           // Order of the B-tree for SSTables
-	STDOutLogging                       bool          // Enable logging to standard output (default is false and if set, channel is ignored)
-	MaxConcurrentTxns                   int           // Maximum concurrent transactions (buffer size)
-	TxnBeginRetry                       int           // Number of retries for Begin() when buffer full
-	TxnBeginBackoff                     time.Duration // Initial backoff duration for Begin() retries
-	TxnBeginMaxBackoff                  time.Duration // Maximum backoff duration for Begin() retries
-	RecoverUncommittedTxns              bool          // Whether to recover uncommitted transactions on startup
-	PartitionRatio                      float64       // How much to move back (0.6 = 60% of data). Used for last level compaction
-	PartitionDistributionRatio          float64       // How to split between L-1 and L-2 (0.7 = 70% to L-1, 30% to L-2)
+	Directory                            string        // Directory for Wildcat
+	WriteBufferSize                      int64         // Size of the write buffer
+	SyncOption                           SyncOption    // Sync option for write operations
+	SyncInterval                         time.Duration // Interval for syncing the write buffer
+	LevelCount                           int           // Number of levels in the LSM tree
+	LevelMultiplier                      int           // Multiplier for the number of levels
+	BlockManagerLRUSize                  int           // Size of the LRU cache for block managers
+	BlockManagerLRUEvictRatio            float64       // Eviction ratio for the LRU cache
+	BlockManagerLRUAccesWeight           float64       // Access weight for the LRU cache
+	Permission                           os.FileMode   // Permission for created files
+	LogChannel                           chan string   // Channel for logging
+	BloomFilter                          bool          // Enable Bloom filter for SSTables
+	MaxCompactionConcurrency             int           // Maximum number of concurrent compactions
+	CompactionCooldownPeriod             time.Duration // Cooldown period for compaction
+	CompactionBatchSize                  int           // Max number of SSTables to compact at once
+	CompactionSizeRatio                  float64       // Level size ratio that triggers compaction
+	CompactionSizeThreshold              int           // Number of files to trigger size-tiered compaction
+	CompactionScoreSizeWeight            float64       // Weight for size-based score
+	CompactionScoreCountWeight           float64       // Weight for count-based score
+	CompactionSizeTieredSimilarityRatio  float64       // Similarity ratio for size-tiered compaction.  For grouping SSTables that are "roughly the same size" together for compaction.
+	CompactionActiveSSTReadWaitBackoff   time.Duration // Backoff time for active SSTable read wait during compaction, to avoid busy waiting
+	FlusherTickerInterval                time.Duration // Interval for flusher ticker
+	CompactorTickerInterval              time.Duration // Interval for compactor ticker
+	BloomFilterFPR                       float64       // False positive rate for Bloom filter
+	WalAppendRetry                       int           // Number of retries for WAL append
+	WalAppendBackoff                     time.Duration // Backoff duration for WAL append
+	SSTableBTreeOrder                    int           // Order of the B-tree for SSTables
+	STDOutLogging                        bool          // Enable logging to standard output (default is false and if set, channel is ignored)
+	MaxConcurrentTxns                    int           // Maximum concurrent transactions (buffer size)
+	TxnBeginRetry                        int           // Number of retries for Begin() when buffer full
+	TxnBeginBackoff                      time.Duration // Initial backoff duration for Begin() retries
+	TxnBeginMaxBackoff                   time.Duration // Maximum backoff duration for Begin() retries
+	RecoverUncommittedTxns               bool          // Whether to recover uncommitted transactions on startup
+	CompactionPartitionRatio             float64       // How much to move back (0.6 = 60% of data). Used for last level compaction
+	CompactionPartitionDistributionRatio float64       // How to split between L-1 and L-2 (0.7 = 70% to L-1, 30% to L-2)
 }
 
 // DB represents the main Wildcat structure
@@ -406,8 +406,8 @@ func (opts *Options) setDefaults() {
 		opts.PartitionRatio = DefaultPartitionRatio
 	}
 
-	if opts.PartitionDistributionRatio <= 0 || opts.PartitionDistributionRatio > 1.0 {
-		opts.PartitionDistributionRatio = DefaultPartitionDistributionRatio
+	if opts.CompactionPartitionDistributionRatio <= 0 || opts.CompactionPartitionDistributionRatio > 1.0 {
+		opts.CompactionPartitionDistributionRatio = DefaultCompactionPartitionDistributionRatio
 	}
 
 }

@@ -943,7 +943,7 @@ func (compactor *Compactor) scheduleLastLevelPartitioning(lastLevel *Level, leve
 
 	// Calculate how much data to partition
 	totalSize := atomic.LoadInt64(&lastLevel.currentSize)
-	targetSize := int64(float64(totalSize) * compactor.db.opts.PartitionRatio)
+	targetSize := int64(float64(totalSize) * compactor.db.opts.CompactionPartitionRatio)
 
 	// Select SSTables to partition (starting with oldest)
 	var selectedTables []*SSTable
@@ -1037,8 +1037,8 @@ func (compactor *Compactor) distributeTableGroups(groups [][]*SSTable) ([]*SSTab
 		}
 	}
 
-	// Distribute based on PartitionDistributionRatio
-	targetLevel1Size := int64(float64(totalSize) * compactor.db.opts.PartitionDistributionRatio)
+	// Distribute based on CompactionPartitionDistributionRatio
+	targetLevel1Size := int64(float64(totalSize) * compactor.db.opts.CompactionPartitionDistributionRatio)
 	currentLevel1Size := int64(0)
 
 	for _, group := range groups {
