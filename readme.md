@@ -551,6 +551,7 @@ Wildcat provides many configuration options for fine-tuning.
 | **TxnBeginBackoff** | `1 * time.Microsecond` | Initial backoff duration for `Begin()` retries when the transaction buffer is full. |
 | **TxnBeginMaxBackoff** | `100 * time.Millisecond` | Maximum backoff duration for `Begin()` retries when the transaction buffer is full. |
 | **RecoverUncommittedTxns** | `true` | If true, Wildcat will attempt to recover uncommitted transactions on startup. This allows you to inspect and potentially commit or rollback transactions that were in progress at the time of a crash. |
+
 ## Shared C Library
 You will require the latest Go toolchain to build the shared C library for Wildcat. This allows you to use Wildcat as a C library in other languages.
 
