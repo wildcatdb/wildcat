@@ -1112,11 +1112,11 @@ func TestCompactor_LastLevelPartitioning_Distribution(t *testing.T) {
 	}(dir)
 
 	opts := &Options{
-		Directory:                  dir,
-		SyncOption:                 SyncFull,
-		LogChannel:                 nil,
-		WriteBufferSize:            4 * 1024,
-		PartitionDistributionRatio: 0.7, // 70% to L-1, 30% to L-2
+		Directory:                            dir,
+		SyncOption:                           SyncFull,
+		LogChannel:                           nil,
+		WriteBufferSize:                      4 * 1024,
+		CompactionPartitionDistributionRatio: 0.7, // 70% to L-1, 30% to L-2
 	}
 
 	db, err := Open(opts)
@@ -1191,15 +1191,15 @@ func TestCompactor_LastLevelPartitioning_FullWorkflow(t *testing.T) {
 	}(dir)
 
 	opts := &Options{
-		Directory:                  dir,
-		SyncOption:                 SyncFull,
-		LogChannel:                 nil,
-		WriteBufferSize:            4 * 1024,
-		LevelCount:                 4,
-		LevelMultiplier:            2,
-		PartitionRatio:             0.6,                  // Move 60% of data
-		PartitionDistributionRatio: 0.7,                  // 70% to L-1, 30% to L-2
-		CompactionCooldownPeriod:   1 * time.Millisecond, // Short for testing
+		Directory:                            dir,
+		SyncOption:                           SyncFull,
+		LogChannel:                           nil,
+		WriteBufferSize:                      4 * 1024,
+		LevelCount:                           4,
+		LevelMultiplier:                      2,
+		CompactionPartitionRatio:             0.6,                  // Move 60% of data
+		CompactionPartitionDistributionRatio: 0.7,                  // 70% to L-1, 30% to L-2
+		CompactionCooldownPeriod:             1 * time.Millisecond, // Short for testing
 	}
 
 	db, err := Open(opts)
@@ -1615,8 +1615,8 @@ func TestCompactor_LastLevelPartitioning_EdgeCases(t *testing.T) {
 	// Very small partition ratio
 	t.Run("SmallPartitionRatio", func(t *testing.T) {
 		// Temporarily change partition ratio
-		originalRatio := db.opts.PartitionRatio
-		db.opts.PartitionRatio = 0.01 // Only 1%
+		originalRatio := db.opts.CompactionPartitionRatio
+		db.opts.CompactionPartitionRatio = 0.01 // Only 1%
 
 		tables := []*SSTable{
 			{Id: 1, Size: 10000, Timestamp: 1000},
@@ -1631,7 +1631,7 @@ func TestCompactor_LastLevelPartitioning_EdgeCases(t *testing.T) {
 		}
 
 		// Restore original ratio
-		db.opts.PartitionRatio = originalRatio
+		db.opts.CompactionPartitionRatio = originalRatio
 
 		t.Logf("Small partition ratio test: L1=%d, L2=%d tables",
 			len(level1Tables), len(level2Tables))
