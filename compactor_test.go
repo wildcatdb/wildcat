@@ -294,7 +294,7 @@ func TestCompactor_Basic(t *testing.T) {
 			atomic.StoreInt32(&table.isMerging, 1)
 		}
 
-		err = db.compactor.compactSSTables(tablesToCompact, 1, 2)
+		err = db.compactor.compactSSTables(tablesToCompact, 0, 1)
 		if err != nil {
 			// Release the tables if compaction failed
 			for _, table := range tablesToCompact {
@@ -558,7 +558,7 @@ func TestCompactor_SizeTieredCompaction(t *testing.T) {
 		t.Logf("Manually triggering size-tiered compaction with %d tables...", numToCompact)
 
 		// Perform compaction
-		err = db.compactor.compactSSTables(tablesToCompact, 1, 2)
+		err = db.compactor.compactSSTables(tablesToCompact, 0, 1)
 		if err != nil {
 			// Release tables if compaction failed
 			for _, table := range tablesToCompact {
@@ -697,11 +697,11 @@ func TestCompactor_CompactionQueue(t *testing.T) {
 
 	for _, job := range jobs {
 		db.compactor.compactionQueue = append(db.compactor.compactionQueue, &compactorJob{
-			level:       job.level,
-			priority:    job.priority,
-			ssTables:    job.tables,
-			targetLevel: job.level + 1,
-			inProgress:  false,
+			levelIdx:   job.level,
+			priority:   job.priority,
+			ssTables:   job.tables,
+			targetIdx:  job.level + 1,
+			inProgress: false,
 		})
 	}
 
@@ -875,11 +875,11 @@ func TestCompactor_ConcurrentCompactions(t *testing.T) {
 				if sstables != nil && len(*sstables) >= 2 {
 					// Create a job for this level
 					db.compactor.compactionQueue = append(db.compactor.compactionQueue, &compactorJob{
-						level:       levelIdx + 1,
-						priority:    float64(levelIdx + 1), // Higher levels have higher priority
-						ssTables:    (*sstables)[:2],       // Use first two tables
-						targetLevel: levelIdx + 2,
-						inProgress:  false,
+						levelIdx:   levelIdx + 1,
+						priority:   float64(levelIdx + 1), // Higher levels have higher priority
+						ssTables:   (*sstables)[:2],       // Use first two tables
+						targetIdx:  levelIdx + 2,
+						inProgress: false,
 					})
 				}
 			}
@@ -1330,7 +1330,7 @@ func TestCompactor_LastLevelPartitioning_FullWorkflow(t *testing.T) {
 		queueLength := len(db.compactor.compactionQueue)
 		var partitioningJobFound bool
 		for _, job := range db.compactor.compactionQueue {
-			if job.targetLevel == -1 {
+			if job.targetIdx == -1 {
 				partitioningJobFound = true
 				t.Logf("Found partitioning job with %d SSTables, priority %.1f",
 					len(job.ssTables), job.priority)
@@ -1481,8 +1481,8 @@ func TestCompactor_LastLevelPartitioning_Scheduling(t *testing.T) {
 
 	}
 
-	if partitionJob.targetLevel != -1 {
-		t.Errorf("Expected targetLevel -1 for partitioning job, got %d", partitionJob.targetLevel)
+	if partitionJob.targetIdx != -1 {
+		t.Errorf("Expected targetLevel -1 for partitioning job, got %d", partitionJob.targetIdx)
 	}
 
 	if partitionJob.priority != 10.0 {
@@ -1494,10 +1494,10 @@ func TestCompactor_LastLevelPartitioning_Scheduling(t *testing.T) {
 	}
 
 	t.Logf("Partitioning job scheduled successfully:")
-	t.Logf("  Level: %d", partitionJob.level)
+	t.Logf("  Level: %d", partitionJob.levelIdx)
 	t.Logf("  Priority: %.1f", partitionJob.priority)
 	t.Logf("  SSTables: %d", len(partitionJob.ssTables))
-	t.Logf("  Target Level: %d", partitionJob.targetLevel)
+	t.Logf("  Target Level: %d", partitionJob.targetIdx)
 
 	// Verify SSTables are sorted by timestamp (oldest first)
 	for i := 0; i < len(partitionJob.ssTables)-1; i++ {
