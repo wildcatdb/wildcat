@@ -402,8 +402,8 @@ func (opts *Options) setDefaults() {
 		opts.CompactionActiveSSTReadWaitBackoff = DefaultCompactionActiveSSTReadWaitBackoff
 	}
 
-	if opts.PartitionRatio <= 0 || opts.PartitionRatio > 1.0 {
-		opts.PartitionRatio = DefaultPartitionRatio
+	if opts.CompactionPartitionRatio <= 0 || opts.CompactionPartitionRatio > 1.0 {
+		opts.CompactionPartitionRatio = DefaultCompactionPartitionRatio
 	}
 
 	if opts.CompactionPartitionDistributionRatio <= 0 || opts.CompactionPartitionDistributionRatio > 1.0 {
