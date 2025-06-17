@@ -1396,7 +1396,6 @@ func TestFlusher_PreventsDuplicateMemtableQueuing(t *testing.T) {
 	db.memtable.Store(testMemtable)
 	atomic.StoreInt64(&db.flusher.lastQueuedId, 999)
 
-	initialConcurrentQueueSize := db.flusher.immutable.Size()
 	t.Logf("Starting concurrent test with memtable ID 999 already marked as queued")
 
 	start := make(chan struct{})
@@ -1407,20 +1406,20 @@ func TestFlusher_PreventsDuplicateMemtableQueuing(t *testing.T) {
 			defer wg.Done()
 			<-start
 
-			queueSizeBefore := db.flusher.immutable.Size()
-
 			err := db.flusher.queueMemtable()
 			if err == nil {
 				successfulCalls.Add(1)
 			}
 
-			queueSizeAfter := db.flusher.immutable.Size()
+			currentMemtable := db.memtable.Load().(*Memtable)
+			lastQueued := atomic.LoadInt64(&db.flusher.lastQueuedId)
 
-			if queueSizeAfter == queueSizeBefore {
+			if currentMemtable == testMemtable && lastQueued == 999 {
 				duplicateAttempts.Add(1)
-				t.Logf("Goroutine %d: duplicate queuing prevented (queue size unchanged)", id)
+				t.Logf("Goroutine %d: duplicate queuing prevented (memtable unchanged)", id)
 			} else {
-				t.Logf("Goroutine %d: queue size changed from %d to %d", id, queueSizeBefore, queueSizeAfter)
+				t.Logf("Goroutine %d: memtable changed (lastQueued=%d, newId=%d)",
+					id, lastQueued, currentMemtable.id)
 			}
 		}(i)
 	}
@@ -1428,15 +1427,12 @@ func TestFlusher_PreventsDuplicateMemtableQueuing(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-	finalQueueSize := db.flusher.immutable.Size()
 	duplicates := duplicateAttempts.Load()
 	successes := successfulCalls.Load()
 
 	t.Logf("Concurrent test results:")
 	t.Logf("  - Successful calls: %d", successes)
 	t.Logf("  - Duplicate preventions: %d", duplicates)
-	t.Logf("  - Initial queue size: %d", initialConcurrentQueueSize)
-	t.Logf("  - Final queue size: %d", finalQueueSize)
 
 	if successes != 5 {
 		t.Errorf("Expected all 5 calls to succeed (no errors), got %d", successes)
@@ -1446,8 +1442,9 @@ func TestFlusher_PreventsDuplicateMemtableQueuing(t *testing.T) {
 		t.Errorf("Expected all 5 calls to be duplicate preventions, got %d", duplicates)
 	}
 
-	if finalQueueSize != initialConcurrentQueueSize {
-		t.Errorf("Expected queue size to remain %d, got %d", initialConcurrentQueueSize, finalQueueSize)
+	finalMemtable = db.memtable.Load().(*Memtable)
+	if finalMemtable != testMemtable {
+		t.Errorf("Expected memtable to remain the test memtable (ID 999), but it changed")
 	}
 }
 
