@@ -30,16 +30,13 @@ func newFlusher(db *DB) *Flusher {
 // queueMemtable queues the current active memtable for flushing to disk.
 func (flusher *Flusher) queueMemtable() error {
 
-	// Check if the flusher is already swapping
-	if atomic.LoadInt32(&flusher.swapping) == 1 {
-		return nil // Already swapping, no need to queue again
+	// Use atomic compare-and-swap to ensure only one goroutine can swap at a time
+	if !atomic.CompareAndSwapInt32(&flusher.swapping, 0, 1) {
+		return nil // Another goroutine is already swapping, no need to queue again
 	}
+	defer atomic.StoreInt32(&flusher.swapping, 0)
 
 	flusher.db.log("Flusher: queuing current memtable for flushing")
-
-	// Set the swapping flag to indicate that we are in the process of swapping
-	atomic.StoreInt32(&flusher.swapping, 1)
-	defer atomic.StoreInt32(&flusher.swapping, 0)
 
 	walId := flusher.db.walIdGenerator.nextID()
 
@@ -181,8 +178,6 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 
 	// We create a new bloom filter if enabled and add it to sstable meta
 	if flusher.db.opts.BloomFilter {
-
-		// Create a bloom filter for the SSTable
 		sstable.BloomFilter, err = memt.createBloomFilter(int64(entryCount))
 		if err != nil {
 			return fmt.Errorf("failed to create bloom filter: %w", err)
@@ -281,13 +276,11 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 
 	// Add both KLog and VLog to the LRU cache
 	flusher.db.lru.Put(klogFinalPath, klogBm, func(key, value interface{}) {
-		// Close the block manager when evicted from LRU
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
 		}
 	})
 	flusher.db.lru.Put(vlogFinalPath, vlogBm, func(key, value interface{}) {
-		// Close the block manager when evicted from LRU
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
 		}

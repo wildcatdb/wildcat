@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1658,4 +1660,560 @@ func TestCompactor_LastLevelPartitioning_EdgeCases(t *testing.T) {
 		t.Logf("Single overlapping group test: %d groups, first group has %d tables",
 			len(groups), len(groups[0]))
 	})
+}
+
+func TestCompactor_SSTableMergingFlag(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_merging_flag_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncNone,
+		WriteBufferSize: 1024,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	for i := 0; i < 50; i++ {
+		key := fmt.Sprintf("flag_key_%d", i)
+		value := fmt.Sprintf("flag_value_%d", i)
+
+		err = db.Update(func(txn *Txn) error {
+			return txn.Put([]byte(key), []byte(value))
+		})
+		if err != nil {
+			t.Fatalf("Failed to insert data: %v", err)
+		}
+	}
+
+	err = db.ForceFlush()
+	if err != nil {
+		t.Fatalf("Failed to force flush: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	levels := db.levels.Load()
+	if levels == nil || len(*levels) == 0 {
+		t.Fatalf("No levels found")
+	}
+
+	level1 := (*levels)[0]
+	sstables := level1.sstables.Load()
+	if sstables == nil || len(*sstables) < 2 {
+		t.Fatalf("Need at least 2 SSTables for merging test, found %d", len(*sstables))
+	}
+
+	table1 := (*sstables)[0]
+	table2 := (*sstables)[1]
+
+	if atomic.LoadInt32(&table1.isMerging) != 0 {
+		t.Error("SSTable should not be merging initially")
+	}
+
+	if !atomic.CompareAndSwapInt32(&table1.isMerging, 0, 1) {
+		t.Error("Should be able to set merging flag")
+	}
+
+	if atomic.CompareAndSwapInt32(&table1.isMerging, 0, 1) {
+		t.Error("Should not be able to set merging flag twice")
+	}
+
+	atomic.StoreInt32(&table1.isMerging, 0)
+
+	var successCount atomic.Int32
+	var wg sync.WaitGroup
+
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if atomic.CompareAndSwapInt32(&table2.isMerging, 0, 1) {
+				successCount.Add(1)
+				time.Sleep(10 * time.Millisecond)
+				atomic.StoreInt32(&table2.isMerging, 0)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if successCount.Load() != 1 {
+		t.Errorf("Expected only 1 successful flag setting, got %d", successCount.Load())
+	}
+}
+
+func TestCompactor_CompactionScoreEdgeCases(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_score_edge_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	opts := &Options{
+		Directory:                  dir,
+		SyncOption:                 SyncNone,
+		WriteBufferSize:            1024,
+		CompactionScoreSizeWeight:  0.8,
+		CompactionScoreCountWeight: 0.2,
+		CompactionSizeThreshold:    4,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	levels := db.levels.Load()
+	if levels == nil {
+		t.Fatalf("Levels not initialized")
+	}
+
+	level1 := (*levels)[0]
+
+	atomic.StoreInt64(&level1.currentSize, int64(level1.capacity))
+
+	mockTables := make([]*SSTable, opts.CompactionSizeThreshold)
+	for i := 0; i < opts.CompactionSizeThreshold; i++ {
+		mockTables[i] = &SSTable{
+			Id:   int64(i + 1),
+			Size: 100,
+		}
+	}
+	level1.sstables.Store(&mockTables)
+
+	sizeScore := float64(level1.capacity) / float64(level1.capacity)                            // = 1.0
+	countScore := float64(opts.CompactionSizeThreshold) / float64(opts.CompactionSizeThreshold) // = 1.0
+	totalScore := sizeScore*opts.CompactionScoreSizeWeight + countScore*opts.CompactionScoreCountWeight
+
+	t.Logf("Threshold test - Size score: %.2f, Count score: %.2f, Total: %.2f",
+		sizeScore, countScore, totalScore)
+
+	if totalScore <= 1.0 {
+		t.Log("Score at threshold correctly does not trigger compaction")
+	}
+
+	atomic.StoreInt64(&level1.currentSize, int64(level1.capacity)+1)
+
+	sizeScore = float64(level1.capacity+1) / float64(level1.capacity)
+	totalScore = sizeScore*opts.CompactionScoreSizeWeight + countScore*opts.CompactionScoreCountWeight
+
+	t.Logf("Over threshold test - Size score: %.2f, Count score: %.2f, Total: %.2f",
+		sizeScore, countScore, totalScore)
+
+	if totalScore <= 1.0 {
+		t.Error("Score just over threshold should trigger compaction")
+	}
+
+	opts.CompactionScoreSizeWeight = 0.0
+	opts.CompactionScoreCountWeight = 1.0
+
+	atomic.StoreInt64(&level1.currentSize, int64(level1.capacity)*10)                                  // Very large size
+	sizeScore = float64(level1.capacity*10) / float64(level1.capacity)                                 // = 10.0
+	countScore = float64(opts.CompactionSizeThreshold) / float64(opts.CompactionSizeThreshold)         // = 1.0
+	totalScore = sizeScore*opts.CompactionScoreSizeWeight + countScore*opts.CompactionScoreCountWeight // = 0*10 + 1*1 = 1.0
+
+	t.Logf("Zero size weight test - Size score: %.2f, Count score: %.2f, Total: %.2f",
+		sizeScore, countScore, totalScore)
+
+	if totalScore > 1.0 {
+		t.Error("With zero size weight, large size should not trigger compaction")
+	}
+}
+
+func TestCompactor_WaitForActiveReads(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_active_reads_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	opts := &Options{
+		Directory:                          dir,
+		SyncOption:                         SyncNone,
+		WriteBufferSize:                    1024,
+		CompactionActiveSSTReadWaitBackoff: 1 * time.Millisecond,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	for i := 0; i < 50; i++ {
+		key := fmt.Sprintf("read_test_key_%d", i)
+		value := fmt.Sprintf("read_test_value_%d", i)
+
+		err = db.Update(func(txn *Txn) error {
+			return txn.Put([]byte(key), []byte(value))
+		})
+		if err != nil {
+			t.Fatalf("Failed to insert data: %v", err)
+		}
+	}
+
+	err = db.ForceFlush()
+	if err != nil {
+		t.Fatalf("Failed to force flush: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	levels := db.levels.Load()
+	if levels == nil || len(*levels) == 0 {
+		t.Fatalf("No levels found")
+	}
+
+	level1 := (*levels)[0]
+	sstables := level1.sstables.Load()
+	if sstables == nil || len(*sstables) == 0 {
+		t.Fatalf("No SSTables found")
+	}
+
+	testTable := (*sstables)[0]
+
+	atomic.StoreInt32(&testTable.isBeingRead, 1)
+
+	waitComplete := make(chan bool, 1)
+	go func() {
+		db.compactor.waitForActiveReads([]*SSTable{testTable})
+		waitComplete <- true
+	}()
+
+	select {
+	case <-waitComplete:
+		t.Error("waitForActiveReads should be blocked while read is active")
+	case <-time.After(10 * time.Millisecond):
+		t.Log("waitForActiveReads correctly waits for active reads")
+	}
+
+	atomic.StoreInt32(&testTable.isBeingRead, 0)
+
+	select {
+	case <-waitComplete:
+		t.Log("waitForActiveReads correctly completed after read finished")
+	case <-time.After(100 * time.Millisecond):
+		t.Error("waitForActiveReads should complete after read flag is cleared")
+	}
+}
+
+func TestCompactor_FileCleanup(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_cleanup_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncFull,
+		WriteBufferSize: 1024,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	for i := 0; i < 100; i++ {
+		key := fmt.Sprintf("cleanup_key_%d", i)
+		value := fmt.Sprintf("cleanup_value_%d", i)
+
+		err = db.Update(func(txn *Txn) error {
+			return txn.Put([]byte(key), []byte(value))
+		})
+		if err != nil {
+			t.Fatalf("Failed to insert data: %v", err)
+		}
+	}
+
+	err = db.ForceFlush()
+	if err != nil {
+		t.Fatalf("Failed to force flush: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	l1Dir := filepath.Join(dir, "l1")
+	filesBefore, err := os.ReadDir(l1Dir)
+	if err != nil {
+		t.Fatalf("Failed to read l1 directory: %v", err)
+	}
+
+	originalFileCount := len(filesBefore)
+	t.Logf("Files before compaction: %d", originalFileCount)
+
+	var originalFiles []string
+	for _, file := range filesBefore {
+		if filepath.Ext(file.Name()) == ".klog" || filepath.Ext(file.Name()) == ".vlog" {
+			originalFiles = append(originalFiles, file.Name())
+		}
+	}
+
+	levels := db.levels.Load()
+	if levels != nil && len(*levels) >= 2 {
+		level1 := (*levels)[0]
+		sstables := level1.sstables.Load()
+
+		if sstables != nil && len(*sstables) >= 2 {
+			tablesToCompact := (*sstables)[:2]
+
+			for _, table := range tablesToCompact {
+				atomic.StoreInt32(&table.isMerging, 1)
+			}
+
+			err = db.compactor.compactSSTables(tablesToCompact, 0, 1)
+			if err != nil {
+				t.Fatalf("Compaction failed: %v", err)
+			}
+
+			time.Sleep(200 * time.Millisecond)
+
+			filesAfter, err := os.ReadDir(l1Dir)
+			if err != nil {
+				t.Fatalf("Failed to read l1 directory after compaction: %v", err)
+			}
+
+			var filesAfterNames []string
+			for _, file := range filesAfter {
+				if filepath.Ext(file.Name()) == ".klog" || filepath.Ext(file.Name()) == ".vlog" {
+					filesAfterNames = append(filesAfterNames, file.Name())
+				}
+			}
+
+			t.Logf("Files after compaction: %d", len(filesAfterNames))
+
+			var stillExist []string
+			for _, originalFile := range originalFiles {
+				for _, afterFile := range filesAfterNames {
+					if originalFile == afterFile {
+						stillExist = append(stillExist, originalFile)
+						break
+					}
+				}
+			}
+
+			if len(stillExist) == len(originalFiles) {
+				t.Error("Expected some original files to be cleaned up after compaction")
+			} else {
+				t.Logf("Successfully cleaned up %d files", len(originalFiles)-len(stillExist))
+			}
+
+			var value []byte
+			err = db.View(func(txn *Txn) error {
+				var err error
+				value, err = txn.Get([]byte("cleanup_key_50"))
+				return err
+			})
+
+			if err != nil {
+				t.Errorf("Failed to read data after compaction and cleanup: %v", err)
+			} else if string(value) != "cleanup_value_50" {
+				t.Errorf("Data corruption after cleanup: expected cleanup_value_50, got %s", string(value))
+			}
+		}
+	}
+}
+
+func TestCompactor_OverlappingKeyRanges(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_overlapping_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncNone,
+		WriteBufferSize: 1024,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	ranges := []struct {
+		prefix string
+		start  int
+		end    int
+	}{
+		{"a", 0, 50},  // a000-a050
+		{"a", 25, 75}, // a025-a075 (overlaps with first)
+		{"b", 0, 30},  // b000-b030 (separate range)
+	}
+
+	for i, r := range ranges {
+		for j := r.start; j < r.end; j++ {
+			key := fmt.Sprintf("%s%03d", r.prefix, j)
+			value := fmt.Sprintf("value_%d_%d", i, j)
+
+			err = db.Update(func(txn *Txn) error {
+				return txn.Put([]byte(key), []byte(value))
+			})
+			if err != nil {
+				t.Fatalf("Failed to insert data: %v", err)
+			}
+		}
+
+		err = db.ForceFlush()
+		if err != nil {
+			t.Fatalf("Failed to force flush: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	levels := db.levels.Load()
+	if levels == nil {
+		t.Fatalf("Levels not initialized")
+	}
+
+	level1 := (*levels)[0]
+	sstables := level1.sstables.Load()
+	if sstables == nil || len(*sstables) < 2 {
+		t.Fatalf("Need at least 2 SSTables for overlap test, found %d", len(*sstables))
+	}
+
+	for i, sst := range *sstables {
+		t.Logf("SSTable %d: min=%s, max=%s", i, string(sst.Min), string(sst.Max))
+	}
+
+	if len(*sstables) >= 3 {
+
+		selectedTable := (*sstables)[0]
+
+		atomic.StoreInt32(&selectedTable.isMerging, 1)
+		defer atomic.StoreInt32(&selectedTable.isMerging, 0)
+
+		// Manually perform leveled compaction
+		err = db.compactor.compactSSTables([]*SSTable{selectedTable}, 0, 1)
+		if err != nil {
+			t.Errorf("Leveled compaction with overlapping ranges failed: %v", err)
+		}
+
+		// Verify data integrity after compaction
+		testKeys := []string{"a025", "a030", "a040"} // Keys in overlapping region
+		for _, key := range testKeys {
+			var value []byte
+			err = db.View(func(txn *Txn) error {
+				var err error
+				value, err = txn.Get([]byte(key))
+				return err
+			})
+
+			if err != nil {
+				t.Errorf("Failed to read key %s after compaction: %v", key, err)
+			} else {
+				t.Logf("Successfully read key %s: %s", key, string(value))
+			}
+		}
+	}
+}
+
+func TestCompactor_CooldownPeriod(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_cooldown_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	opts := &Options{
+		Directory:                  dir,
+		SyncOption:                 SyncNone,
+		WriteBufferSize:            1024,
+		CompactionCooldownPeriod:   100 * time.Millisecond,
+		CompactionSizeThreshold:    2,
+		CompactionScoreSizeWeight:  0.8,
+		CompactionScoreCountWeight: 0.2,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	levels := db.levels.Load()
+	if levels == nil || len(*levels) == 0 {
+		t.Fatalf("Levels not initialized")
+	}
+
+	level1 := (*levels)[0]
+
+	mockTables := []*SSTable{
+		{Id: 1, Size: 1000, isMerging: 0, Min: []byte("a"), Max: []byte("m")},
+		{Id: 2, Size: 1000, isMerging: 0, Min: []byte("n"), Max: []byte("z")},
+		{Id: 3, Size: 1000, isMerging: 0, Min: []byte("aa"), Max: []byte("bb")},
+	}
+	level1.sstables.Store(&mockTables)
+
+	// Set size well above capacity to ensure high score
+	atomic.StoreInt64(&level1.currentSize, int64(level1.capacity)*3)
+
+	// Calculate expected score to verify it would trigger compaction
+	sizeScore := float64(level1.capacity*3) / float64(level1.capacity)                                  // = 3.0
+	countScore := float64(len(mockTables)) / float64(opts.CompactionSizeThreshold)                      // = 1.5
+	totalScore := sizeScore*opts.CompactionScoreSizeWeight + countScore*opts.CompactionScoreCountWeight // = 3*0.8 + 1.5*0.2 = 2.7
+
+	t.Logf("Setup score: size=%.2f, count=%.2f, total=%.2f (should trigger)", sizeScore, countScore, totalScore)
+
+	if totalScore <= 1.0 {
+		t.Fatalf("Test setup failed - score %.2f should be > 1.0 to trigger compaction", totalScore)
+	}
+
+	// Set last compaction to now (within cooldown period)
+	db.compactor.scoreLock.Lock()
+	db.compactor.lastCompaction = time.Now()
+	db.compactor.compactionQueue = make([]*compactorJob, 0) // Clear queue
+	initialQueueLength := len(db.compactor.compactionQueue)
+	db.compactor.scoreLock.Unlock()
+
+	// Try to schedule compaction immediately (should be blocked by cooldown)
+	db.compactor.checkAndScheduleCompactions()
+
+	db.compactor.scoreLock.Lock()
+	queueLengthDuringCooldown := len(db.compactor.compactionQueue)
+	db.compactor.scoreLock.Unlock()
+
+	if queueLengthDuringCooldown > initialQueueLength {
+		t.Error("Compaction should be blocked during cooldown period")
+	}
+
+	// Wait for cooldown to expire
+	time.Sleep(110 * time.Millisecond)
+
+	// Reset last compaction to definitely be outside cooldown
+	db.compactor.scoreLock.Lock()
+	db.compactor.lastCompaction = time.Now().Add(-2 * opts.CompactionCooldownPeriod)
+	db.compactor.scoreLock.Unlock()
+
+	// Try to schedule compaction after cooldown
+	db.compactor.checkAndScheduleCompactions()
+
+	db.compactor.scoreLock.Lock()
+	queueLengthAfterCooldown := len(db.compactor.compactionQueue)
+	db.compactor.scoreLock.Unlock()
+
+	t.Logf("Queue lengths: initial=%d, during_cooldown=%d, after_cooldown=%d",
+		initialQueueLength, queueLengthDuringCooldown, queueLengthAfterCooldown)
+
+	if queueLengthAfterCooldown <= queueLengthDuringCooldown {
+		t.Error("Compaction should be allowed after cooldown period")
+	}
+
+	db.compactor.scoreLock.Lock()
+	for _, job := range db.compactor.compactionQueue {
+		for _, table := range job.ssTables {
+			atomic.StoreInt32(&table.isMerging, 0)
+		}
+	}
+	db.compactor.scoreLock.Unlock()
 }

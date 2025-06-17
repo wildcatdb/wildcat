@@ -64,7 +64,6 @@ const (
 	DefaultBlockManagerLRUEvictRatio            = 0.20                 // Eviction ratio for the LRU cache
 	DefaultBlockManagerLRUAccessWeight          = 0.8                  // Access weight for the LRU cache
 	DefaultPermission                           = 0750                 // Default permission for created files
-	DefaultBloomFilter                          = false                // Default Bloom filter option
 	DefaultMaxCompactionConcurrency             = 4                    // Default max compaction concurrency
 	DefaultCompactionCooldownPeriod             = 5 * time.Second      // Default cooldown period for compaction
 	DefaultCompactionBatchSize                  = 8                    // Default max number of SSTables to compact at once
@@ -308,10 +307,6 @@ func (opts *Options) setDefaults() {
 
 	if opts.Permission == 0 {
 		opts.Permission = DefaultPermission
-	}
-
-	if opts.BloomFilter {
-		opts.BloomFilter = DefaultBloomFilter
 	}
 
 	if opts.MaxCompactionConcurrency <= 0 {

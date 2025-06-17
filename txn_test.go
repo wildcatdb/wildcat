@@ -712,3 +712,437 @@ func TestTxn_DeleteTimestamp(t *testing.T) {
 		t.Logf("Historical view sees value: %s", retrievedValue)
 	}
 }
+
+func TestTxn_EmptyKeyValue(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_txn_empty_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:  dir,
+		SyncOption: SyncNone,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	txn, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+
+	err = txn.Put([]byte(""), []byte("value"))
+	if err == nil {
+		t.Error("Expected error for empty key")
+	}
+
+	err = txn.Put([]byte("key"), []byte(""))
+	if err == nil {
+		t.Error("Expected error for empty value")
+	}
+
+	err = txn.Delete([]byte(""))
+	if err == nil {
+		t.Error("Expected error for empty key in delete")
+	}
+}
+
+func TestTxn_NilTransactionOperations(t *testing.T) {
+	var txn *Txn
+
+	err := txn.Commit()
+	if err == nil {
+		t.Error("Expected error for nil transaction commit")
+	}
+
+	err = txn.Rollback()
+	if err == nil {
+		t.Error("Expected error for nil transaction rollback")
+	}
+}
+
+func TestTxn_BufferFull(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_txn_buffer_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:         dir,
+		SyncOption:        SyncNone,
+		MaxConcurrentTxns: 2, // Very small buffer
+		TxnBeginRetry:     1, // Minimal retries
+		TxnBeginBackoff:   1 * time.Microsecond,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	txn1, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin first transaction: %v", err)
+	}
+
+	txn2, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin second transaction: %v", err)
+	}
+
+	_, err = db.Begin()
+	if err == nil {
+		t.Error("Expected error when transaction buffer is full")
+	}
+
+	_ = txn1.Rollback()
+
+	txn3, err := db.Begin()
+	if err != nil {
+		t.Errorf("Should succeed after freeing buffer space: %v", err)
+	}
+	if txn3 != nil {
+		_ = txn3.Rollback()
+	}
+	if txn2 != nil {
+		_ = txn2.Rollback()
+	}
+}
+
+func TestTxn_WriteDeleteConflict(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_txn_conflict_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:  dir,
+		SyncOption: SyncNone,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	txn, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+
+	key := []byte("conflict_key")
+	value := []byte("conflict_value")
+
+	err = txn.Put(key, value)
+	if err != nil {
+		t.Fatalf("Failed to put: %v", err)
+	}
+
+	err = txn.Delete(key)
+	if err != nil {
+		t.Fatalf("Failed to delete: %v", err)
+	}
+
+	_, err = txn.Get(key)
+	if err == nil {
+		t.Error("Key should not be accessible after delete in same txn")
+	}
+
+	if _, exists := txn.WriteSet[string(key)]; exists {
+		t.Error("Key should not be in WriteSet after delete")
+	}
+	if !txn.DeleteSet[string(key)] {
+		t.Error("Key should be in DeleteSet")
+	}
+
+	err = txn.Commit()
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+}
+
+func TestTxn_DeleteWriteConflict(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_txn_conflict2_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:  dir,
+		SyncOption: SyncNone,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	txn, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+
+	key := []byte("conflict_key2")
+	value := []byte("conflict_value2")
+
+	err = txn.Delete(key)
+	if err != nil {
+		t.Fatalf("Failed to delete: %v", err)
+	}
+
+	err = txn.Put(key, value)
+	if err != nil {
+		t.Fatalf("Failed to put: %v", err)
+	}
+
+	retrievedValue, err := txn.Get(key)
+	if err != nil {
+		t.Errorf("Key should be accessible after write: %v", err)
+	} else if !bytes.Equal(retrievedValue, value) {
+		t.Errorf("Expected %s, got %s", value, retrievedValue)
+	}
+
+	if _, exists := txn.WriteSet[string(key)]; !exists {
+		t.Error("Key should be in WriteSet after put")
+	}
+	if txn.DeleteSet[string(key)] {
+		t.Error("Key should not be in DeleteSet after put")
+	}
+}
+
+func TestTxn_DoubleCommitRollback(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_txn_double_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:  dir,
+		SyncOption: SyncNone,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	txn1, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+
+	err = txn1.Put([]byte("key1"), []byte("value1"))
+	if err != nil {
+		t.Fatalf("Failed to put: %v", err)
+	}
+
+	err = txn1.Commit()
+	if err != nil {
+		t.Fatalf("First commit failed: %v", err)
+	}
+
+	err = txn1.Commit()
+	if err != nil {
+		t.Error("Second commit should not error")
+	}
+
+	txn2, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+
+	err = txn2.Put([]byte("key2"), []byte("value2"))
+	if err != nil {
+		t.Fatalf("Failed to put: %v", err)
+	}
+
+	err = txn2.Rollback()
+	if err != nil {
+		t.Fatalf("First rollback failed: %v", err)
+	}
+
+	err = txn2.Rollback()
+	if err != nil {
+		t.Error("Second rollback should not error")
+	}
+}
+
+func TestTxn_OperationsAfterCommit(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_txn_after_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:  dir,
+		SyncOption: SyncNone,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	txn, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+
+	err = txn.Commit()
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+
+	err = txn.Put([]byte("after_key"), []byte("after_value"))
+	if err != nil {
+		t.Errorf("Expected error when putting after commit: %v", err)
+	}
+
+	_, err = txn.Get([]byte("some_key"))
+	if err == nil {
+		t.Error("Expected error when getting key after commit")
+	}
+}
+
+func TestTxn_ViewErrorHandling(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_view_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:  dir,
+		SyncOption: SyncNone,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	var nilDB *DB
+	err = nilDB.View(func(txn *Txn) error {
+		return nil
+	})
+	if err == nil {
+		t.Error("Expected error for nil database in View")
+	}
+
+	testErr := fmt.Errorf("view function error")
+	err = db.View(func(txn *Txn) error {
+		return testErr
+	})
+	if err == nil || err.Error() != testErr.Error() {
+		t.Errorf("Expected view function error, got: %v", err)
+	}
+}
+
+func TestTxn_ConcurrentCleanup(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_cleanup_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:         dir,
+		SyncOption:        SyncNone,
+		MaxConcurrentTxns: 100,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	const numTxns = 50
+	var wg sync.WaitGroup
+	wg.Add(numTxns)
+
+	for i := 0; i < numTxns; i++ {
+		go func(id int) {
+			defer wg.Done()
+
+			txn, err := db.Begin()
+			if err != nil {
+				t.Errorf("Failed to begin transaction %d: %v", id, err)
+				return
+			}
+
+			err = txn.Put([]byte(fmt.Sprintf("key_%d", id)), []byte(fmt.Sprintf("value_%d", id)))
+			if err != nil {
+				t.Errorf("Failed to put in transaction %d: %v", id, err)
+				_ = txn.Rollback()
+				return
+			}
+
+			if id%2 == 0 {
+				err = txn.Commit()
+				if err != nil {
+					t.Errorf("Failed to commit transaction %d: %v", id, err)
+				}
+			} else {
+				err = txn.Rollback()
+				if err != nil {
+					t.Errorf("Failed to rollback transaction %d: %v", id, err)
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	if db.txnBuffer.Count() > 0 {
+		t.Errorf("Expected empty transaction buffer, found %d transactions", db.txnBuffer.Count())
+	}
+}
