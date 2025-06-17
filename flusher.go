@@ -13,10 +13,10 @@ import (
 
 // Flusher is responsible for queuing and flushing memtables to disk
 type Flusher struct {
-	db        *DB                      // The db instance
-	immutable *queue.Queue             // Immutable queue for memtables
-	flushing  atomic.Pointer[Memtable] // Atomic pointer to the current flushing memtable
-	swapping  int32                    // Atomic flag indicating if the flusher is swapping
+	db           *DB                      // The db instance
+	immutable    *queue.Queue             // Immutable queue for memtables
+	flushing     atomic.Pointer[Memtable] // Atomic pointer to the current flushing memtable
+	lastQueuedId int64                    // Last queued memtable id for the memtable
 }
 
 // newFlusher creates a new Flusher instance
@@ -30,18 +30,16 @@ func newFlusher(db *DB) *Flusher {
 // queueMemtable queues the current active memtable for flushing to disk.
 func (flusher *Flusher) queueMemtable() error {
 
-	// Use atomic compare-and-swap to ensure only one goroutine can swap at a time
-	if !atomic.CompareAndSwapInt32(&flusher.swapping, 0, 1) {
-		return nil // Another goroutine is already swapping, no need to queue again
+	if atomic.LoadInt64(&flusher.lastQueuedId) == flusher.db.memtable.Load().(*Memtable).id {
+		return nil // Already queued
 	}
-	defer atomic.StoreInt32(&flusher.swapping, 0)
 
 	flusher.db.log("Flusher: queuing current memtable for flushing")
 
 	walId := flusher.db.walIdGenerator.nextID()
 
-	// Create a new memtable
 	newMemtable := &Memtable{
+		id:       walId,
 		db:       flusher.db,
 		skiplist: skiplist.New(),
 		wal: &WAL{
@@ -62,8 +60,11 @@ func (flusher *Flusher) queueMemtable() error {
 		}
 	})
 
+	lastMemt := flusher.db.memtable.Load().(*Memtable)
+
 	// Push the current memtable to the immutable queue
-	flusher.immutable.Enqueue(flusher.db.memtable.Load().(*Memtable))
+	flusher.immutable.Enqueue(lastMemt)
+	atomic.StoreInt64(&flusher.lastQueuedId, lastMemt.id)
 
 	flusher.db.log(fmt.Sprintf("Flusher: new active memtable created with WAL %s", newMemtable.wal.path))
 

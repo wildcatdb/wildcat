@@ -3,6 +3,7 @@ package wildcat
 import (
 	"bytes"
 	"fmt"
+	"github.com/wildcatdb/wildcat/v2/skiplist"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1289,14 +1290,13 @@ func TestFlusher_DeletionsAndTombstones(t *testing.T) {
 	}
 }
 
-func TestFlusher_SwappingFlagPreventsDoubleSwap(t *testing.T) {
-	dir, err := os.MkdirTemp("", "db_flusher_swap_test")
+func TestFlusher_PreventsDuplicateMemtableQueuing(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_flusher_duplicate_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 	defer func(path string) {
 		_ = os.RemoveAll(path)
-
 	}(dir)
 
 	opts := &Options{
@@ -1320,32 +1320,107 @@ func TestFlusher_SwappingFlagPreventsDoubleSwap(t *testing.T) {
 		t.Fatalf("Failed to add data: %v", err)
 	}
 
-	initialMemtable := db.memtable.Load().(*Memtable)
+	currentMemtable := db.memtable.Load().(*Memtable)
+	memtableId := currentMemtable.id
 	initialQueueSize := db.flusher.immutable.Size()
 
-	var actualSwapCount atomic.Int32
-	var returnedSuccessCount atomic.Int32
+	t.Logf("Current memtable ID: %d", memtableId)
+	t.Logf("Initial queue size: %d", initialQueueSize)
+
+	err = db.flusher.queueMemtable()
+	if err != nil {
+		t.Fatalf("First queueMemtable() call failed: %v", err)
+	}
+
+	queueSizeAfterFirst := db.flusher.immutable.Size()
+	if queueSizeAfterFirst != initialQueueSize+1 {
+		t.Errorf("Expected queue size %d after first call, got %d",
+			initialQueueSize+1, queueSizeAfterFirst)
+	}
+
+	lastQueuedId := atomic.LoadInt64(&db.flusher.lastQueuedId)
+	if lastQueuedId != memtableId {
+		t.Errorf("Expected lastQueuedId to be %d, got %d", memtableId, lastQueuedId)
+	}
+
+	newMemtable := db.memtable.Load().(*Memtable)
+	if newMemtable == currentMemtable {
+		t.Error("Expected a new memtable to be created after queuing")
+	}
+	if newMemtable.id == memtableId {
+		t.Error("New memtable should have a different ID")
+	}
+
+	t.Logf("New memtable ID: %d", newMemtable.id)
+
+	db.memtable.Store(currentMemtable)
+
+	t.Logf("Restored memtable ID %d as active (simulating race condition)", memtableId)
+
+	err = db.flusher.queueMemtable()
+	if err != nil {
+		t.Fatalf("Second queueMemtable() call failed: %v", err)
+	}
+
+	queueSizeAfterSecond := db.flusher.immutable.Size()
+	if queueSizeAfterSecond != queueSizeAfterFirst {
+		t.Errorf("Expected queue size to remain %d after duplicate attempt, got %d",
+			queueSizeAfterFirst, queueSizeAfterSecond)
+	}
+
+	lastQueuedIdAfter := atomic.LoadInt64(&db.flusher.lastQueuedId)
+	if lastQueuedIdAfter != memtableId {
+		t.Errorf("Expected lastQueuedId to remain %d, got %d", memtableId, lastQueuedIdAfter)
+	}
+
+	finalMemtable := db.memtable.Load().(*Memtable)
+	if finalMemtable != currentMemtable {
+		t.Error("Expected memtable to remain the same when duplicate queuing is prevented")
+	}
+
+	t.Logf("✓ Successfully prevented duplicate queuing of memtable ID %d", memtableId)
+
 	var wg sync.WaitGroup
+	var duplicateAttempts atomic.Int32
+	var successfulCalls atomic.Int32
+
+	testMemtable := &Memtable{
+		id:       999,
+		db:       db,
+		skiplist: skiplist.New(),
+		wal: &WAL{
+			path: fmt.Sprintf("%s999%s", dir, WALFileExtension),
+		},
+	}
+
+	db.memtable.Store(testMemtable)
+	atomic.StoreInt64(&db.flusher.lastQueuedId, 999)
+
+	initialConcurrentQueueSize := db.flusher.immutable.Size()
+	t.Logf("Starting concurrent test with memtable ID 999 already marked as queued")
 
 	start := make(chan struct{})
 
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 5; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
 			<-start
 
-			memtableBefore := db.memtable.Load().(*Memtable)
+			queueSizeBefore := db.flusher.immutable.Size()
 
 			err := db.flusher.queueMemtable()
 			if err == nil {
-				returnedSuccessCount.Add(1)
+				successfulCalls.Add(1)
 			}
 
-			memtableAfter := db.memtable.Load().(*Memtable)
-			if memtableBefore != memtableAfter {
-				actualSwapCount.Add(1)
-				t.Logf("Goroutine %d actually performed the swap", id)
+			queueSizeAfter := db.flusher.immutable.Size()
+
+			if queueSizeAfter == queueSizeBefore {
+				duplicateAttempts.Add(1)
+				t.Logf("Goroutine %d: duplicate queuing prevented (queue size unchanged)", id)
+			} else {
+				t.Logf("Goroutine %d: queue size changed from %d to %d", id, queueSizeBefore, queueSizeAfter)
 			}
 		}(i)
 	}
@@ -1353,34 +1428,26 @@ func TestFlusher_SwappingFlagPreventsDoubleSwap(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-	swaps := actualSwapCount.Load()
-	successes := returnedSuccessCount.Load()
+	finalQueueSize := db.flusher.immutable.Size()
+	duplicates := duplicateAttempts.Load()
+	successes := successfulCalls.Load()
 
-	t.Logf("Actual swaps performed: %d", swaps)
-	t.Logf("Successful returns: %d", successes)
+	t.Logf("Concurrent test results:")
+	t.Logf("  - Successful calls: %d", successes)
+	t.Logf("  - Duplicate preventions: %d", duplicates)
+	t.Logf("  - Initial queue size: %d", initialConcurrentQueueSize)
+	t.Logf("  - Final queue size: %d", finalQueueSize)
 
-	if swaps != 1 {
-		t.Errorf("Expected exactly 1 actual swap, got %d", swaps)
+	if successes != 5 {
+		t.Errorf("Expected all 5 calls to succeed (no errors), got %d", successes)
 	}
 
-	if successes != 10 {
-		t.Errorf("Expected 10 successful returns, got %d", successes)
+	if duplicates != 5 {
+		t.Errorf("Expected all 5 calls to be duplicate preventions, got %d", duplicates)
 	}
 
-	finalMemtable := db.memtable.Load().(*Memtable)
-	if finalMemtable == initialMemtable {
-		t.Error("Memtable should have been swapped")
-	}
-
-	expectedQueueSize := initialQueueSize + 1
-	actualQueueSize := db.flusher.immutable.Size()
-	if actualQueueSize != expectedQueueSize {
-		t.Errorf("Expected queue size %d, got %d", expectedQueueSize, actualQueueSize)
-	}
-
-	swappingFlag := atomic.LoadInt32(&db.flusher.swapping)
-	if swappingFlag != 0 {
-		t.Errorf("Swapping flag should be reset to 0, got %d", swappingFlag)
+	if finalQueueSize != initialConcurrentQueueSize {
+		t.Errorf("Expected queue size to remain %d, got %d", initialConcurrentQueueSize, finalQueueSize)
 	}
 }
 

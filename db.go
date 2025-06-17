@@ -476,10 +476,12 @@ func (db *DB) reinstate() error {
 	if len(walFiles) == 0 {
 		db.log("No WAL files found, creating new memtable and WAL...")
 		// No WAL files found, create a new memtable and WAL
-		newWalPath := fmt.Sprintf("%s%d%s", db.opts.Directory, db.walIdGenerator.nextID(), WALFileExtension)
+		walId := db.walIdGenerator.nextID()
+		newWalPath := fmt.Sprintf("%s%d%s", db.opts.Directory, walId, WALFileExtension)
 
 		db.memtable.Store(&Memtable{
 			skiplist: skiplist.New(),
+			id:       walId,
 			wal: &WAL{
 				path: newWalPath,
 			},
@@ -648,8 +650,9 @@ func (db *DB) reinstate() error {
 	// and include committed transactions in them
 	for i, walFile := range walFiles[:len(walFiles)-1] {
 		walPath := fmt.Sprintf("%s%s", db.opts.Directory, walFile)
-
+		walId := extractIDFromFilename(walFile)
 		immutableMemt := &Memtable{
+			id:       walId,
 			skiplist: skiplist.New(),
 			wal: &WAL{
 				path: walPath,
