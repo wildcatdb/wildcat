@@ -4,7 +4,7 @@
 
 ![License](https://img.shields.io/badge/license-MPL_2.0-blue) ![GitHub Release](https://img.shields.io/github/v/release/wildcatdb/wildcat)
 
-Wildcat is a high-performance embedded key-value database (or storage engine) written in Go with C interoptibility. It incorporates modern database design principles including LSM (Log-Structured Merge) tree architecture, MVCC (Multi-Version Concurrency Control), and lock-free data structures for its critical paths, along with automatic background operations to deliver excellent read/write performance with immediate consistency and durability.
+Wildcat is a high-performance embedded key-value database (or storage engine) written in Go with C interoperability. It incorporates modern database design principles including LSM (Log-Structured Merge) tree architecture, MVCC (Multi-Version Concurrency Control), and lock-free data structures for its critical paths, along with automatic background operations to deliver excellent read/write performance with immediate consistency and durability.
 
 ## Features
 - LSM (Log-Structured Merge) tree architecture optimized for write-heavy workloads
@@ -15,8 +15,8 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - Scalable design with background flusher and compactor
 - Concurrent block storage leveraging direct, offset-based file I/O (using `pread`/`pwrite`) for optimal performance
 - Atomic LRU cache for active block manager handles
-- Memtable lifecycle management
-- SSTables stored as immutable BTrees
+- Atomic memtable lifecycle management
+- SSTables are immutable BTrees
 - Configurable durability levels `None` (fastest), `Partial` (balanced), `Full` (most durable)
 - Snapshot-isolated MVCC with timestamp-based reads
 - Crash recovery preserves committed transactions and maintains access to incomplete transactions
@@ -26,7 +26,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - High transactional throughput per second with low latency due to lock-free and non-blocking design.
 - Optional Bloom filters per SSTable for improved key lookup performance
 - Key-value separation optimization (`.klog` for keys, `.vlog` for values)
-- Tombstone-aware compaction with retention based on active transaction windows
+- Tombstone-aware and version-aware compaction with retention based on active transaction read windows
 - Transaction recovery preserves incomplete transactions for post-crash inspection and resolution if db configured with `RecoverUncommittedTxns`
 - Keys and values stored as opaque byte sequences
 - Single-node embedded storage engine with no network or replication overhead

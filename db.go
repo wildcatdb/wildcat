@@ -64,7 +64,6 @@ const (
 	DefaultBlockManagerLRUEvictRatio            = 0.20                 // Eviction ratio for the LRU cache
 	DefaultBlockManagerLRUAccessWeight          = 0.8                  // Access weight for the LRU cache
 	DefaultPermission                           = 0750                 // Default permission for created files
-	DefaultBloomFilter                          = false                // Default Bloom filter option
 	DefaultMaxCompactionConcurrency             = 4                    // Default max compaction concurrency
 	DefaultCompactionCooldownPeriod             = 5 * time.Second      // Default cooldown period for compaction
 	DefaultCompactionBatchSize                  = 8                    // Default max number of SSTables to compact at once
@@ -310,10 +309,6 @@ func (opts *Options) setDefaults() {
 		opts.Permission = DefaultPermission
 	}
 
-	if opts.BloomFilter {
-		opts.BloomFilter = DefaultBloomFilter
-	}
-
 	if opts.MaxCompactionConcurrency <= 0 {
 		opts.MaxCompactionConcurrency = DefaultMaxCompactionConcurrency
 	}
@@ -481,10 +476,12 @@ func (db *DB) reinstate() error {
 	if len(walFiles) == 0 {
 		db.log("No WAL files found, creating new memtable and WAL...")
 		// No WAL files found, create a new memtable and WAL
-		newWalPath := fmt.Sprintf("%s%d%s", db.opts.Directory, db.walIdGenerator.nextID(), WALFileExtension)
+		walId := db.walIdGenerator.nextID()
+		newWalPath := fmt.Sprintf("%s%d%s", db.opts.Directory, walId, WALFileExtension)
 
 		db.memtable.Store(&Memtable{
 			skiplist: skiplist.New(),
+			id:       walId,
 			wal: &WAL{
 				path: newWalPath,
 			},
@@ -653,8 +650,9 @@ func (db *DB) reinstate() error {
 	// and include committed transactions in them
 	for i, walFile := range walFiles[:len(walFiles)-1] {
 		walPath := fmt.Sprintf("%s%s", db.opts.Directory, walFile)
-
+		walId := extractIDFromFilename(walFile)
 		immutableMemt := &Memtable{
+			id:       walId,
 			skiplist: skiplist.New(),
 			wal: &WAL{
 				path: walPath,

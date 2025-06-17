@@ -103,9 +103,8 @@ func (txn *Txn) Put(key []byte, value []byte) error {
 	txn.mutex.Lock()
 	defer txn.mutex.Unlock()
 
-	// Add to write set
 	txn.WriteSet[string(key)] = value
-	delete(txn.DeleteSet, string(key)) // Remove from delete set if exists
+	delete(txn.DeleteSet, string(key))
 
 	err := txn.appendWal()
 	if err != nil {
@@ -124,9 +123,8 @@ func (txn *Txn) Delete(key []byte) error {
 	txn.mutex.Lock()
 	defer txn.mutex.Unlock()
 
-	// Add to delete set
 	txn.DeleteSet[string(key)] = true
-	delete(txn.WriteSet, string(key)) // Remove from write set if exists
+	delete(txn.WriteSet, string(key))
 
 	err := txn.appendWal()
 	if err != nil {
@@ -150,19 +148,13 @@ func (txn *Txn) Commit() error {
 		return nil // Already committed
 	}
 
-	// Apply writes
 	for key, value := range txn.WriteSet {
 		txn.db.memtable.Load().(*Memtable).skiplist.Put([]byte(key), value, txn.Timestamp)
-
-		// Increment the size of the memtable
 		atomic.AddInt64(&txn.db.memtable.Load().(*Memtable).size, int64(len(key)+len(value)))
 	}
 
-	// Apply deletes
 	for key := range txn.DeleteSet {
 		txn.db.memtable.Load().(*Memtable).skiplist.Delete([]byte(key), txn.Timestamp)
-
-		// Decrement the size of the memtable
 		atomic.AddInt64(&txn.db.memtable.Load().(*Memtable).size, -int64(len(key)))
 	}
 
@@ -173,7 +165,7 @@ func (txn *Txn) Commit() error {
 		return err
 	}
 
-	// Check if we need to enqueue the memtable for flush
+	// Check if we need to enqueue the memtable for a sorted run to level 1
 	if atomic.LoadInt64(&txn.db.memtable.Load().(*Memtable).size) > txn.db.opts.WriteBufferSize {
 		err = txn.db.flusher.queueMemtable()
 		if err != nil {
@@ -192,9 +184,8 @@ func (txn *Txn) Rollback() error {
 
 	txn.mutex.Lock()
 	defer txn.mutex.Unlock()
-	defer txn.remove() // Ensure cleanup happens
+	defer txn.remove()
 
-	// Clear all pending changes
 	txn.WriteSet = make(map[string][]byte)
 	txn.DeleteSet = make(map[string]bool)
 	txn.ReadSet = make(map[string]int64)
@@ -246,7 +237,6 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 		}
 	}
 
-	// Check immutable memtables
 	txn.db.flusher.immutable.ForEach(func(item interface{}) bool {
 		memt := item.(*Memtable)
 		val, ts, ok = memt.skiplist.Get(key, txn.Timestamp)
@@ -257,7 +247,6 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 		return true // Continue searching
 	})
 
-	// Check levels for SSTables
 	levels := txn.db.levels.Load()
 	if levels != nil {
 		for _, level := range *levels {
@@ -345,7 +334,6 @@ func (db *DB) View(fn func(txn *Txn) error) error {
 func (txn *Txn) NewIterator(asc bool) (*MergeIterator, error) {
 	var items []*iterator
 
-	// Active memtable
 	active := txn.db.memtable.Load().(*Memtable)
 	iter, err := active.skiplist.NewIterator(nil, txn.Timestamp)
 	if err != nil {
@@ -359,7 +347,6 @@ func (txn *Txn) NewIterator(asc bool) (*MergeIterator, error) {
 		underlyingIterator: iter,
 	})
 
-	// Currently flushing memtable if any
 	fmem := txn.db.flusher.flushing.Load()
 	if fmem != nil {
 		it, err := fmem.skiplist.NewIterator(nil, txn.Timestamp)
@@ -373,7 +360,6 @@ func (txn *Txn) NewIterator(asc bool) (*MergeIterator, error) {
 		}
 	}
 
-	// Immutable memtables
 	txn.db.flusher.immutable.ForEach(func(item interface{}) bool {
 		memt := item.(*Memtable)
 		it, err := memt.skiplist.NewIterator(nil, txn.Timestamp)
@@ -390,7 +376,6 @@ func (txn *Txn) NewIterator(asc bool) (*MergeIterator, error) {
 		return true
 	})
 
-	// SSTables from each level
 	levels := txn.db.levels.Load()
 	if levels != nil {
 		for _, level := range *levels {
@@ -440,7 +425,6 @@ func (txn *Txn) NewIterator(asc bool) (*MergeIterator, error) {
 func (txn *Txn) NewRangeIterator(startKey []byte, endKey []byte, asc bool) (*MergeIterator, error) {
 	var items []*iterator
 
-	// Active memtable
 	active := txn.db.memtable.Load().(*Memtable)
 	iter, err := active.skiplist.NewRangeIterator(startKey, endKey, txn.Timestamp)
 	if err != nil {
@@ -454,7 +438,6 @@ func (txn *Txn) NewRangeIterator(startKey []byte, endKey []byte, asc bool) (*Mer
 		underlyingIterator: iter,
 	})
 
-	// Currently flushing memtable if any
 	fmem := txn.db.flusher.flushing.Load()
 	if fmem != nil {
 		it, err := fmem.skiplist.NewRangeIterator(startKey, endKey, txn.Timestamp)
@@ -468,7 +451,6 @@ func (txn *Txn) NewRangeIterator(startKey []byte, endKey []byte, asc bool) (*Mer
 		}
 	}
 
-	// Immutable memtables
 	txn.db.flusher.immutable.ForEach(func(item interface{}) bool {
 		memt := item.(*Memtable)
 		it, err := memt.skiplist.NewRangeIterator(startKey, endKey, txn.Timestamp)
@@ -485,7 +467,6 @@ func (txn *Txn) NewRangeIterator(startKey []byte, endKey []byte, asc bool) (*Mer
 		return true
 	})
 
-	// SSTables from each level
 	levels := txn.db.levels.Load()
 	if levels != nil {
 		for _, level := range *levels {
@@ -535,7 +516,6 @@ func (txn *Txn) NewRangeIterator(startKey []byte, endKey []byte, asc bool) (*Mer
 func (txn *Txn) NewPrefixIterator(prefix []byte, asc bool) (*MergeIterator, error) {
 	var items []*iterator
 
-	// Active memtable
 	active := txn.db.memtable.Load().(*Memtable)
 	iter, err := active.skiplist.NewPrefixIterator(prefix, txn.Timestamp)
 	if err != nil {
@@ -549,7 +529,6 @@ func (txn *Txn) NewPrefixIterator(prefix []byte, asc bool) (*MergeIterator, erro
 		underlyingIterator: iter,
 	})
 
-	// Currently flushing memtable if any
 	fmem := txn.db.flusher.flushing.Load()
 	if fmem != nil {
 		it, err := fmem.skiplist.NewPrefixIterator(prefix, txn.Timestamp)
@@ -563,7 +542,6 @@ func (txn *Txn) NewPrefixIterator(prefix []byte, asc bool) (*MergeIterator, erro
 		}
 	}
 
-	// Immutable memtables
 	txn.db.flusher.immutable.ForEach(func(item interface{}) bool {
 		memt := item.(*Memtable)
 		it, err := memt.skiplist.NewPrefixIterator(prefix, txn.Timestamp)
@@ -580,7 +558,6 @@ func (txn *Txn) NewPrefixIterator(prefix []byte, asc bool) (*MergeIterator, erro
 		return true
 	})
 
-	// SSTables from each level
 	levels := txn.db.levels.Load()
 	if levels != nil {
 		for _, level := range *levels {
@@ -632,7 +609,6 @@ func (txn *Txn) remove() {
 		return
 	}
 
-	// Clear the transaction data
 	txn.ReadSet = make(map[string]int64)
 	txn.WriteSet = make(map[string][]byte)
 	txn.DeleteSet = make(map[string]bool)

@@ -3,6 +3,7 @@ package wildcat
 import (
 	"bytes"
 	"fmt"
+	"github.com/wildcatdb/wildcat/v2/skiplist"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -184,7 +185,7 @@ func TestFlusher_MVCCWithMultipleVersions(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	db.ForceFlush()
+	_ = db.ForceFlush()
 
 	// Now verify that we can read each version using the corresponding timestamp
 	for i := 0; i < 5; i++ {
@@ -1286,5 +1287,413 @@ func TestFlusher_DeletionsAndTombstones(t *testing.T) {
 			klogCount)
 	} else {
 		t.Logf("✓ Created %d SSTables for deletion test", klogCount)
+	}
+}
+
+func TestFlusher_PreventsDuplicateMemtableQueuing(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_flusher_duplicate_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncNone,
+		WriteBufferSize: 1024,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	err = db.Update(func(txn *Txn) error {
+		return txn.Put([]byte("test_key"), []byte("test_value"))
+	})
+	if err != nil {
+		t.Fatalf("Failed to add data: %v", err)
+	}
+
+	currentMemtable := db.memtable.Load().(*Memtable)
+	memtableId := currentMemtable.id
+	initialQueueSize := db.flusher.immutable.Size()
+
+	t.Logf("Current memtable ID: %d", memtableId)
+	t.Logf("Initial queue size: %d", initialQueueSize)
+
+	err = db.flusher.queueMemtable()
+	if err != nil {
+		t.Fatalf("First queueMemtable() call failed: %v", err)
+	}
+
+	queueSizeAfterFirst := db.flusher.immutable.Size()
+	if queueSizeAfterFirst != initialQueueSize+1 {
+		t.Errorf("Expected queue size %d after first call, got %d",
+			initialQueueSize+1, queueSizeAfterFirst)
+	}
+
+	lastQueuedId := atomic.LoadInt64(&db.flusher.lastQueuedId)
+	if lastQueuedId != memtableId {
+		t.Errorf("Expected lastQueuedId to be %d, got %d", memtableId, lastQueuedId)
+	}
+
+	newMemtable := db.memtable.Load().(*Memtable)
+	if newMemtable == currentMemtable {
+		t.Error("Expected a new memtable to be created after queuing")
+	}
+	if newMemtable.id == memtableId {
+		t.Error("New memtable should have a different ID")
+	}
+
+	t.Logf("New memtable ID: %d", newMemtable.id)
+
+	db.memtable.Store(currentMemtable)
+
+	t.Logf("Restored memtable ID %d as active (simulating race condition)", memtableId)
+
+	err = db.flusher.queueMemtable()
+	if err != nil {
+		t.Fatalf("Second queueMemtable() call failed: %v", err)
+	}
+
+	queueSizeAfterSecond := db.flusher.immutable.Size()
+	if queueSizeAfterSecond != queueSizeAfterFirst {
+		t.Errorf("Expected queue size to remain %d after duplicate attempt, got %d",
+			queueSizeAfterFirst, queueSizeAfterSecond)
+	}
+
+	lastQueuedIdAfter := atomic.LoadInt64(&db.flusher.lastQueuedId)
+	if lastQueuedIdAfter != memtableId {
+		t.Errorf("Expected lastQueuedId to remain %d, got %d", memtableId, lastQueuedIdAfter)
+	}
+
+	finalMemtable := db.memtable.Load().(*Memtable)
+	if finalMemtable != currentMemtable {
+		t.Error("Expected memtable to remain the same when duplicate queuing is prevented")
+	}
+
+	t.Logf("✓ Successfully prevented duplicate queuing of memtable ID %d", memtableId)
+
+	var wg sync.WaitGroup
+	var duplicateAttempts atomic.Int32
+	var successfulCalls atomic.Int32
+
+	testMemtable := &Memtable{
+		id:       999,
+		db:       db,
+		skiplist: skiplist.New(),
+		wal: &WAL{
+			path: fmt.Sprintf("%s999%s", dir, WALFileExtension),
+		},
+	}
+
+	db.memtable.Store(testMemtable)
+	atomic.StoreInt64(&db.flusher.lastQueuedId, 999)
+
+	t.Logf("Starting concurrent test with memtable ID 999 already marked as queued")
+
+	start := make(chan struct{})
+
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			<-start
+
+			err := db.flusher.queueMemtable()
+			if err == nil {
+				successfulCalls.Add(1)
+			}
+
+			currentMemtable := db.memtable.Load().(*Memtable)
+			lastQueued := atomic.LoadInt64(&db.flusher.lastQueuedId)
+
+			if currentMemtable == testMemtable && lastQueued == 999 {
+				duplicateAttempts.Add(1)
+				t.Logf("Goroutine %d: duplicate queuing prevented (memtable unchanged)", id)
+			} else {
+				t.Logf("Goroutine %d: memtable changed (lastQueued=%d, newId=%d)",
+					id, lastQueued, currentMemtable.id)
+			}
+		}(i)
+	}
+
+	close(start)
+	wg.Wait()
+
+	duplicates := duplicateAttempts.Load()
+	successes := successfulCalls.Load()
+
+	t.Logf("Concurrent test results:")
+	t.Logf("  - Successful calls: %d", successes)
+	t.Logf("  - Duplicate preventions: %d", duplicates)
+
+	if successes != 5 {
+		t.Errorf("Expected all 5 calls to succeed (no errors), got %d", successes)
+	}
+
+	if duplicates != 5 {
+		t.Errorf("Expected all 5 calls to be duplicate preventions, got %d", duplicates)
+	}
+
+	finalMemtable = db.memtable.Load().(*Memtable)
+	if finalMemtable != testMemtable {
+		t.Errorf("Expected memtable to remain the test memtable (ID 999), but it changed")
+	}
+}
+
+func TestFlusher_FlushingPointerBehavior(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_flusher_pointer_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:             dir,
+		SyncOption:            SyncNone,
+		WriteBufferSize:       1024,
+		FlusherTickerInterval: 10 * time.Millisecond,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	err = db.Update(func(txn *Txn) error {
+		return txn.Put([]byte("flush_test"), []byte("flush_value"))
+	})
+	if err != nil {
+		t.Fatalf("Failed to add data: %v", err)
+	}
+
+	err = db.flusher.queueMemtable()
+	if err != nil {
+		t.Fatalf("Failed to queue memtable: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	flushing := db.flusher.flushing.Load()
+	if flushing == nil {
+		t.Log("Flushing pointer is nil - either flush completed quickly or hasn't started")
+	} else {
+		t.Log("Flushing pointer is correctly set during flush operation")
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	flushing = db.flusher.flushing.Load()
+	if flushing != nil {
+		t.Error("Flushing pointer should be nil after flush completion")
+	}
+}
+
+func TestFlusher_BloomFilterCreation(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_flusher_bloom_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncNone,
+		WriteBufferSize: 1024,
+		BloomFilter:     true,
+		BloomFilterFPR:  0.01,
+		STDOutLogging:   true,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	for i := 0; i < 5; i++ {
+		key := fmt.Sprintf("bloom_key_%d", i)
+		value := fmt.Sprintf("bloom_value_%d", i)
+
+		err = db.Update(func(txn *Txn) error {
+			return txn.Put([]byte(key), []byte(value))
+		})
+		if err != nil {
+			t.Fatalf("Failed to insert key %d: %v", i, err)
+		}
+	}
+
+	err = db.ForceFlush()
+	if err != nil {
+		t.Fatalf("Failed to force flush: %v", err)
+	}
+
+	levels := db.levels.Load()
+	if levels == nil {
+		t.Fatal("Levels not initialized")
+	}
+
+	level1 := (*levels)[0]
+	sstables := level1.sstables.Load()
+
+	if sstables == nil || len(*sstables) == 0 {
+		t.Fatal("No SSTables created")
+	}
+
+	sstable := (*sstables)[0]
+	if sstable.BloomFilter == nil {
+		t.Error("Bloom filter was not created during flush")
+	} else {
+		t.Log("Bloom filter correctly created during flush")
+	}
+}
+
+func TestFlusher_WALDeletionAfterFlush(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_flusher_wal_delete_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncFull,
+		WriteBufferSize: 1024,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	originalMemtable := db.memtable.Load().(*Memtable)
+	originalWALPath := originalMemtable.wal.path
+
+	if _, err := os.Stat(originalWALPath); os.IsNotExist(err) {
+		t.Fatalf("Original WAL file does not exist: %s", originalWALPath)
+	}
+
+	err = db.Update(func(txn *Txn) error {
+		return txn.Put([]byte("wal_test"), []byte("wal_value"))
+	})
+	if err != nil {
+		t.Fatalf("Failed to add data: %v", err)
+	}
+
+	err = db.ForceFlush()
+	if err != nil {
+		t.Fatalf("Failed to force flush: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	if _, err := os.Stat(originalWALPath); !os.IsNotExist(err) {
+		t.Errorf("Original WAL file should be deleted after flush: %s", originalWALPath)
+	} else {
+		t.Log("Original WAL file correctly deleted after flush")
+	}
+
+}
+
+func TestFlusher_TempFileHandling(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_flusher_temp_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncNone,
+		WriteBufferSize: 1024,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	err = db.Update(func(txn *Txn) error {
+		return txn.Put([]byte("temp_test"), []byte("temp_value"))
+	})
+	if err != nil {
+		t.Fatalf("Failed to add data: %v", err)
+	}
+
+	l1Dir := filepath.Join(dir, "l1")
+
+	err = db.flusher.queueMemtable()
+	if err != nil {
+		t.Fatalf("Failed to queue memtable: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	files, err := os.ReadDir(l1Dir)
+	if err != nil {
+		t.Fatalf("Failed to read l1 directory: %v", err)
+	}
+
+	tempFileCount := 0
+	for _, file := range files {
+		if filepath.Ext(file.Name()) == ".tmp" {
+			tempFileCount++
+			t.Logf("Found temp file during flush: %s", file.Name())
+		}
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	files, err = os.ReadDir(l1Dir)
+	if err != nil {
+		t.Fatalf("Failed to read l1 directory after flush: %v", err)
+	}
+
+	finalTempFileCount := 0
+	finalFileCount := 0
+	for _, file := range files {
+		if filepath.Ext(file.Name()) == ".tmp" {
+			finalTempFileCount++
+			t.Errorf("Temp file should not exist after flush: %s", file.Name())
+		}
+		if filepath.Ext(file.Name()) == ".klog" || filepath.Ext(file.Name()) == ".vlog" {
+			finalFileCount++
+		}
+	}
+
+	if finalTempFileCount > 0 {
+		t.Errorf("Found %d temp files after flush completion", finalTempFileCount)
+	}
+
+	if finalFileCount < 2 {
+		t.Errorf("Expected at least 2 final files (.klog + .vlog), got %d", finalFileCount)
+	} else {
+		t.Logf("Correctly created %d final files after temp file cleanup", finalFileCount)
 	}
 }

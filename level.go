@@ -25,7 +25,7 @@ type Level struct {
 // reopen opens an existing level directories sstables
 // sstables are loaded and sorted by id
 func (l *Level) reopen() error {
-	l.db.log(fmt.Sprintf("Reopening level %d at path %s", l.id, l.path))
+	l.db.log(fmt.Sprintf("Opening level %d at path %s", l.id, l.path))
 
 	// Read the level directory
 	files, err := os.ReadDir(l.path)

@@ -13,10 +13,10 @@ import (
 
 // Flusher is responsible for queuing and flushing memtables to disk
 type Flusher struct {
-	db        *DB                      // The db instance
-	immutable *queue.Queue             // Immutable queue for memtables
-	flushing  atomic.Pointer[Memtable] // Atomic pointer to the current flushing memtable
-	swapping  int32                    // Atomic flag indicating if the flusher is swapping
+	db           *DB                      // The db instance
+	immutable    *queue.Queue             // Immutable queue for memtables
+	flushing     atomic.Pointer[Memtable] // Atomic pointer to the current flushing memtable
+	lastQueuedId int64                    // Last queued memtable id for the memtable
 }
 
 // newFlusher creates a new Flusher instance
@@ -30,21 +30,16 @@ func newFlusher(db *DB) *Flusher {
 // queueMemtable queues the current active memtable for flushing to disk.
 func (flusher *Flusher) queueMemtable() error {
 
-	// Check if the flusher is already swapping
-	if atomic.LoadInt32(&flusher.swapping) == 1 {
-		return nil // Already swapping, no need to queue again
+	if atomic.LoadInt64(&flusher.lastQueuedId) == flusher.db.memtable.Load().(*Memtable).id {
+		return nil // Already queued
 	}
 
 	flusher.db.log("Flusher: queuing current memtable for flushing")
 
-	// Set the swapping flag to indicate that we are in the process of swapping
-	atomic.StoreInt32(&flusher.swapping, 1)
-	defer atomic.StoreInt32(&flusher.swapping, 0)
-
 	walId := flusher.db.walIdGenerator.nextID()
 
-	// Create a new memtable
 	newMemtable := &Memtable{
+		id:       walId,
 		db:       flusher.db,
 		skiplist: skiplist.New(),
 		wal: &WAL{
@@ -65,8 +60,11 @@ func (flusher *Flusher) queueMemtable() error {
 		}
 	})
 
+	lastMemt := flusher.db.memtable.Load().(*Memtable)
+
 	// Push the current memtable to the immutable queue
-	flusher.immutable.Enqueue(flusher.db.memtable.Load().(*Memtable))
+	flusher.immutable.Enqueue(lastMemt)
+	atomic.StoreInt64(&flusher.lastQueuedId, lastMemt.id)
 
 	flusher.db.log(fmt.Sprintf("Flusher: new active memtable created with WAL %s", newMemtable.wal.path))
 
@@ -181,8 +179,6 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 
 	// We create a new bloom filter if enabled and add it to sstable meta
 	if flusher.db.opts.BloomFilter {
-
-		// Create a bloom filter for the SSTable
 		sstable.BloomFilter, err = memt.createBloomFilter(int64(entryCount))
 		if err != nil {
 			return fmt.Errorf("failed to create bloom filter: %w", err)
@@ -281,13 +277,11 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 
 	// Add both KLog and VLog to the LRU cache
 	flusher.db.lru.Put(klogFinalPath, klogBm, func(key, value interface{}) {
-		// Close the block manager when evicted from LRU
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
 		}
 	})
 	flusher.db.lru.Put(vlogFinalPath, vlogBm, func(key, value interface{}) {
-		// Close the block manager when evicted from LRU
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
 		}

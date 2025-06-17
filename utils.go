@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// extractIDFromFilename extracts the ID from a given filename. <id>.<ext>
+// extractIDFromFilename extracts the ID from a given file name in format <id>.<ext>
 func extractIDFromFilename(filename string) int64 {
 	parts := strings.Split(filename, ".")
 

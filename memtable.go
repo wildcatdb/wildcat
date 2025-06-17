@@ -19,6 +19,7 @@ type WAL struct {
 
 // Memtable is a memory table structure
 type Memtable struct {
+	id       int64              // Takes from wal id
 	skiplist *skiplist.SkipList // The skip list for the memtable, is atomic and concurrent safe
 	wal      *WAL               // The write-ahead log for durability, is also atomic and concurrent safe
 	size     int64              // Atomic size of the memtable
