@@ -202,6 +202,10 @@ func (txn *Txn) Rollback() error {
 
 // Get retrieves a value by key
 func (txn *Txn) Get(key []byte) ([]byte, error) {
+	if len(key) == 0 {
+		return nil, fmt.Errorf("key cannot be empty")
+	}
+
 	txn.mutex.Lock()
 	defer txn.mutex.Unlock()
 
@@ -424,6 +428,10 @@ func (txn *Txn) NewIterator(asc bool) (*MergeIterator, error) {
 // NewRangeIterator creates a new range bidirectional iterator
 func (txn *Txn) NewRangeIterator(startKey []byte, endKey []byte, asc bool) (*MergeIterator, error) {
 	var items []*iterator
+
+	if startKey == nil && endKey == nil {
+		return nil, fmt.Errorf("startKey and endKey cannot both be nil")
+	}
 
 	active := txn.db.memtable.Load().(*Memtable)
 	iter, err := active.skiplist.NewRangeIterator(startKey, endKey, txn.Timestamp)

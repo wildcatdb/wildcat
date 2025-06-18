@@ -7,6 +7,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// // Fdatasync is a Darwin-specific implementation of fdatasync.
 func Fdatasync(fd uintptr) error {
 	// F_FULLFSYNC forces the drive to flush its buffers to stable storage.
 	_, _, errno := unix.Syscall(

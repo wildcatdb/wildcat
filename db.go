@@ -32,7 +32,8 @@ import (
 	"unicode/utf8"
 )
 
-// SyncOption is a block manager sync option that can be set by the user.
+// SyncOption is a block manager sync option that can be set for a *DB instance.
+// the sync option will be used for all block managers created by the *DB instance internally.
 type SyncOption int
 
 const (
@@ -100,6 +101,7 @@ type Options struct {
 	BlockManagerLRUAccesWeight           float64       // Access weight for the LRU cache
 	Permission                           os.FileMode   // Permission for created files
 	LogChannel                           chan string   // Channel for logging
+	STDOutLogging                        bool          // Enable logging to standard output (default is false and if set, channel is ignored)
 	BloomFilter                          bool          // Enable Bloom filter for SSTables
 	MaxCompactionConcurrency             int           // Maximum number of concurrent compactions
 	CompactionCooldownPeriod             time.Duration // Cooldown period for compaction
@@ -110,20 +112,19 @@ type Options struct {
 	CompactionScoreCountWeight           float64       // Weight for count-based score
 	CompactionSizeTieredSimilarityRatio  float64       // Similarity ratio for size-tiered compaction.  For grouping SSTables that are "roughly the same size" together for compaction.
 	CompactionActiveSSTReadWaitBackoff   time.Duration // Backoff time for active SSTable read wait during compaction, to avoid busy waiting
-	FlusherTickerInterval                time.Duration // Interval for flusher ticker
+	CompactionPartitionRatio             float64       // How much to move back (0.6 = 60% of data). Used for last level compaction
+	CompactionPartitionDistributionRatio float64       // How to split between L-1 and L-2 (0.7 = 70% to L-1, 30% to L-2)
 	CompactorTickerInterval              time.Duration // Interval for compactor ticker
+	FlusherTickerInterval                time.Duration // Interval for flusher ticker
 	BloomFilterFPR                       float64       // False positive rate for Bloom filter
 	WalAppendRetry                       int           // Number of retries for WAL append
 	WalAppendBackoff                     time.Duration // Backoff duration for WAL append
 	SSTableBTreeOrder                    int           // Order of the B-tree for SSTables
-	STDOutLogging                        bool          // Enable logging to standard output (default is false and if set, channel is ignored)
 	MaxConcurrentTxns                    int           // Maximum concurrent transactions (buffer size)
 	TxnBeginRetry                        int           // Number of retries for Begin() when buffer full
 	TxnBeginBackoff                      time.Duration // Initial backoff duration for Begin() retries
 	TxnBeginMaxBackoff                   time.Duration // Maximum backoff duration for Begin() retries
 	RecoverUncommittedTxns               bool          // Whether to recover uncommitted transactions on startup
-	CompactionPartitionRatio             float64       // How much to move back (0.6 = 60% of data). Used for last level compaction
-	CompactionPartitionDistributionRatio float64       // How to split between L-1 and L-2 (0.7 = 70% to L-1, 30% to L-2)
 }
 
 // DB represents the main Wildcat structure
@@ -167,14 +168,16 @@ func Open(opts *Options) (*DB, error) {
 	}
 
 	// Set default values for what options are not set
-	opts.setDefaults()
+	err := opts.setDefaults()
+	if err != nil {
+		return nil, err
+	}
 
 	buff, err := buffer.New(opts.MaxConcurrentTxns)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transaction buffer: %w", err)
 	}
 
-	// We create a db instance with the provided options
 	db := &DB{
 		lru:            lru.New(int64(opts.BlockManagerLRUSize), opts.BlockManagerLRUEvictRatio, opts.BlockManagerLRUAccesWeight), // New block manager LRU cache
 		wg:             &sync.WaitGroup{},                                                                                         // Wait group for background operations
@@ -185,6 +188,7 @@ func Open(opts *Options) (*DB, error) {
 	}
 
 	// Initialize flusher and compactor
+	// The flusher and compactor run in the background and handle flushing memtables to disk and compacting levels respectively.
 	db.flusher = newFlusher(db)
 	db.compactor = newCompactor(db)
 
@@ -242,11 +246,9 @@ func Open(opts *Options) (*DB, error) {
 
 		level.sstables = atomic.Pointer[[]*SSTable]{}                                                       // Atomic pointer to SSTables in this level
 		level.path = fmt.Sprintf("%s%s%d%s", db.opts.Directory, LevelPrefix, i+1, string(os.PathSeparator)) // Path for the level directory
-
-		// Set level
 		levels[i] = level
 
-		db.log(fmt.Sprintf("Creating level %d with capacity %d bytes at path %s", level.id, level.capacity, level.path))
+		db.log(fmt.Sprintf("Initializing level %d with capacity %d bytes at path %s", level.id, level.capacity, level.path))
 
 		// Create or ensure the level directory exists
 		if err := os.MkdirAll(level.path, db.opts.Permission); err != nil {
@@ -275,7 +277,7 @@ func Open(opts *Options) (*DB, error) {
 	db.wg.Add(1)
 	go db.flusher.backgroundProcess()
 
-	// Start the compaction manager
+	// Start the background compactor
 	db.wg.Add(1)
 	go db.compactor.backgroundProcess()
 
@@ -284,7 +286,7 @@ func Open(opts *Options) (*DB, error) {
 }
 
 // setDefaults checks and sets default values for db options
-func (opts *Options) setDefaults() {
+func (opts *Options) setDefaults() error {
 	if opts.WriteBufferSize <= 0 {
 		opts.WriteBufferSize = DefaultWriteBufferSize
 	}
@@ -371,6 +373,12 @@ func (opts *Options) setDefaults() {
 
 	if opts.SSTableBTreeOrder <= 0 {
 		opts.SSTableBTreeOrder = DefaultSSTableBTreeOrder
+	} else {
+		// Ensure the B-tree order is reasonable
+		if opts.SSTableBTreeOrder < 2 {
+			return fmt.Errorf("SSTable B-tree order must be at least 2, got %d", opts.SSTableBTreeOrder)
+		}
+
 	}
 
 	if opts.CompactionSizeTieredSimilarityRatio <= 0 {
@@ -404,6 +412,8 @@ func (opts *Options) setDefaults() {
 	if opts.CompactionPartitionDistributionRatio <= 0 || opts.CompactionPartitionDistributionRatio > 1.0 {
 		opts.CompactionPartitionDistributionRatio = DefaultCompactionPartitionDistributionRatio
 	}
+
+	return nil
 
 }
 
