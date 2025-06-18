@@ -140,15 +140,16 @@ func (l *Level) reopen() error {
 
 			default:
 				// This should not occur but if it does log a warning
+				// The system will still function using the sstable but without proper metadata setting nil
 				l.db.log(fmt.Sprintf("Warning: Unknown metadata type %T for SSTable %d - using file system metadata", extraMeta, id))
 
-				sstable.Min = []byte{}
-				sstable.Max = []byte{}
+				sstable.Min = nil
+				sstable.Max = nil
 				sstable.EntryCount = 0
 			}
 		} else {
-			sstable.Min = []byte{}
-			sstable.Max = []byte{}
+			sstable.Min = nil
+			sstable.Max = nil
 			sstable.EntryCount = 0
 		}
 
@@ -213,37 +214,69 @@ func (l *Level) extractSSTableFromBSON(sstable *SSTable, doc primitive.D) {
 			} else if level, ok := elem.Value.(int64); ok {
 				sstable.Level = int(level)
 			}
+		case "timestamp":
+			if timestamp, ok := elem.Value.(int64); ok {
+				sstable.Timestamp = timestamp
+			}
+		case "bloomfilter":
+			if l.db.opts.BloomFilter {
+				if err := sstable.reconstructBloomFilter(); err != nil {
+					l.db.log(fmt.Sprintf("Warning: Failed to reconstruct bloom filter for SSTable %d: %v", sstable.Id, err))
+				}
+			}
 		}
 	}
 }
 
 // extractSSTableFromMap a helper method to extract SSTable metadata from map[string]interface{}
 func (l *Level) extractSSTableFromMap(sstable *SSTable, meta map[string]interface{}) {
-	if id, ok := meta["id"].(int64); ok {
-		sstable.Id = id
+	for key, value := range meta {
+		switch key {
+		case "id":
+			if id, ok := value.(int64); ok {
+				sstable.Id = id
+			}
+		case "min":
+			if minBytes, ok := value.([]byte); ok {
+				sstable.Min = minBytes
+			}
+		case "max":
+			if maxBytes, ok := value.([]byte); ok {
+				sstable.Max = maxBytes
+			}
+		case "size":
+			if size, ok := value.(int64); ok && size > 0 {
+				sstable.Size = size
+			}
+		case "entrycount":
+			switch count := value.(type) {
+			case int:
+				sstable.EntryCount = count
+			case int32:
+				sstable.EntryCount = int(count)
+			case int64:
+				sstable.EntryCount = int(count)
+			}
+		case "level":
+			switch level := value.(type) {
+			case int:
+				sstable.Level = level
+			case int32:
+				sstable.Level = int(level)
+			case int64:
+				sstable.Level = int(level)
+			}
+		case "timestamp":
+			if timestamp, ok := value.(int64); ok {
+				sstable.Timestamp = timestamp
+			}
+		}
 	}
-	if minBytes, ok := meta["min"].([]byte); ok {
-		sstable.Min = minBytes
-	}
-	if maxBytes, ok := meta["max"].([]byte); ok {
-		sstable.Max = maxBytes
-	}
-	if size, ok := meta["size"].(int64); ok && size > 0 {
-		sstable.Size = size
-	}
-	if count, ok := meta["entrycount"].(int); ok {
-		sstable.EntryCount = count
-	} else if count, ok := meta["entrycount"].(int32); ok {
-		sstable.EntryCount = int(count)
-	} else if count, ok := meta["entrycount"].(int64); ok {
-		sstable.EntryCount = int(count)
-	}
-	if level, ok := meta["level"].(int); ok {
-		sstable.Level = level
-	} else if level, ok := meta["level"].(int32); ok {
-		sstable.Level = int(level)
-	} else if level, ok := meta["level"].(int64); ok {
-		sstable.Level = int(level)
+
+	if l.db.opts.BloomFilter {
+		if err := sstable.reconstructBloomFilter(); err != nil {
+			l.db.log(fmt.Sprintf("Warning: Failed to reconstruct bloom filter for SSTable %d: %v", sstable.Id, err))
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package wildcat
 
 import (
 	"bytes"
+	"fmt"
 	"github.com/wildcatdb/wildcat/v2/blockmanager"
 	"github.com/wildcatdb/wildcat/v2/bloomfilter"
 	"github.com/wildcatdb/wildcat/v2/tree"
@@ -45,14 +46,17 @@ func (sst *SSTable) get(key []byte, readTimestamp int64) ([]byte, int64) {
 	var klogBm *blockmanager.BlockManager
 	var err error
 
-	if sst.EntryCount == 0 {
-		return nil, 0 // Empty SSTable
-	}
+	if sst.Min != nil && sst.Max != nil { // In case meta is not set we continue on without checking bounds
 
-	// Skip if key is outside known bounds
-	if (len(sst.Min) > 0 && bytes.Compare(key, sst.Min) < 0) ||
-		(len(sst.Max) > 0 && bytes.Compare(key, sst.Max) > 0) {
-		return nil, 0 // Key not in range
+		if sst.EntryCount == 0 {
+			return nil, 0 // Empty SSTable
+		}
+
+		// Skip if key is outside known bounds
+		if (len(sst.Min) > 0 && bytes.Compare(key, sst.Min) < 0) ||
+			(len(sst.Max) > 0 && bytes.Compare(key, sst.Max) > 0) {
+			return nil, 0 // Key not in range
+		}
 	}
 
 	// If bloom filters are configured
@@ -186,4 +190,68 @@ func (sst *SSTable) kLogPath() string {
 func (sst *SSTable) vLogPath() string {
 	return sst.db.opts.Directory + LevelPrefix + strconv.Itoa(sst.Level) +
 		string(os.PathSeparator) + SSTablePrefix + strconv.FormatInt(sst.Id, 10) + VLogExtension
+}
+
+// reconstructBloomFilter reconstructs the bloom filter by iterating through the B-tree
+func (sst *SSTable) reconstructBloomFilter() error {
+	if !sst.db.opts.BloomFilter {
+		return nil
+	}
+
+	if sst.EntryCount == 0 {
+		return nil
+	}
+
+	bf, err := bloomfilter.New(uint(sst.EntryCount), sst.db.opts.BloomFilterFPR)
+	if err != nil {
+		return fmt.Errorf("failed to create bloom filter: %w", err)
+	}
+
+	klogPath := sst.kLogPath()
+	var klogBm *blockmanager.BlockManager
+
+	if v, ok := sst.db.lru.Get(klogPath); ok {
+		klogBm = v.(*blockmanager.BlockManager)
+	} else {
+		klogBm, err = blockmanager.Open(klogPath, os.O_RDONLY, sst.db.opts.Permission, blockmanager.SyncOption(sst.db.opts.SyncOption))
+		if err != nil {
+			return fmt.Errorf("failed to open KLog for bloom filter reconstruction: %w", err)
+		}
+		sst.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
+			if bm, ok := value.(*blockmanager.BlockManager); ok {
+				_ = bm.Close()
+			}
+		})
+	}
+
+	t, err := tree.Open(klogBm, sst.db.opts.SSTableBTreeOrder, sst)
+	if err != nil {
+		return fmt.Errorf("failed to open B-tree for bloom filter reconstruction: %w", err)
+	}
+
+	iter, err := t.Iterator(true)
+	if err != nil {
+		return fmt.Errorf("failed to create B-tree iterator: %w", err)
+	}
+
+	for iter.Valid() {
+		key := iter.Key()
+		if key != nil {
+			err = bf.Add(key)
+			if err != nil {
+				return fmt.Errorf("failed to add key to bloom filter: %w", err)
+			}
+		}
+
+		if !iter.Next() {
+			break
+		}
+	}
+
+	sst.BloomFilter = bf
+
+	sst.db.log(fmt.Sprintf("Reconstructed bloom filter for SSTable %d with %d entries",
+		sst.Id, sst.EntryCount))
+
+	return nil
 }
