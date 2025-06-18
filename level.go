@@ -91,22 +91,6 @@ func (l *Level) reopen() error {
 		// Get file paths
 		klogPath := fmt.Sprintf("%s%s%d%s", levelPath, SSTablePrefix, id, KLogExtension)
 
-		// Get file sizes to calculate SSTable size
-		klogInfo, err := os.Stat(klogPath)
-		if err != nil {
-			l.db.log(fmt.Sprintf("Warning: Failed to stat KLog file for SSTable %d: %v - skipping", id, err))
-			continue
-		}
-
-		vlogInfo, err := os.Stat(vlogPath)
-		if err != nil {
-			l.db.log(fmt.Sprintf("Warning: Failed to stat VLog file for SSTable %d: %v - skipping", id, err))
-			continue
-		}
-
-		// Calculate total size from file system
-		sstable.Size = klogInfo.Size() + vlogInfo.Size()
-
 		// Open the KLog file to try to get metadata from B-tree
 		klogBm, err := blockmanager.Open(klogPath, os.O_RDONLY, l.db.opts.Permission, blockmanager.SyncOption(l.db.opts.SyncOption))
 		if err != nil {
