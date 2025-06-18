@@ -8,6 +8,7 @@ import (
 	"syscall"
 )
 
+// OpenFile opens a file with the specified name and flags, returning a file handle.
 func OpenFile(name string, flags int, perm uint32) (uintptr, error) {
 	var access uint32
 	var creation uint32
@@ -75,6 +76,7 @@ func OpenFile(name string, flags int, perm uint32) (uintptr, error) {
 	return uintptr(handle), nil
 }
 
+// NewFileFromFd creates a new os.File from a file descriptor handle and name.
 func NewFileFromFd(handle uintptr, name string) *os.File {
 	return os.NewFile(handle, name)
 }

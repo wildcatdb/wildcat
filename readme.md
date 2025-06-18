@@ -23,7 +23,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - Automatic multi-threaded background compaction with configurable concurrency
 - ACID transaction support with configurable durability guarantees
 - Range, prefix, and full iteration support with bidirectional traversal
-- High transactional throughput per second with low latency due to lock-free and non-blocking design.
+- High transactional throughput per second with low latency due to lock-free and non-blocking design from memory to disk
 - Optional Bloom filters per SSTable for improved key lookup performance
 - Key-value separation optimization (`.klog` for keys, `.vlog` for values)
 - Tombstone-aware and version-aware compaction with retention based on active transaction read windows
@@ -134,7 +134,7 @@ The easiest way to interact with Wildcat is through the Update method, which han
 ```go
 // Write a value
 err := db.Update(func(txn *wildcat.Txn) error {
-    return txn.Put([]byte("hello"), []byte("world")) // Put update's existing key's values.
+    return txn.Put([]byte("hello"), []byte("world")) // Put update's existing key's values
 })
 if err != nil {
     // Handle error
@@ -158,7 +158,6 @@ if err != nil {
 ### Manual Transaction Management
 For more complex operations, you can manually manage transactions.
 ```go
-// Begin a transaction
 txn, err := db.Begin()
 if err != nil {
     // Handle error
@@ -221,7 +220,6 @@ err := db.Update(func(txn *wildcat.Txn) error {
 ```go
 // Perform batch operations
 for i := 0; i < 1000; i++ {
-    // Begin a transaction
     txn, err := db.Begin()
     if err != nil {
         // Handle error
@@ -237,7 +235,6 @@ for i := 0; i < 1000; i++ {
         return
     }
 
-    // Commit the transaction
     err = txn.Commit()
     if err != nil {
         // Handle error
@@ -293,7 +290,6 @@ err := db.View(func(txn *wildcat.Txn) error {
 #### Range Iterator (bidirectional)
 ```go
 err := db.View(func(txn *wildcat.Txn) error {
-    // Create range iterator
     iter, err := txn.NewRangeIterator([]byte("start"), []byte("end"), true)
     if err != nil {
         return err
@@ -331,7 +327,6 @@ err := db.View(func(txn *wildcat.Txn) error {
 #### Prefix Iterator (bidirectional)
 ```go
 err := db.View(func(txn *wildcat.Txn) error {
-    // Create prefix iterator
     iter, err := txn.NewPrefixIterator([]byte("prefix"), true)
     if err != nil {
         return err
