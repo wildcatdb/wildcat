@@ -1224,3 +1224,68 @@ func (sl *SkipList) GetLatestTimestamp() int64 {
 
 	return latestTimestamp
 }
+
+// ToFirst moves the iterator to the first node in the skip list
+func (it *Iterator) ToFirst() {
+	it.current = it.SkipList.header
+
+	currPtr := atomic.LoadPointer(&it.current.forward[0])
+	it.current = (*Node)(currPtr)
+
+	if it.current != nil {
+		version := it.current.findVisibleVersion(it.readTimestamp)
+		if version == nil || version.Type == Delete {
+			it.Next()
+		}
+	}
+}
+
+// ToFirst moves the prefix iterator to the first node with the matching prefix
+func (it *PrefixIterator) ToFirst() {
+	it.current = it.SkipList.header
+	currPtr := atomic.LoadPointer(&it.current.forward[0])
+	next := (*Node)(currPtr)
+
+	for next != nil {
+		if hasPrefix(next.key, it.prefix) {
+			version := next.findVisibleVersion(it.readTimestamp)
+			if version != nil && version.Type != Delete {
+				it.current = next
+				return
+			}
+		} else if it.SkipList.comparator(next.key, it.prefix) > 0 {
+			it.current = nil
+			return
+		}
+
+		currPtr = atomic.LoadPointer(&next.forward[0])
+		next = (*Node)(currPtr)
+	}
+	it.current = nil
+}
+
+// ToFirst moves the range iterator to the first node within the specified range
+func (it *RangeIterator) ToFirst() {
+	it.current = it.SkipList.header
+
+	currPtr := atomic.LoadPointer(&it.current.forward[0])
+	next := (*Node)(currPtr)
+
+	for next != nil {
+		if it.SkipList.isInRange(next.key, it.startKey, it.endKey) {
+			version := next.findVisibleVersion(it.readTimestamp)
+			if version != nil && version.Type != Delete {
+				it.current = next
+				return
+			}
+		} else if it.endKey != nil && it.SkipList.comparator(next.key, it.endKey) >= 0 {
+			it.current = nil
+			return
+		}
+
+		currPtr = atomic.LoadPointer(&next.forward[0])
+		next = (*Node)(currPtr)
+	}
+
+	it.current = nil
+}
