@@ -2649,3 +2649,472 @@ func TestMergeIterator_RangeAndPrefixEdgeCases(t *testing.T) {
 	})
 
 }
+
+func TestMergeIterator_SetDirectionWithMultipleSources(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_setdirection_multisource_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncNone,
+		WriteBufferSize: 256,
+		STDOutLogging:   true,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	for batch := 0; batch < 3; batch++ {
+		err = db.Update(func(txn *Txn) error {
+			for i := 0; i < 3; i++ {
+				key := fmt.Sprintf("batch%d_key%d", batch, i)
+				value := fmt.Sprintf("batch%d_value%d", batch, i)
+				if err := txn.Put([]byte(key), []byte(value)); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("Failed to insert batch %d: %v", batch, err)
+		}
+
+		err = db.ForceFlush()
+		if err != nil {
+			t.Fatalf("Failed to force flush batch %d: %v", batch, err)
+		}
+
+		time.Sleep(1 * time.Millisecond)
+	}
+
+	err = db.Update(func(txn *Txn) error {
+		for i := 0; i < 3; i++ {
+			key := fmt.Sprintf("memtable_key%d", i)
+			value := fmt.Sprintf("memtable_value%d", i)
+			if err := txn.Put([]byte(key), []byte(value)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert memtable data: %v", err)
+	}
+
+	t.Logf("Database stats:\n%s", db.Stats())
+
+	t.Run("Multiple Sources SetDirection Test", func(t *testing.T) {
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction: %v", err)
+		}
+		defer txn.remove()
+
+		iter1, err := txn.NewIterator(true)
+		if err != nil {
+			t.Fatalf("Failed to create forward iterator: %v", err)
+		}
+
+		totalForwardKeys := 0
+		for {
+			_, _, _, ok := iter1.Next()
+			if !ok {
+				break
+			}
+			totalForwardKeys++
+		}
+
+		t.Logf("Total keys in forward iteration: %d", totalForwardKeys)
+
+		iter2, err := txn.NewIterator(false)
+		if err != nil {
+			t.Fatalf("Failed to create backward iterator: %v", err)
+		}
+
+		totalBackwardKeys := 0
+		for {
+			_, _, _, ok := iter2.Next()
+			if !ok {
+				break
+			}
+			totalBackwardKeys++
+		}
+
+		t.Logf("Total keys in backward iteration: %d", totalBackwardKeys)
+
+		if totalForwardKeys != totalBackwardKeys {
+			t.Errorf("Inconsistent key counts: forward=%d, backward=%d", totalForwardKeys, totalBackwardKeys)
+		}
+
+		iter3, err := txn.NewIterator(true)
+		if err != nil {
+			t.Fatalf("Failed to create iterator for SetDirection test: %v", err)
+		}
+
+		forwardSteps := 0
+		for i := 0; i < 3; i++ {
+			_, _, _, ok := iter3.Next()
+			if !ok {
+				break
+			}
+			forwardSteps++
+		}
+
+		t.Logf("Moved forward %d steps", forwardSteps)
+
+		err = iter3.SetDirection(false)
+		if err != nil {
+			t.Fatalf("Failed to set direction: %v", err)
+		}
+
+		backwardSteps := 0
+		for i := 0; i < 5; i++ {
+			_, _, _, ok := iter3.Next()
+			if !ok {
+				break
+			}
+			backwardSteps++
+		}
+
+		t.Logf("Moved backward %d steps after SetDirection", backwardSteps)
+
+		if backwardSteps == 0 && totalBackwardKeys > 0 {
+			t.Errorf("BUG: SetDirection failed - no keys found in backward direction despite %d total keys", totalBackwardKeys)
+		} else {
+			t.Logf("SetDirection working: found %d keys in backward direction", backwardSteps)
+		}
+	})
+}
+
+func TestMergeIterator_SetDirectionRangeIterator(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_setdirection_range_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncNone,
+		WriteBufferSize: 512,
+		STDOutLogging:   true,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	err = db.Update(func(txn *Txn) error {
+		for i := 0; i < 10; i++ {
+			key := fmt.Sprintf("key_%02d", i)
+			value := fmt.Sprintf("value_%02d", i)
+			if err := txn.Put([]byte(key), []byte(value)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert first batch: %v", err)
+	}
+
+	err = db.ForceFlush()
+	if err != nil {
+		t.Fatalf("Failed to force flush: %v", err)
+	}
+
+	err = db.Update(func(txn *Txn) error {
+		for i := 10; i < 20; i++ {
+			key := fmt.Sprintf("key_%02d", i)
+			value := fmt.Sprintf("value_%02d", i)
+			if err := txn.Put([]byte(key), []byte(value)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert second batch: %v", err)
+	}
+
+	t.Run("Range Iterator SetDirection Test", func(t *testing.T) {
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction: %v", err)
+		}
+		defer txn.remove()
+
+		iter, err := txn.NewRangeIterator([]byte("key_05"), []byte("key_15"), true)
+		if err != nil {
+			t.Fatalf("Failed to create range iterator: %v", err)
+		}
+
+		var forwardKeys []string
+		for i := 0; i < 3; i++ {
+			key, _, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			forwardKeys = append(forwardKeys, string(key))
+		}
+
+		t.Logf("Range forward keys: %v", forwardKeys)
+
+		err = iter.SetDirection(false)
+		if err != nil {
+			t.Fatalf("Failed to set direction on range iterator: %v", err)
+		}
+
+		var backwardKeys []string
+		for i := 0; i < 5; i++ {
+			key, _, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			backwardKeys = append(backwardKeys, string(key))
+		}
+
+		t.Logf("Range backward keys after SetDirection: %v", backwardKeys)
+
+		if len(backwardKeys) == 0 && len(forwardKeys) > 0 {
+			t.Errorf("BUG: Range iterator SetDirection failed - no backward keys")
+		}
+	})
+}
+
+func TestMergeIterator_SetDirectionPrefixIterator(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_setdirection_prefix_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncNone,
+		WriteBufferSize: 512,
+		STDOutLogging:   true,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	err = db.Update(func(txn *Txn) error {
+		for i := 0; i < 5; i++ {
+			userKey := fmt.Sprintf("user:%03d", i)
+			userValue := fmt.Sprintf("user_data_%03d", i)
+			if err := txn.Put([]byte(userKey), []byte(userValue)); err != nil {
+				return err
+			}
+
+			postKey := fmt.Sprintf("post:%03d", i)
+			postValue := fmt.Sprintf("post_data_%03d", i)
+			if err := txn.Put([]byte(postKey), []byte(postValue)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert first batch: %v", err)
+	}
+
+	err = db.ForceFlush()
+	if err != nil {
+		t.Fatalf("Failed to force flush: %v", err)
+	}
+
+	err = db.Update(func(txn *Txn) error {
+		for i := 5; i < 10; i++ {
+			userKey := fmt.Sprintf("user:%03d", i)
+			userValue := fmt.Sprintf("user_data_%03d", i)
+			if err := txn.Put([]byte(userKey), []byte(userValue)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert second batch: %v", err)
+	}
+
+	t.Run("Prefix Iterator SetDirection Test", func(t *testing.T) {
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction: %v", err)
+		}
+		defer txn.remove()
+
+		iter, err := txn.NewPrefixIterator([]byte("user:"), true)
+		if err != nil {
+			t.Fatalf("Failed to create prefix iterator: %v", err)
+		}
+
+		var forwardKeys []string
+		for i := 0; i < 3; i++ {
+			key, _, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			forwardKeys = append(forwardKeys, string(key))
+		}
+
+		t.Logf("Prefix forward keys: %v", forwardKeys)
+
+		err = iter.SetDirection(false)
+		if err != nil {
+			t.Fatalf("Failed to set direction on prefix iterator: %v", err)
+		}
+
+		var backwardKeys []string
+		for i := 0; i < 5; i++ {
+			key, _, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+			backwardKeys = append(backwardKeys, string(key))
+		}
+
+		t.Logf("Prefix backward keys after SetDirection: %v", backwardKeys)
+
+		if len(backwardKeys) == 0 && len(forwardKeys) > 0 {
+			t.Errorf("BUG: Prefix iterator SetDirection failed - no backward keys")
+		}
+	})
+}
+
+func TestMergeIterator_SetDirectionEdgeCases(t *testing.T) {
+	dir, err := os.MkdirTemp("", "db_setdirection_edge_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(dir)
+
+	opts := &Options{
+		Directory:       dir,
+		SyncOption:      SyncNone,
+		WriteBufferSize: 20,
+		STDOutLogging:   true,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer func(db *DB) {
+		_ = db.Close()
+	}(db)
+
+	for i := 0; i < 100; i++ {
+		err = db.Update(func(txn *Txn) error {
+			key := fmt.Sprintf("key_%02d", i)
+			value := fmt.Sprintf("value_%02d", i)
+			if err := txn.Put([]byte(key), []byte(value)); err != nil {
+				return err
+
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("Failed to insert data: %v", err)
+		}
+	}
+
+	t.Run("SetDirection Same Direction", func(t *testing.T) {
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction: %v", err)
+		}
+		defer txn.remove()
+
+		iter, err := txn.NewIterator(true)
+		if err != nil {
+			t.Fatalf("Failed to create iterator: %v", err)
+		}
+
+		err = iter.SetDirection(true)
+		if err != nil {
+			t.Errorf("SetDirection to same direction should not fail: %v", err)
+		}
+
+		_, _, _, ok := iter.Next()
+		if !ok {
+			t.Error("Iterator should still work after SetDirection to same direction")
+		}
+	})
+
+	t.Run("SetDirection Multiple Times", func(t *testing.T) {
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction: %v", err)
+		}
+		defer txn.remove()
+
+		iter, err := txn.NewIterator(true)
+		if err != nil {
+			t.Fatalf("Failed to create iterator: %v", err)
+		}
+
+		directions := []bool{false, true, false, true}
+		for i, d := range directions {
+			err = iter.SetDirection(d)
+			if err != nil {
+				t.Errorf("SetDirection %d failed: %v", i, err)
+			}
+			_, _, _, ok := iter.Next()
+			if !ok {
+				t.Errorf("No keys available after SetDirection %d (direction=%v)", i, dir)
+			}
+		}
+	})
+
+	t.Run("SetDirection After Exhaustion", func(t *testing.T) {
+		txn, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Failed to begin transaction: %v", err)
+		}
+		defer txn.remove()
+
+		iter, err := txn.NewIterator(true)
+		if err != nil {
+			t.Fatalf("Failed to create iterator: %v", err)
+		}
+
+		for {
+			_, _, _, ok := iter.Next()
+			if !ok {
+				break
+			}
+		}
+
+		err = iter.SetDirection(false)
+		if err != nil {
+			t.Errorf("SetDirection after exhaustion failed: %v", err)
+		}
+	})
+}
