@@ -147,7 +147,6 @@ func TestCorruptedDataDeserialization(t *testing.T) {
 
 func TestSerializeIDGeneratorState(t *testing.T) {
 	original := &IDGeneratorState{
-		LastTxnID: 22,
 		LastSstID: 23,
 		LastWalID: 42,
 	}
@@ -161,10 +160,6 @@ func TestSerializeIDGeneratorState(t *testing.T) {
 	err = result.deserializeIDGeneratorState(data)
 	if err != nil {
 		t.Fatalf("Failed to deserialize IDGeneratorState: %v", err)
-	}
-
-	if original.LastTxnID != result.LastTxnID {
-		t.Errorf("lastTxnID mismatch: expected %d, got %d", original.LastTxnID, result.LastTxnID)
 	}
 
 	if original.LastSstID != result.LastSstID {
