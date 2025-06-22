@@ -150,7 +150,6 @@ type DB struct {
 type IDGeneratorState struct {
 	LastSstID int64 // Last SSTable ID
 	LastWalID int64 // Last WAL ID
-	LastTxnID int64 // Last transaction ID
 	db        *DB   // Pointer to the database instance
 }
 
@@ -214,7 +213,6 @@ func Open(opts *Options) (*DB, error) {
 		db.idgs = &IDGeneratorState{
 			LastSstID: 0,
 			LastWalID: 0,
-			LastTxnID: 0,
 			db:        db,
 		}
 
@@ -224,7 +222,6 @@ func Open(opts *Options) (*DB, error) {
 		db.idgs = &IDGeneratorState{
 			LastSstID: 0,
 			LastWalID: 0,
-			LastTxnID: 0,
 			db:        db,
 		}
 
@@ -1148,14 +1145,15 @@ func (idgs *IDGeneratorState) loadState() error {
 	}(idgsFile)
 
 	// Read the ID generator state from the file
-	if _, err := fmt.Fscanf(idgsFile, "%d %d %d", &idgs.LastSstID, &idgs.LastWalID, &idgs.LastTxnID); err != nil {
+	// If there are more than two integers, Fscanf ignores the rest
+	if _, err := fmt.Fscanf(idgsFile, "%d %d", &idgs.LastSstID, &idgs.LastWalID); err != nil {
 		return fmt.Errorf("failed to read ID generator state: %w", err)
 	}
 
 	idgs.db.walIdGenerator = reloadIDGenerator(idgs.LastWalID)
 	idgs.db.sstIdGenerator = reloadIDGenerator(idgs.LastSstID)
 
-	idgs.db.log(fmt.Sprintf("Loaded ID generator state: %d %d %d", idgs.LastSstID, idgs.LastWalID, idgs.LastTxnID))
+	idgs.db.log(fmt.Sprintf("Loaded ID generator state: %d %d", idgs.LastSstID, idgs.LastWalID))
 
 	return nil
 }
@@ -1168,7 +1166,7 @@ func (idgs *IDGeneratorState) saveState() error {
 
 	idgs.LastWalID = idgs.db.walIdGenerator.save()
 	idgs.LastSstID = idgs.db.sstIdGenerator.save()
-	idgs.db.log(fmt.Sprintf("Saving ID generator state:\nLAST SST ID: %d\nLAST WAL ID: %d\nLAST TXN ID: %d", idgs.LastSstID, idgs.LastWalID, idgs.LastTxnID))
+	idgs.db.log(fmt.Sprintf("Saving ID generator state: LastWalID(%d), LastSstID(%d)", idgs.LastSstID, idgs.LastWalID))
 
 	// Open the ID generator state file
 	idgsFilePath := fmt.Sprintf("%s%s", idgs.db.opts.Directory, IDGSTFileName)
@@ -1181,7 +1179,7 @@ func (idgs *IDGeneratorState) saveState() error {
 	}(idgsFile)
 
 	// Write the ID generator state to the file
-	if _, err = fmt.Fprintf(idgsFile, "%d %d %d", idgs.LastSstID, idgs.LastWalID, idgs.LastTxnID); err != nil {
+	if _, err = fmt.Fprintf(idgsFile, "%d %d", idgs.LastSstID, idgs.LastWalID); err != nil {
 		return fmt.Errorf("failed to write ID generator state: %w", err)
 	}
 
