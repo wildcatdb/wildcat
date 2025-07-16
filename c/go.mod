@@ -1,8 +1,8 @@
 module wildcat_c
 
-go 1.24.0
+go 1.24.5
 
-require github.com/wildcatdb/wildcat/v2 v2.3.6
+require github.com/wildcatdb/wildcat/v2 v2.3.7
 
 require (
 	go.mongodb.org/mongo-driver v1.17.3 // indirect
