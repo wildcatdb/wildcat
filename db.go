@@ -62,8 +62,6 @@ const (
 	DefaultLevelMultiplier = 10                   // Multiplier for the number of levels
 	// 64MB -> 640MB -> 6.4GB ->  64GB -> 640GB ->  6.4TB
 	DefaultBlockManagerLRUSize                  = 1024                 // Size of the LRU cache for block managers
-	DefaultBlockManagerLRUEvictRatio            = 0.20                 // Eviction ratio for the LRU cache
-	DefaultBlockManagerLRUAccessWeight          = 0.8                  // Access weight for the LRU cache
 	DefaultPermission                           = 0750                 // Default permission for created files
 	DefaultMaxCompactionConcurrency             = 4                    // Default max compaction concurrency
 	DefaultCompactionCooldownPeriod             = 5 * time.Second      // Default cooldown period for compaction
@@ -97,8 +95,6 @@ type Options struct {
 	LevelCount                           int           // Number of levels in the LSM tree
 	LevelMultiplier                      int           // Multiplier for the number of levels
 	BlockManagerLRUSize                  int           // Size of the LRU cache for block managers
-	BlockManagerLRUEvictRatio            float64       // Eviction ratio for the LRU cache
-	BlockManagerLRUAccesWeight           float64       // Access weight for the LRU cache
 	Permission                           os.FileMode   // Permission for created files
 	LogChannel                           chan string   // Channel for logging
 	STDOutLogging                        bool          // Enable logging to standard output (default is false and if set, channel is ignored)
@@ -178,12 +174,12 @@ func Open(opts *Options) (*DB, error) {
 	}
 
 	db := &DB{
-		lru:            lru.New(int64(opts.BlockManagerLRUSize), opts.BlockManagerLRUEvictRatio, opts.BlockManagerLRUAccesWeight), // New block manager LRU cache
-		wg:             &sync.WaitGroup{},                                                                                         // Wait group for background operations
-		opts:           opts,                                                                                                      // Set the options
-		txnBuffer:      buff,                                                                                                      // Create a new buffer for transactions with the specified cap
-		closeCh:        make(chan struct{}),                                                                                       // Channel for closing the database
-		txnTSGenerator: newIDGeneratorWithTimestamp(),                                                                             // We use timestamp generator for monotonic generation (1579134612000000004, next ID will be 1579134612000000005)
+		lru:            lru.New(opts.BlockManagerLRUSize), // New block manager LRU cache
+		wg:             &sync.WaitGroup{},                 // Wait group for background operations
+		opts:           opts,                              // Set the options
+		txnBuffer:      buff,                              // Create a new buffer for transactions with the specified cap
+		closeCh:        make(chan struct{}),               // Channel for closing the database
+		txnTSGenerator: newIDGeneratorWithTimestamp(),     // We use timestamp generator for monotonic generation (1579134612000000004, next ID will be 1579134612000000005)
 	}
 
 	// Initialize flusher and compactor
@@ -360,14 +356,6 @@ func (opts *Options) setDefaults() error {
 		opts.BlockManagerLRUSize = DefaultBlockManagerLRUSize
 	}
 
-	if opts.BlockManagerLRUEvictRatio <= 0 {
-		opts.BlockManagerLRUEvictRatio = DefaultBlockManagerLRUEvictRatio
-	}
-
-	if opts.BlockManagerLRUAccesWeight <= 0 {
-		opts.BlockManagerLRUAccesWeight = DefaultBlockManagerLRUAccessWeight
-	}
-
 	if opts.SSTableBTreeOrder <= 0 {
 		opts.SSTableBTreeOrder = DefaultSSTableBTreeOrder
 	} else {
@@ -433,7 +421,7 @@ func (db *DB) Close() error {
 	db.wg.Wait()
 
 	// Close open block managers
-	db.lru.ForEach(func(key, value interface{}, accessCount uint64) bool {
+	db.lru.ForEach(func(key string, value interface{}) bool {
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
 		}
@@ -501,7 +489,7 @@ func (db *DB) reinstate() error {
 		}
 
 		// Add the WAL to the LRU cache
-		db.lru.Put(newWalPath, walBm, func(key, value interface{}) {
+		db.lru.Put(newWalPath, walBm, func(key string, value interface{}) {
 			// Close the block manager when evicted from LRU
 			if bm, ok := value.(*blockmanager.BlockManager); ok {
 				_ = bm.Close()
@@ -536,7 +524,7 @@ func (db *DB) reinstate() error {
 		}
 
 		// Add WAL to LRU cache
-		db.lru.Put(walPath, walBm, func(key, value interface{}) {
+		db.lru.Put(walPath, walBm, func(key string, value interface{}) {
 			// Close the block manager when evicted from LRU
 			if bm, ok := value.(*blockmanager.BlockManager); ok {
 				_ = bm.Close()
@@ -698,7 +686,7 @@ func (db *DB) reinstate() error {
 	}
 
 	// Update or add to LRU cache
-	db.lru.Put(activeWALPath, activeWalBm, func(key, value interface{}) {
+	db.lru.Put(activeWALPath, activeWalBm, func(key string, value interface{}) {
 		// Close the block manager when evicted from LRU
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
@@ -1003,7 +991,6 @@ func (db *DB) Stats() string {
 				"Compaction Size Ratio", "Compaction Threshold", "Score Size Weight",
 				"Score Count Weight", "Flusher Interval", "Compactor Interval", "Bloom FPR",
 				"WAL Retry", "WAL Backoff", "SSTable B-Tree Order", "LRU Size",
-				"LRU Evict Ratio", "LRU Access Weight",
 				"File Version",
 				"Magic Number",
 				"Directory",
@@ -1014,8 +1001,7 @@ func (db *DB) Stats() string {
 				db.opts.CompactionSizeRatio, db.opts.CompactionSizeThreshold, db.opts.CompactionScoreSizeWeight,
 				db.opts.CompactionScoreCountWeight, db.opts.FlusherTickerInterval, db.opts.CompactorTickerInterval,
 				db.opts.BloomFilterFPR, db.opts.WalAppendRetry, db.opts.WalAppendBackoff,
-				db.opts.SSTableBTreeOrder, db.opts.BlockManagerLRUSize, db.opts.BlockManagerLRUEvictRatio,
-				db.opts.BlockManagerLRUAccesWeight,
+				db.opts.SSTableBTreeOrder, db.opts.BlockManagerLRUSize,
 				blockmanager.Version,
 				blockmanager.MagicNumber,
 				db.opts.Directory,

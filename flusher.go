@@ -53,7 +53,7 @@ func (flusher *Flusher) queueMemtable() error {
 	}
 
 	// Add the new WAL to the LRU cache
-	flusher.db.lru.Put(newMemtable.wal.path, walBm, func(key, value interface{}) {
+	flusher.db.lru.Put(newMemtable.wal.path, walBm, func(key string, value interface{}) {
 		// Close the block manager when evicted from LRU
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
@@ -276,12 +276,12 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 	}
 
 	// Add both KLog and VLog to the LRU cache
-	flusher.db.lru.Put(klogFinalPath, klogBm, func(key, value interface{}) {
+	flusher.db.lru.Put(klogFinalPath, klogBm, func(key string, value interface{}) {
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
 		}
 	})
-	flusher.db.lru.Put(vlogFinalPath, vlogBm, func(key, value interface{}) {
+	flusher.db.lru.Put(vlogFinalPath, vlogBm, func(key string, value interface{}) {
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
 		}

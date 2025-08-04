@@ -78,7 +78,7 @@ func (sst *SSTable) get(key []byte, readTimestamp int64) ([]byte, int64) {
 		if err != nil {
 			return nil, 0
 		}
-		sst.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
+		sst.db.lru.Put(klogPath, klogBm, func(key string, value interface{}) {
 			if bm, ok := value.(*blockmanager.BlockManager); ok {
 				_ = bm.Close()
 			}
@@ -167,7 +167,7 @@ func (sst *SSTable) readValueFromVLog(valueBlockID int64) []byte {
 		if err != nil {
 			return nil
 		}
-		sst.db.lru.Put(vlogPath, vlogBm, func(key, value interface{}) {
+		sst.db.lru.Put(vlogPath, vlogBm, func(key string, value interface{}) {
 			if bm, ok := value.(*blockmanager.BlockManager); ok {
 				_ = bm.Close()
 			}
@@ -218,7 +218,7 @@ func (sst *SSTable) reconstructBloomFilter() error {
 		if err != nil {
 			return fmt.Errorf("failed to open KLog for bloom filter reconstruction: %w", err)
 		}
-		sst.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
+		sst.db.lru.Put(klogPath, klogBm, func(key string, value interface{}) {
 			if bm, ok := value.(*blockmanager.BlockManager); ok {
 				_ = bm.Close()
 			}

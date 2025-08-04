@@ -454,8 +454,6 @@ fmt.Println(stats)
 │ WAL Backoff                : 128µs                                        │
 │ SSTable B-Tree Order       : 10                                           │
 │ LRU Size                   : 1024                                         │
-│ LRU Evict Ratio            : 0.2                                          │
-│ LRU Access Weight          : 0.8                                          │
 │ File Version               : 2                                            │
 │ Magic Number               : 1464421444                                   │
 │ Directory                  : /tmp/wildcat_stats_example/                  │
@@ -538,8 +536,6 @@ Wildcat provides many configuration options for fine-tuning.
 | **BloomFilterFPR** | `0.01` | False positive rate for Bloom filters |
 | **WalAppendRetry** | `10` | Number of retries for WAL append operations |
 | **WalAppendBackoff** | `128 * time.Microsecond` | Backoff duration for WAL append retries |
-| **BlockManagerLRUEvictRatio** | `0.20` | Ratio for LRU eviction. Determines what percentage of the cache to evict when cleanup is needed. |
-| **BlockManagerLRUAccesWeight** | `0.8` | Weight for LRU access eviction. Balances how much to prioritize access frequency vs. age when deciding what to evict. |
 | **STDOutLogging** | `false` | If true, logs will be printed to stdout instead of the log channel. Log channel will be ignored if provided. |
 | **MaxConcurrentTxns** | `65536` | Maximum number of concurrent transactions. This is the size of the ring buffer used for transaction management. |
 | **TxnBeginRetry** | `10` | Number of retries for `Begin()` when the transaction buffer is full. |
@@ -608,8 +604,6 @@ typedef struct {
     int level_count;
     int level_multiplier;
     int block_manager_lru_size;
-    double block_manager_lru_evict_ratio;
-    double block_manager_lru_access_weight;
     int permission;
     int bloom_filter;
     int max_compaction_concurrency;

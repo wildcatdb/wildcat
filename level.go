@@ -99,7 +99,7 @@ func (l *Level) reopen() error {
 		}
 
 		// Add the KLog to cache
-		l.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
+		l.db.lru.Put(klogPath, klogBm, func(key string, value interface{}) {
 			if bm, ok := value.(*blockmanager.BlockManager); ok {
 				_ = bm.Close()
 			}
