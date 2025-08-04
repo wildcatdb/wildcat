@@ -2,8 +2,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=
 github.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=
-github.com/wildcatdb/wildcat/v2 v2.3.7 h1:2WJWOWavHUjFPUmpSh3FjIoJaAzhqGD8WKxT7yKL18g=
-github.com/wildcatdb/wildcat/v2 v2.3.7/go.mod h1:K+9ULHU6TMU0/Yc9e4XSWcPrKaMX13G2jmoitUvwIJw=
+github.com/wildcatdb/wildcat/v2 v2.3.8 h1:Inc4E/JcDLNGhKMuXDn/FNIM/w4zRecawh5g/mRHFJg=
+github.com/wildcatdb/wildcat/v2 v2.3.8/go.mod h1:7YYMUnkb0zDVMUH6nnAh94Bl7OXII2J1PIGcePuhN0k=
 go.mongodb.org/mongo-driver v1.17.3 h1:TQyXhnsWfWtgAhMtOgtYHMTkZIfBTpMTsMnd9ZBeHxQ=
 go.mongodb.org/mongo-driver v1.17.3/go.mod h1:Hy04i7O2kC4RS06ZrhPRqj/u4DTYkFDAAccj+rVKqgQ=
 golang.org/x/sys v0.33.0 h1:q3i8TbbEz+JRD9ywIRlyRAQbM0qF7hu24q3teo2hbuw=
