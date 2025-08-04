@@ -16,22 +16,21 @@
 package lru
 
 import (
+	"fmt"
 	"sync"
 	"testing"
-	"time"
 )
 
 func TestLRUBasicOperations(t *testing.T) {
-	lru := New(10, 0.25, 0.7)
+	lru := New(10)
 
-	if lru.Length() != 0 {
-		t.Errorf("Expected initial length 0, got %d", lru.Length())
+	if lru.Len() != 0 {
+		t.Errorf("Expected initial length 0, got %d", lru.Len())
 	}
 
-	// Test Put and Get operations
-	lru.Put("key1", "value1")
-	if lru.Length() != 1 {
-		t.Errorf("Expected length 1 after Put, got %d", lru.Length())
+	lru.Put("key1", "value1", nil)
+	if lru.Len() != 1 {
+		t.Errorf("Expected length 1 after Put, got %d", lru.Len())
 	}
 
 	val, found := lru.Get("key1")
@@ -43,239 +42,385 @@ func TestLRUBasicOperations(t *testing.T) {
 		t.Errorf("Expected value 'value1', got %v", val)
 	}
 
-	// Test updating existing key
-	lru.Put("key1", "value1-updated")
+	lru.Put("key1", "value1-updated", nil)
 	val, found = lru.Get("key1")
 	if !found || val != "value1-updated" {
 		t.Errorf("Expected updated value 'value1-updated', got %v", val)
 	}
 
-	// Test non-existent key
 	_, found = lru.Get("nonexistent")
 	if found {
 		t.Error("Expected not to find nonexistent key, but found")
 	}
 
-	// Test Delete operation
-	result := lru.Delete("key1")
+	result := lru.Remove("key1")
 	if !result {
-		t.Error("Delete operation failed")
+		t.Error("Remove operation failed")
 	}
 
-	if lru.Length() != 0 {
-		t.Errorf("Expected length 0 after Delete, got %d", lru.Length())
+	if lru.Len() != 0 {
+		t.Errorf("Expected length 0 after Remove, got %d", lru.Len())
 	}
 
 	_, found = lru.Get("key1")
 	if found {
-		t.Error("Expected not to find deleted key, but found")
+		t.Error("Expected not to find removed key, but found")
 	}
 }
 
 func TestLRUCapacityAndEviction(t *testing.T) {
-	// Create a new LRU with small capacity to test eviction
-	capacity := int64(5)
-	lru := New(capacity, 0.4, 0.7) // Evict 40% (2 items) when full
+	capacity := 5
+	lru := New(capacity)
 
-	// Fill the LRU
-	for i := 0; i < int(capacity); i++ {
-		lru.Put(i, i*10)
+	for i := 0; i < capacity; i++ {
+		key := fmt.Sprintf("key%d", i)
+		lru.Put(key, i*10, nil)
 	}
 
-	// Verify all items are present
-	for i := 0; i < int(capacity); i++ {
-		val, found := lru.Get(i)
+	for i := 0; i < capacity; i++ {
+		key := fmt.Sprintf("key%d", i)
+		val, found := lru.Get(key)
 		if !found {
-			t.Errorf("Expected to find key %d, but not found", i)
+			t.Errorf("Expected to find key %s, but not found", key)
 		}
 		if val != i*10 {
 			t.Errorf("Expected value %d, got %v", i*10, val)
 		}
 	}
 
-	// Access some items more to influence eviction (items 3, 4)
-	for i := 3; i < int(capacity); i++ {
-		for j := 0; j < 5; j++ { // Access multiple times
-			lru.Get(i)
+	if lru.Len() != capacity {
+		t.Errorf("Expected length %d, got %d", capacity, lru.Len())
+	}
+
+	for i := 3; i < capacity; i++ {
+		key := fmt.Sprintf("key%d", i)
+		for j := 0; j < 3; j++ {
+			lru.Get(key)
 		}
 	}
 
-	// Add additional items to trigger eviction
-	for i := int(capacity); i < int(capacity)+3; i++ {
-		lru.Put(i, i*10)
-		// Give time for lazy eviction to process
-		time.Sleep(time.Millisecond)
+	lru.Put("new1", "newvalue1", nil)
+
+	_, found := lru.Get("key0")
+	if found {
+		t.Error("Expected oldest item (key0) to be evicted, but it's still present")
 	}
 
-	// Force eviction processing by triggering more operations
-	for i := 0; i < 3; i++ {
-		lru.Get(999) // Non-existent key to trigger traversal
-	}
-
-	// Check that some items were evicted
-	evictedCount := 0
-	for i := 0; i < int(capacity); i++ {
-		_, found := lru.Get(i)
+	for i := 3; i < capacity; i++ {
+		key := fmt.Sprintf("key%d", i)
+		_, found = lru.Get(key)
 		if !found {
-			evictedCount++
+			t.Errorf("Expected recently accessed key %s to still be present", key)
 		}
 	}
 
-	// Length should not significantly exceed capacity
-	if lru.Length() > capacity+1 {
-		t.Errorf("Length significantly exceeds capacity: %d > %d", lru.Length(), capacity+1)
+	val, found := lru.Get("new1")
+	if !found || val != "newvalue1" {
+		t.Error("Expected new item to be present")
 	}
+}
 
-	// At least some eviction should have occurred when we exceed capacity
-	if lru.Length() == int64(capacity+3) {
-		t.Error("Expected some eviction to occur, but length suggests none happened")
+func TestLRUEvictionOrder(t *testing.T) {
+	lru := New(3)
+
+	lru.Put("first", "1", nil)
+	lru.Put("second", "2", nil)
+	lru.Put("third", "3", nil)
+	lru.Get("first")
+	lru.Put("fourth", "4", nil)
+
+	if _, found := lru.Get("second"); found {
+		t.Error("Expected 'second' to be evicted")
+	}
+	if _, found := lru.Get("first"); !found {
+		t.Error("Expected 'first' to still be present")
+	}
+	if _, found := lru.Get("third"); !found {
+		t.Error("Expected 'third' to still be present")
+	}
+	if _, found := lru.Get("fourth"); !found {
+		t.Error("Expected 'fourth' to be present")
 	}
 }
 
 func TestLRUConcurrentAccess(t *testing.T) {
-	// Create a new LRU with large capacity for concurrent testing
-	lru := New(20, 0.25, 0.7)
+	lru := New(1000)
 
-	// Number of goroutines and operations per goroutine
 	goroutines := 10
-	opsPerGoroutine := 2
+	opsPerGoroutine := 50
 
 	var wg sync.WaitGroup
 
-	// Launch writer goroutines
 	for g := 0; g < goroutines; g++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
 			for i := 0; i < opsPerGoroutine; i++ {
-				key := id*opsPerGoroutine + i
-				lru.Put(key, key*10)
+				key := fmt.Sprintf("write_%d_%d", id, i)
+				lru.Put(key, key+"_value", nil)
 			}
 		}(g)
 	}
 
-	// Launch reader goroutines
 	for g := 0; g < goroutines; g++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
 			for i := 0; i < opsPerGoroutine; i++ {
-				key := id*opsPerGoroutine + i
-				_, _ = lru.Get(key)
+				key := fmt.Sprintf("write_%d_%d", id, i)
+				lru.Get(key)
+			}
+		}(g)
+	}
+
+	for g := 0; g < goroutines/2; g++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < opsPerGoroutine; i++ {
+				key := fmt.Sprintf("mixed_%d_%d", id, i)
+				if i%3 == 0 {
+					lru.Put(key, fmt.Sprintf("value_%d", i), nil)
+				} else if i%3 == 1 {
+					lru.Get(key)
+				} else {
+					lru.Remove(key)
+				}
 			}
 		}(g)
 	}
 
 	wg.Wait()
 
-	// Verify the length is as expected
-	expectedItemCount := goroutines * opsPerGoroutine
-	if lru.Length() != int64(expectedItemCount) {
-		t.Errorf("Expected length %d, got %d", expectedItemCount, lru.Length())
+	lru.Put("test", "value", nil)
+	val, found := lru.Get("test")
+	if !found || val != "value" {
+		t.Error("LRU not functional after concurrent operations")
 	}
 }
 
-func TestLRUForEach(t *testing.T) {
-	// Create a new LRU
-	lru := New(10, 0.25, 0.7)
+func TestLRUPerKeyEvictionCallback(t *testing.T) {
+	var evictedKeys []string
+	var evictedValues []interface{}
+	var mu sync.Mutex
 
-	// Add some items
-	testData := map[string]int{
-		"key1": 100,
-		"key2": 200,
-		"key3": 300,
+	evictionCallback1 := func(key string, value interface{}) {
+		mu.Lock()
+		defer mu.Unlock()
+		evictedKeys = append(evictedKeys, key+"_cb1")
+		evictedValues = append(evictedValues, value)
 	}
 
-	for k, v := range testData {
-		lru.Put(k, v)
+	evictionCallback2 := func(key string, value interface{}) {
+		mu.Lock()
+		defer mu.Unlock()
+		evictedKeys = append(evictedKeys, key+"_cb2")
+		evictedValues = append(evictedValues, value)
 	}
 
-	// Access some keys to increase access count
-	lru.Get("key1")
-	lru.Get("key3")
-	lru.Get("key3")
+	lru := New(3)
 
-	// Use ForEach to collect and verify data
-	visited := make(map[string]int)
-	accessCounts := make(map[string]uint64)
+	lru.Put("key1", "value1", evictionCallback1)
+	lru.Put("key2", "value2", evictionCallback2)
+	lru.Put("key3", "value3", nil)
 
-	lru.ForEach(func(key, value interface{}, accessCount uint64) bool {
-		k := key.(string)
-		v := value.(int)
-		visited[k] = v
-		accessCounts[k] = accessCount
-		return true
-	})
-
-	// Verify all items were visited
-	if len(visited) != len(testData) {
-		t.Errorf("ForEach didn't visit all items. Expected %d, got %d", len(testData), len(visited))
+	mu.Lock()
+	if len(evictedKeys) != 0 {
+		t.Errorf("Expected no evictions yet, but got %d", len(evictedKeys))
 	}
+	mu.Unlock()
 
-	// Verify values match
-	for k, v := range testData {
-		if visited[k] != v {
-			t.Errorf("Value mismatch for key %s. Expected %d, got %d", k, v, visited[k])
+	// This should evict key1 (oldest) which has callback1
+	lru.Put("key4", "value4", nil)
+
+	mu.Lock()
+	if len(evictedKeys) != 1 {
+		t.Errorf("Expected 1 eviction, but got %d", len(evictedKeys))
+	}
+	if len(evictedKeys) > 0 {
+		if evictedKeys[0] != "key1_cb1" {
+			t.Errorf("Expected to evict 'key1_cb1', but evicted '%s'", evictedKeys[0])
+		}
+		if evictedValues[0] != "value1" {
+			t.Errorf("Expected evicted value 'value1', but got '%v'", evictedValues[0])
 		}
 	}
+	mu.Unlock()
 
-	// Verify access counts
-	if accessCounts["key1"] != 2 { // Put + 1 Get
-		t.Errorf("Expected access count 2 for key1, got %d", accessCounts["key1"])
+	// This should evict key2 (next oldest) which has callback2
+	lru.Put("key5", "value5", nil)
+
+	mu.Lock()
+	if len(evictedKeys) != 2 {
+		t.Errorf("Expected 2 evictions, but got %d", len(evictedKeys))
 	}
-	if accessCounts["key2"] != 1 { // Put only
-		t.Errorf("Expected access count 1 for key2, got %d", accessCounts["key2"])
+	if len(evictedKeys) > 1 {
+		if evictedKeys[1] != "key2_cb2" {
+			t.Errorf("Expected to evict 'key2_cb2', but evicted '%s'", evictedKeys[1])
+		}
+		if evictedValues[1] != "value2" {
+			t.Errorf("Expected evicted value 'value2', but got '%v'", evictedValues[1])
+		}
 	}
-	if accessCounts["key3"] != 3 { // Put + 2 Gets
-		t.Errorf("Expected access count 3 for key3, got %d", accessCounts["key3"])
+	mu.Unlock()
+
+	// This should evict key3 (no callback) - no new entries in evictedKeys
+	lru.Put("key6", "value6", nil)
+
+	mu.Lock()
+	if len(evictedKeys) != 2 {
+		t.Errorf("Expected still 2 evictions (key3 had no callback), but got %d", len(evictedKeys))
+	}
+	mu.Unlock()
+
+	_, found := lru.Get("key1")
+	if found {
+		t.Error("Evicted item key1 should not be in cache")
+	}
+	_, found = lru.Get("key2")
+	if found {
+		t.Error("Evicted item key2 should not be in cache")
+	}
+	_, found = lru.Get("key3")
+	if found {
+		t.Error("Evicted item key3 should not be in cache")
+	}
+}
+
+func TestLRUUpdateExistingWithCallback(t *testing.T) {
+	var evictedKeys []string
+	var mu sync.Mutex
+
+	callback1 := func(key string, value interface{}) {
+		mu.Lock()
+		defer mu.Unlock()
+		evictedKeys = append(evictedKeys, key+"_old")
 	}
 
-	// Test ForEach early termination
-	earlyTermCount := 0
-	lru.ForEach(func(key, value interface{}, accessCount uint64) bool {
-		earlyTermCount++
-		return earlyTermCount < 2 // Stop after visiting 2 items
-	})
-
-	if earlyTermCount != 2 {
-		t.Errorf("ForEach early termination failed. Expected to visit 2 items, visited %d", earlyTermCount)
+	callback2 := func(key string, value interface{}) {
+		mu.Lock()
+		defer mu.Unlock()
+		evictedKeys = append(evictedKeys, key+"_new")
 	}
+
+	lru := New(2)
+
+	lru.Put("key1", "value1", callback1)
+	lru.Put("key2", "value2", nil)
+
+	lru.Put("key1", "value1_updated", callback2)
+
+	lru.Put("key3", "value3", nil)
+
+	// key2 should be evicted (no callback), key1 should remain with new callback
+
+	mu.Lock()
+	if len(evictedKeys) != 0 {
+		t.Errorf("Expected no evictions yet (key2 has no callback), but got %d", len(evictedKeys))
+	}
+	mu.Unlock()
+
+	lru.Put("key4", "value4", nil)
+
+	mu.Lock()
+	if len(evictedKeys) != 1 {
+		t.Errorf("Expected 1 eviction, but got %d", len(evictedKeys))
+	}
+	if len(evictedKeys) > 0 && evictedKeys[0] != "key1_new" {
+		t.Errorf("Expected key1 to be evicted with new callback, but got '%s'", evictedKeys[0])
+	}
+	mu.Unlock()
+}
+
+func TestLRURemoveWithCallback(t *testing.T) {
+	var evictedKeys []string
+	var mu sync.Mutex
+
+	callback := func(key string, value interface{}) {
+		mu.Lock()
+		defer mu.Unlock()
+		evictedKeys = append(evictedKeys, key)
+	}
+
+	lru := New(3)
+
+	lru.Put("key1", "value1", callback)
+	lru.Put("key2", "value2", nil)
+
+	result := lru.Remove("key1")
+	if !result {
+		t.Error("Remove operation failed")
+	}
+
+	mu.Lock()
+	if len(evictedKeys) != 1 || evictedKeys[0] != "key1" {
+		t.Errorf("Expected key1 to be in evictedKeys, got %v", evictedKeys)
+	}
+	mu.Unlock()
+
+	result = lru.Remove("key2")
+	if !result {
+		t.Error("Remove operation failed")
+	}
+
+	mu.Lock()
+	if len(evictedKeys) != 1 {
+		t.Errorf("Expected still 1 eviction (key2 had no callback), but got %d", len(evictedKeys))
+	}
+	mu.Unlock()
 }
 
 func TestLRUClear(t *testing.T) {
-	// Create a new LRU
-	lru := New(10, 0.25, 0.7)
+	var evictedCount int
+	var mu sync.Mutex
 
-	// Add some items
+	evictionCallback := func(key string, value interface{}) {
+		mu.Lock()
+		evictedCount++
+		mu.Unlock()
+	}
+
+	lru := New(10)
+
+	// Add some items with callbacks and some without
 	for i := 0; i < 5; i++ {
-		lru.Put(i, i*10)
-	}
-
-	// Verify items are present
-	if lru.Length() != 5 {
-		t.Errorf("Expected length 5, got %d", lru.Length())
-	}
-
-	// Clear the LRU
-	lru.Clear()
-
-	// Verify the LRU is empty
-	if lru.Length() != 0 {
-		t.Errorf("Expected length 0 after Clear, got %d", lru.Length())
-	}
-
-	// Verify no items can be found
-	for i := 0; i < 5; i++ {
-		_, found := lru.Get(i)
-		if found {
-			t.Errorf("Found key %d after Clear", i)
+		key := fmt.Sprintf("item%d", i)
+		if i%2 == 0 {
+			lru.Put(key, i*10, evictionCallback)
+		} else {
+			lru.Put(key, i*10, nil)
 		}
 	}
 
-	// Verify we can add new items after clearing
-	lru.Put("new", "value")
-	if lru.Length() != 1 {
-		t.Errorf("Expected length 1 after adding new item, got %d", lru.Length())
+	if lru.Len() != 5 {
+		t.Errorf("Expected length 5, got %d", lru.Len())
+	}
+
+	lru.Clear()
+
+	if lru.Len() != 0 {
+		t.Errorf("Expected length 0 after Clear, got %d", lru.Len())
+	}
+
+	mu.Lock()
+
+	// Only items with callbacks should trigger eviction callbacks (items 0, 2, 4)
+	if evictedCount != 3 {
+		t.Errorf("Expected 3 eviction callbacks, got %d", evictedCount)
+	}
+	mu.Unlock()
+
+	for i := 0; i < 5; i++ {
+		key := fmt.Sprintf("item%d", i)
+		_, found := lru.Get(key)
+		if found {
+			t.Errorf("Found key %s after Clear", key)
+		}
+	}
+
+	lru.Put("new", "value", nil)
+	if lru.Len() != 1 {
+		t.Errorf("Expected length 1 after adding new item, got %d", lru.Len())
 	}
 
 	val, found := lru.Get("new")
@@ -285,77 +430,24 @@ func TestLRUClear(t *testing.T) {
 }
 
 func TestLRUEdgeCases(t *testing.T) {
-	// Test with zero or negative capacity
-	lru := New(0, 0.25, 0.7)
-	// Should default to "unlimited" capacity
-	for i := 0; i < 100; i++ {
-		lru.Put(i, i)
-	}
-	if lru.Length() != 100 {
-		t.Errorf("Expected length 100, got %d", lru.Length())
+	lru := New(1)
+	lru.Put("first", "1", nil)
+	lru.Put("second", "2", nil)
+
+	_, found := lru.Get("first")
+	if found {
+		t.Error("Expected first item to be evicted")
 	}
 
-	// Test with negative evictRatio
-	lru = New(10, -0.1, 0.7)
-	// Should default to 25% eviction ratio
-	// Fill the LRU
-	for i := 0; i < 10; i++ {
-		lru.Put(i, i)
-	}
-	// Add one more to trigger eviction
-	lru.Put(10, 10)
-
-	// Give time for eviction to process
-	time.Sleep(10 * time.Millisecond)
-	// Trigger eviction processing
-	for i := 0; i < 5; i++ {
-		lru.Get(999) // Trigger traversal
+	val, found := lru.Get("second")
+	if !found || val != "2" {
+		t.Error("Expected second item to be present")
 	}
 
-	// Should have evicted some items
-	if lru.Length() > 10 {
-		t.Errorf("Eviction didn't work properly, length: %d", lru.Length())
-	}
-
-	// Test with invalid accessWeight
-	lru = New(10, 0.25, 1.5)
-	// Should default to 0.7 accessWeight
-	// Fill the LRU and access some items more
-	for i := 0; i < 10; i++ {
-		lru.Put(i, i)
-		if i >= 5 {
-			for j := 0; j < 5; j++ {
-				lru.Get(i)
-			}
-		}
-	}
-	// Add items to trigger eviction
-	for i := 10; i < 13; i++ {
-		lru.Put(i, i)
-		time.Sleep(time.Millisecond) // Allow processing
-	}
-
-	// Force eviction processing
-	for i := 0; i < 5; i++ {
-		lru.Get(999) // Trigger traversal
-	}
-
-	// Test nil and zero values as keys and values
-	lru = New(10, 0.25, 0.7)
-	lru.Put(nil, "nil-key")
-	lru.Put(0, "zero-key")
-	lru.Put("nil-value", nil)
-	lru.Put("zero-value", 0)
-
-	val, found := lru.Get(nil)
-	if !found || val != "nil-key" {
-		t.Error("Failed to retrieve nil key")
-	}
-
-	val, found = lru.Get(0)
-	if !found || val != "zero-key" {
-		t.Error("Failed to retrieve zero key")
-	}
+	lru = New(10)
+	lru.Put("nil-value", nil, nil)
+	lru.Put("zero-value", 0, nil)
+	lru.Put("empty-string", "", nil)
 
 	val, found = lru.Get("nil-value")
 	if !found || val != nil {
@@ -366,102 +458,138 @@ func TestLRUEdgeCases(t *testing.T) {
 	if !found || val != 0 {
 		t.Error("Failed to retrieve zero value")
 	}
-}
 
-func TestLRUEvictionCallback(t *testing.T) {
-	// Create a small capacity LRU to easily trigger evictions
-	capacity := int64(3) // Smaller capacity for easier testing
-
-	// Keep track of evicted items
-	evictedKeys := make([]interface{}, 0)
-	evictedValues := make([]interface{}, 0)
-
-	// Callback function to track evictions
-	evictionCallback := func(key, value interface{}) {
-		evictedKeys = append(evictedKeys, key)
-		evictedValues = append(evictedValues, value)
+	val, found = lru.Get("empty-string")
+	if !found || val != "" {
+		t.Error("Failed to retrieve empty string value")
 	}
 
-	// Create LRU
-	lru := New(capacity, 0.5, 0.7) // Evict 50% when full
-
-	// Fill the LRU to capacity with callback
-	for i := 0; i < int(capacity); i++ {
-		lru.Put(i, i*10, evictionCallback)
+	result := lru.Remove("nonexistent")
+	if result {
+		t.Error("Expected Remove to return false for non-existent key")
 	}
 
-	// Verify all items are present and no evictions yet
-	if len(evictedKeys) != 0 {
-		t.Errorf("Expected no evictions yet, but got %d", len(evictedKeys))
+	lru = New(3)
+	lru.Put("a", "1", nil)
+	lru.Put("b", "2", nil)
+	lru.Put("c", "3", nil)
+
+	lru.Put("a", "1-updated", nil)
+	lru.Put("d", "4", nil)
+
+	_, found = lru.Get("b")
+	if found {
+		t.Error("Expected 'b' to be evicted after updating 'a'")
 	}
 
-	// Access some items more frequently to influence eviction
-	// Make items 1, 2 more frequently accessed
-	for i := 1; i < int(capacity); i++ {
-		for j := 0; j < 5; j++ {
-			lru.Get(i)
-		}
-	}
-
-	// Add more items to trigger eviction
-	extraItems := 2
-	for i := int(capacity); i < int(capacity)+extraItems; i++ {
-		lru.Put(i, i*10, evictionCallback)
-		// Give time for processing
-		time.Sleep(time.Millisecond)
-		// Force eviction processing
-		lru.Get(999) // Trigger traversal
-	}
-
-	// Force more eviction processing
-	for i := 0; i < 3; i++ {
-		lru.Get(999) // Trigger traversal
-		time.Sleep(time.Millisecond)
-	}
-
-	// Verify eviction callback was triggered
-	if len(evictedKeys) == 0 {
-		t.Error("Expected eviction callback to be triggered, but it wasn't")
-	}
-
-	// Verify evicted items are not in the cache
-	for _, key := range evictedKeys {
-		_, found := lru.Get(key)
-		if found {
-			t.Errorf("Key %v should have been evicted but is still in cache", key)
-		}
-	}
-
-	// Verify values in the callback match what we put in
-	for i, key := range evictedKeys {
-		expectedValue := key.(int) * 10
-		if evictedValues[i] != expectedValue {
-			t.Errorf("Expected evicted value %v for key %v, got %v",
-				expectedValue, key, evictedValues[i])
-		}
+	val, found = lru.Get("a")
+	if !found || val != "1-updated" {
+		t.Error("Expected updated 'a' to still be present")
 	}
 }
 
-func BenchmarkLRUConcurrentOperations(b *testing.B) {
-	// Create a new LRU with large capacity for benchmarking
-	lru := New(int64(b.N), 0.80, 0.8)
-
-	// Ensure divisor is not zero
-	divisor := b.N / 10
-	if divisor == 0 {
-		divisor = 1
+func TestLRUStressTest(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping stress test in short mode")
 	}
+
+	lru := New(100)
+
+	for i := 0; i < 10000; i++ {
+		key := i % 500
+		lru.Put(fmt.Sprintf("key-%d", key), i, nil)
+
+		if i%3 == 0 {
+			lru.Get(fmt.Sprintf("key-%d", key))
+		}
+
+		if i%7 == 0 {
+			lru.Remove(fmt.Sprintf("key-%d", key))
+		}
+	}
+
+	lru.Put("final", "test", nil)
+	val, found := lru.Get("final")
+	if !found || val != "test" {
+		t.Error("LRU not functional after stress test")
+	}
+}
+
+func BenchmarkLRUPut(b *testing.B) {
+	lru := New(b.N)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := fmt.Sprintf("bench_%d", i)
+		lru.Put(key, i, nil)
+	}
+}
+
+func BenchmarkLRUPutWithCallback(b *testing.B) {
+	lru := New(b.N)
+	callback := func(key string, value interface{}) {
+		// Minimal callback for benchmarking
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := fmt.Sprintf("bench_%d", i)
+		lru.Put(key, i, callback)
+	}
+}
+
+func BenchmarkLRUGet(b *testing.B) {
+	lru := New(b.N)
+
+	minItems := 100
+	itemCount := b.N
+	if itemCount < minItems {
+		itemCount = minItems
+	}
+
+	for i := 0; i < itemCount; i++ {
+		key := fmt.Sprintf("bench_%d", i)
+		lru.Put(key, i, nil)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		divisor := b.N / 2
+		if divisor < 1 {
+			divisor = 1
+		}
+		key := fmt.Sprintf("bench_%d", i%divisor)
+		lru.Get(key)
+	}
+}
+
+func BenchmarkLRUMixed(b *testing.B) {
+	lru := New(1000)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := fmt.Sprintf("mixed_%d", i%500)
+		if i%3 == 0 {
+			lru.Put(key, i, nil)
+		} else {
+			lru.Get(key)
+		}
+	}
+}
+
+func BenchmarkLRUConcurrent(b *testing.B) {
+	lru := New(1000)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			key := i % divisor // Use the safe divisor
-			lru.Put(key, i)
-			lru.Get(key)
-			//if i%10 == 0 { // Occasionally delete
-			//lru.Delete(key)
-			//}
+			key := fmt.Sprintf("concurrent_%d", i%100)
+			if i%2 == 0 {
+				lru.Put(key, i, nil)
+			} else {
+				lru.Get(key)
+			}
 			i++
 		}
 	})

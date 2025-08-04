@@ -529,14 +529,14 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevelIdx,
 			if bm, ok := bm.(*blockmanager.BlockManager); ok {
 				_ = bm.Close()
 			}
-			compactor.db.lru.Delete(oldKlogPath)
+			compactor.db.lru.Remove(oldKlogPath)
 		}
 
 		if bm, ok := compactor.db.lru.Get(oldVlogPath); ok {
 			if bm, ok := bm.(*blockmanager.BlockManager); ok {
 				_ = bm.Close()
 			}
-			compactor.db.lru.Delete(oldVlogPath)
+			compactor.db.lru.Remove(oldVlogPath)
 		}
 
 		_ = os.Remove(oldKlogPath)
@@ -576,13 +576,13 @@ func (compactor *Compactor) compactSSTables(sstables []*SSTable, sourceLevelIdx,
 		return fmt.Errorf("failed to open final VLog block manager: %w", err)
 	}
 
-	compactor.db.lru.Put(klogFinalPath, klogBm, func(key, value interface{}) {
+	compactor.db.lru.Put(klogFinalPath, klogBm, func(key string, value interface{}) {
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
 		}
 	})
 
-	compactor.db.lru.Put(vlogFinalPath, vlogBm, func(key, value interface{}) {
+	compactor.db.lru.Put(vlogFinalPath, vlogBm, func(key string, value interface{}) {
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
 		}
@@ -1121,13 +1121,13 @@ func (compactor *Compactor) redistributeToLevel(tables []*SSTable, targetLevelId
 	targetLevel.sstables.Store(&newSSTables)
 	atomic.AddInt64(&targetLevel.currentSize, newSSTable.Size)
 
-	compactor.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
+	compactor.db.lru.Put(klogPath, klogBm, func(key string, value interface{}) {
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
 		}
 	})
 
-	compactor.db.lru.Put(vlogPath, vlogBm, func(key, value interface{}) {
+	compactor.db.lru.Put(vlogPath, vlogBm, func(key string, value interface{}) {
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
 		}
@@ -1181,14 +1181,14 @@ func (compactor *Compactor) removeSSTablesFromLevel(tablesToRemove []*SSTable, l
 			if bm, ok := bm.(*blockmanager.BlockManager); ok {
 				_ = bm.Close()
 			}
-			compactor.db.lru.Delete(klogPath)
+			compactor.db.lru.Remove(klogPath)
 		}
 
 		if bm, ok := compactor.db.lru.Get(vlogPath); ok {
 			if bm, ok := bm.(*blockmanager.BlockManager); ok {
 				_ = bm.Close()
 			}
-			compactor.db.lru.Delete(vlogPath)
+			compactor.db.lru.Remove(vlogPath)
 		}
 
 		_ = os.Remove(klogPath)
@@ -1244,7 +1244,7 @@ func getOrOpenBM(db *DB, path string) (*blockmanager.BlockManager, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to open block manager: %w", err)
 		}
-		db.lru.Put(path, bm, func(key, value interface{}) {
+		db.lru.Put(path, bm, func(key string, value interface{}) {
 			if bm, ok := value.(*blockmanager.BlockManager); ok {
 				_ = bm.Close()
 			}

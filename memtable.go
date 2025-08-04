@@ -41,7 +41,7 @@ func (memtable *Memtable) replay(activeTxns *[]*Txn) error {
 			return fmt.Errorf("failed to open WAL block manager: %w", err)
 		}
 
-		memtable.db.lru.Put(memtable.wal.path, walBm, func(key, value interface{}) {
+		memtable.db.lru.Put(memtable.wal.path, walBm, func(key string, value interface{}) {
 			if bm, ok := value.(*blockmanager.BlockManager); ok {
 				_ = bm.Close()
 			}

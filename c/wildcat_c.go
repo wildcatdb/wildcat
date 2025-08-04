@@ -34,8 +34,6 @@ typedef struct {
     int level_count;
     int level_multiplier;
     int block_manager_lru_size;
-    double block_manager_lru_evict_ratio;
-    double block_manager_lru_access_weight;
     int permission;
     int bloom_filter;
     int max_compaction_concurrency;
@@ -126,8 +124,6 @@ func fromCOptions(copts *C.wildcat_opts_t) *wildcat.Options {
 		LevelCount:                           int(copts.level_count),
 		LevelMultiplier:                      int(copts.level_multiplier),
 		BlockManagerLRUSize:                  int(copts.block_manager_lru_size),
-		BlockManagerLRUEvictRatio:            float64(copts.block_manager_lru_evict_ratio),
-		BlockManagerLRUAccesWeight:           float64(copts.block_manager_lru_access_weight),
 		Permission:                           os.FileMode(copts.permission),
 		BloomFilter:                          copts.bloom_filter != 0,
 		MaxCompactionConcurrency:             int(copts.max_compaction_concurrency),

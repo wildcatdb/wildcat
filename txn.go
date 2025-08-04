@@ -397,7 +397,7 @@ func (txn *Txn) NewIterator(asc bool) (*MergeIterator, error) {
 					if err != nil {
 						continue
 					}
-					txn.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
+					txn.db.lru.Put(klogPath, klogBm, func(key string, value interface{}) {
 						if bm, ok := value.(*blockmanager.BlockManager); ok {
 							_ = bm.Close()
 						}
@@ -492,7 +492,7 @@ func (txn *Txn) NewRangeIterator(startKey []byte, endKey []byte, asc bool) (*Mer
 					if err != nil {
 						continue
 					}
-					txn.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
+					txn.db.lru.Put(klogPath, klogBm, func(key string, value interface{}) {
 						if bm, ok := value.(*blockmanager.BlockManager); ok {
 							_ = bm.Close()
 						}
@@ -583,7 +583,7 @@ func (txn *Txn) NewPrefixIterator(prefix []byte, asc bool) (*MergeIterator, erro
 					if err != nil {
 						continue
 					}
-					txn.db.lru.Put(klogPath, klogBm, func(key, value interface{}) {
+					txn.db.lru.Put(klogPath, klogBm, func(key string, value interface{}) {
 						if bm, ok := value.(*blockmanager.BlockManager); ok {
 							_ = bm.Close()
 						}
@@ -650,7 +650,7 @@ func (txn *Txn) appendWal() error {
 				continue
 			}
 
-			txn.db.lru.Put(walPath, walBm, func(key, value interface{}) {
+			txn.db.lru.Put(walPath, walBm, func(key string, value interface{}) {
 				if bm, ok := value.(*blockmanager.BlockManager); ok {
 					_ = bm.Close()
 				}
@@ -671,7 +671,7 @@ func (txn *Txn) appendWal() error {
 			strings.Contains(err.Error(), "bad file descriptor")
 
 		if needsReopen {
-			txn.db.lru.Delete(walPath)
+			txn.db.lru.Remove(walPath)
 
 			walBm, err := blockmanager.Open(walPath, os.O_WRONLY|os.O_APPEND,
 				txn.db.opts.Permission, blockmanager.SyncOption(txn.db.opts.SyncOption))
@@ -684,7 +684,7 @@ func (txn *Txn) appendWal() error {
 				continue
 			}
 
-			txn.db.lru.Put(walPath, walBm, func(key, value interface{}) {
+			txn.db.lru.Put(walPath, walBm, func(key string, value interface{}) {
 				if bm, ok := value.(*blockmanager.BlockManager); ok {
 					_ = bm.Close()
 				}

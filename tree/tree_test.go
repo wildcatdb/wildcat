@@ -27,10 +27,8 @@ import (
 )
 
 func TestBTreeBasicInsertSearch(t *testing.T) {
-	// Clean up any previous test file
 	_ = os.Remove("btree_test.db")
 
-	// Create block manager
 	bm, err := blockmanager.Open("btree_test.db", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644, blockmanager.SyncNone)
 	if err != nil {
 		t.Fatalf("failed to create block manager: %v", err)

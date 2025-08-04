@@ -23,9 +23,9 @@ import (
 	"sort"
 )
 
-const ReservedMetadataBlockID = 2 // Reserved block ID for metadata
+const ReservedMetadataBlockID = 2
 
-// BTree represents the tree.  An append only immutable B-tree implementation optimized for range and prefix iteration.
+// BTree is the main struct for the b-tree
 type BTree struct {
 	blockManager BlockManager // Block manager for storing nodes
 	metadata     *Metadata    // Metadata of the B-tree
@@ -38,7 +38,7 @@ type Metadata struct {
 	Extra       interface{} // Extra metadata, can be any type
 }
 
-// BlockManager interface matches your existing implementation
+// BlockManager interface defines methods for managing blocks of data
 type BlockManager interface {
 	Append(data []byte) (int64, error)
 	Read(blockID int64) ([]byte, int64, error)
@@ -90,6 +90,7 @@ func Open(blockManager BlockManager, order int, extraMeta interface{}) (*BTree, 
 	// Try to load existing metadata first
 	err := bt.loadMetadata()
 	if err != nil {
+
 		// File doesn't exist or is empty - create new tree
 		return bt.createNewTree(extraMeta, order)
 	} else {
