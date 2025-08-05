@@ -1203,6 +1203,30 @@ func TestGetLatestTimestamp(t *testing.T) {
 	}
 }
 
+func BenchmarkIterator(b *testing.B) {
+	sl := New()
+	now := time.Now().UnixNano()
+
+	// Prepopulate the skip list
+	for i := 0; i < 10000; i++ {
+		key := []byte(fmt.Sprintf("key-%05d", i))
+		value := []byte(fmt.Sprintf("value-%d", i))
+		sl.Put(key, value, now+int64(i))
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+
+		it, _ := sl.NewIterator(nil, now+10000)
+		for {
+			_, _, _, exists := it.Next()
+			if !exists {
+				break
+			}
+		}
+	}
+}
+
 func BenchmarkPrefixIterator(b *testing.B) {
 	sl := New()
 	now := time.Now().UnixNano()
@@ -1255,13 +1279,17 @@ func BenchmarkRangeIterator(b *testing.B) {
 
 func BenchmarkSkipListPut(b *testing.B) {
 	sl := New()
-	now := time.Now().UnixNano()
+	keys := make([][]byte, b.N)
+	values := make([][]byte, b.N)
+	for i := 0; i < b.N; i++ {
+		keys[i] = []byte(fmt.Sprintf("key-%d", i))
+		values[i] = []byte(fmt.Sprintf("value-%d", i))
+	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		key := []byte(fmt.Sprintf("key-%d", i))
-		value := []byte(fmt.Sprintf("value-%d", i))
-		sl.Put(key, value, now+int64(i))
+		now := time.Now().UnixNano()
+		sl.Put(keys[i], values[i], now)
 	}
 }
 

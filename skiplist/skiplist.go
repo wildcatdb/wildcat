@@ -19,9 +19,7 @@ import (
 	"bytes"
 	"errors"
 	"math/rand"
-	"sync"
 	"sync/atomic"
-	"time"
 	"unsafe"
 )
 
@@ -45,25 +43,22 @@ type ValueVersion struct {
 	Data      []byte           // Value data
 	Timestamp int64            // Version timestamp
 	Type      ValueVersionType // Type of version (write or delete)
-	Next      *ValueVersion    // Pointer to the previous version (linked list)
+	Next      unsafe.Pointer   // Atomic pointer to the previous version
 }
 
 // Node represents a node in the skip list
 type Node struct {
-	forward  [MaxLevel]unsafe.Pointer // array of atomic pointers to Node
-	backward unsafe.Pointer           // atomic pointer to the previous node
-	key      []byte                   // key used for searches
-	versions unsafe.Pointer           // atomic pointer to the head of version chain
-	mutex    sync.RWMutex             // mutex for version chain updates
+	forward  [MaxLevel]unsafe.Pointer // Array of atomic pointers to Node
+	backward unsafe.Pointer           // Atomic pointer to the previous node
+	key      []byte                   // Key used for searches
+	versions unsafe.Pointer           // Atomic pointer to the head of version chain
 }
 
 // SkipList represents a concurrent skip list data structure with MVCC
 type SkipList struct {
-	header     *Node         // special header node
-	level      atomic.Value  // current maximum level of the list (atomic)
-	rng        *rand.Rand    // random number generator with its own lock
-	rngMutex   sync.Mutex    // mutex for the random number generator
-	comparator KeyComparator // user-provided comparator function
+	header     *Node         // Special header node
+	level      atomic.Value  // Current maximum level of the list (atomic)
+	comparator KeyComparator // User-provided comparator function
 }
 
 // Iterator provides a bidirectional iterator for the skip list with snapshot isolation
@@ -125,7 +120,6 @@ func New() *SkipList {
 
 // NewWithComparator creates a new concurrent skip list with a custom key comparator
 func NewWithComparator(cmp KeyComparator) *SkipList {
-	// Create header node
 	header := &Node{
 		key: []byte{},
 	}
@@ -135,10 +129,8 @@ func NewWithComparator(cmp KeyComparator) *SkipList {
 		header.forward[i] = nil
 	}
 
-	// Create the skip list
 	sl := &SkipList{
 		header:     header,
-		rng:        rand.New(rand.NewSource(time.Now().UnixNano())),
 		comparator: cmp,
 	}
 
@@ -155,14 +147,11 @@ func (sl *SkipList) getLevel() int {
 
 // randomLevel generates a random level for a new node
 func (sl *SkipList) randomLevel() int {
-	sl.rngMutex.Lock()
-	defer sl.rngMutex.Unlock()
-
-	lvl := 1
-	for sl.rng.Float64() < p && lvl < MaxLevel {
-		lvl++
+	level := 1
+	for rand.Float64() < p && level < MaxLevel {
+		level++
 	}
-	return lvl
+	return level
 }
 
 // getLatestVersion atomically returns the latest version of a node
@@ -180,14 +169,10 @@ func (n *Node) findVisibleVersion(readTimestamp int64) *ValueVersion {
 		return nil
 	}
 
-	// Use read lock to protect version chain traversal
-	n.mutex.RLock()
-	defer n.mutex.RUnlock()
-
-	// Get the latest version
+	// Get the latest version atomically
 	version := n.getLatestVersion()
 
-	// Find the latest version that is visible at the read timestamp
+	// Traverse the version chain atomically
 	for version != nil {
 		if version.Timestamp <= readTimestamp {
 			// Check if it's a delete version
@@ -198,8 +183,8 @@ func (n *Node) findVisibleVersion(readTimestamp int64) *ValueVersion {
 			// Found a valid version
 			return version
 		}
-		// Try older version
-		version = version.Next
+		// Try older version - atomic load
+		version = atomicLoadVersion(&version.Next)
 	}
 
 	// No visible version found
@@ -208,25 +193,24 @@ func (n *Node) findVisibleVersion(readTimestamp int64) *ValueVersion {
 
 // addVersion adds a new version to the node
 func (n *Node) addVersion(data []byte, timestamp int64, versionType ValueVersionType) {
-	// Create new version
 	newVersion := &ValueVersion{
 		Data:      data,
 		Timestamp: timestamp,
 		Type:      versionType,
 	}
 
-	// Use write lock to protect version chain updates
-	n.mutex.Lock()
-	defer n.mutex.Unlock()
+	for {
+		currentHead := n.getLatestVersion()
 
-	// Get the current head of the version chain
-	currentHead := n.getLatestVersion()
+		atomicStoreVersion(&newVersion.Next, currentHead)
 
-	// Set the next pointer of the new version to the current head
-	newVersion.Next = currentHead
-
-	// Atomically update the head of the version chain
-	atomic.StorePointer(&n.versions, unsafe.Pointer(newVersion))
+		// Try to atomically update the head of the version chain
+		if atomic.CompareAndSwapPointer(&n.versions, unsafe.Pointer(currentHead), unsafe.Pointer(newVersion)) {
+			// Success - the new version is now the head
+			break
+		}
+		// Retry if CAS failed (another thread modified the chain)
+	}
 }
 
 // Get retrieves a value from the skip list given a key and a read timestamp
@@ -235,10 +219,8 @@ func (sl *SkipList) Get(searchKey []byte, readTimestamp int64) ([]byte, int64, b
 	var curr *Node
 	var currPtr unsafe.Pointer
 
-	// Start at the header node
 	prev = sl.header
 
-	// Get current level
 	currentLevel := sl.getLevel()
 
 	// For each level, starting at the highest level in the list
@@ -249,6 +231,7 @@ func (sl *SkipList) Get(searchKey []byte, readTimestamp int64) ([]byte, int64, b
 
 		// Traverse the current level
 		for curr != nil {
+
 			// If the current key is greater or equal, stop traversing this level
 			if sl.comparator(curr.key, searchKey) >= 0 {
 				break
@@ -293,12 +276,10 @@ func (sl *SkipList) Get(searchKey []byte, readTimestamp int64) ([]byte, int64, b
 
 // Put inserts or updates a value in the skip list with the given key
 func (sl *SkipList) Put(searchKey []byte, newValue []byte, writeTimestamp int64) {
-	var retry bool
 	var topLevel int
 	var existingNode *Node
 
 	for {
-		retry = false
 		existingNode = nil
 		var update [MaxLevel]*Node
 		var prev *Node
@@ -308,6 +289,7 @@ func (sl *SkipList) Put(searchKey []byte, newValue []byte, writeTimestamp int64)
 		prev = sl.header
 		currentLevel := sl.getLevel()
 
+		// Navigate to insertion point
 		for i := currentLevel - 1; i >= 0; i-- {
 			currPtr = atomic.LoadPointer(&prev.forward[i])
 			curr = (*Node)(currPtr)
@@ -323,6 +305,7 @@ func (sl *SkipList) Put(searchKey []byte, newValue []byte, writeTimestamp int64)
 			update[i] = prev
 		}
 
+		// Check for existing key at level 0
 		currPtr = atomic.LoadPointer(&prev.forward[0])
 		curr = (*Node)(currPtr)
 
@@ -341,23 +324,28 @@ func (sl *SkipList) Put(searchKey []byte, newValue []byte, writeTimestamp int64)
 			update[0] = prev
 		}
 
+		// If key exists, add new version atomically
 		if existingNode != nil {
 			existingNode.addVersion(newValue, writeTimestamp, Write)
 			return
 		}
 
+		// Generate random level once
 		if topLevel == 0 {
 			topLevel = sl.randomLevel()
 		}
 
+		// Update skip list level if necessary
 		if topLevel > currentLevel {
 			for i := currentLevel; i < topLevel; i++ {
 				update[i] = sl.header
 			}
-			newLevel := topLevel
-			sl.level.CompareAndSwap(currentLevel, newLevel)
+
+			// Atomic level update
+			sl.level.CompareAndSwap(currentLevel, topLevel)
 		}
 
+		// Create new node
 		keyClone := make([]byte, len(searchKey))
 		copy(keyClone, searchKey)
 
@@ -366,22 +354,26 @@ func (sl *SkipList) Put(searchKey []byte, newValue []byte, writeTimestamp int64)
 		}
 		newNode.addVersion(newValue, writeTimestamp, Write)
 
+		// Insert node at all levels atomically
+		insertSuccess := true
 		for i := 0; i < topLevel; i++ {
 			for {
 				next := update[i]
 				if next == nil {
-					retry = true
+					insertSuccess = false
 					break
 				}
 
 				nextPtr := atomic.LoadPointer(&next.forward[i])
 				nextNode := (*Node)(nextPtr)
 
+				// Set new node's forward pointer
 				atomic.StorePointer(&newNode.forward[i], unsafe.Pointer(nextNode))
 
+				// Try to insert atomically
 				if atomic.CompareAndSwapPointer(&next.forward[i], nextPtr, unsafe.Pointer(newNode)) {
 					if i == 0 {
-						// Update backward pointer for level 0
+						// Update backward pointer for level 0 atomically
 						if nextNode != nil {
 							atomic.StorePointer(&nextNode.backward, unsafe.Pointer(newNode))
 						}
@@ -389,18 +381,19 @@ func (sl *SkipList) Put(searchKey []byte, newValue []byte, writeTimestamp int64)
 					}
 					break
 				}
-				retry = true
+				// CAS failed, need to retry entire operation
+				insertSuccess = false
 				break
 			}
-			if retry {
+			if !insertSuccess {
 				break
 			}
 		}
 
-		if retry {
-			continue
+		if insertSuccess {
+			return
 		}
-		return
+		// Retry if insertion failed due to concurrent modifications
 	}
 }
 
@@ -411,7 +404,6 @@ func (sl *SkipList) Delete(searchKey []byte, deleteTimestamp int64) bool {
 	var curr *Node
 	var currPtr unsafe.Pointer
 
-	// Start at the header node
 	prev = sl.header
 
 	// Get current level
@@ -425,6 +417,7 @@ func (sl *SkipList) Delete(searchKey []byte, deleteTimestamp int64) bool {
 
 		// Traverse the current level
 		for curr != nil {
+
 			// If the current key is greater or equal, stop traversing this level
 			if sl.comparator(curr.key, searchKey) >= 0 {
 				break
@@ -443,10 +436,10 @@ func (sl *SkipList) Delete(searchKey []byte, deleteTimestamp int64) bool {
 
 	// Search for the node at level 0
 	for curr != nil {
+
 		// Check if we found the key
 		cmp := sl.comparator(curr.key, searchKey)
 		if cmp == 0 {
-			// Add a delete version
 			curr.addVersion(nil, deleteTimestamp, Delete)
 			return true
 		}
@@ -467,10 +460,10 @@ func (sl *SkipList) Delete(searchKey []byte, deleteTimestamp int64) bool {
 // NewIterator creates a new iterator starting at the given key
 // If startKey is nil, the iterator starts at the beginning of the list
 func (sl *SkipList) NewIterator(startKey []byte, readTimestamp int64) (*Iterator, error) {
-	// Start at the header node
 	curr := sl.header
 
 	if startKey != nil && len(startKey) > 0 {
+
 		// Traverse to find the node right before the start key
 		for i := sl.getLevel() - 1; i >= 0; i-- {
 			for {
@@ -618,7 +611,6 @@ func (it *Iterator) Peek() ([]byte, []byte, int64, bool) {
 // GetMin retrieves the minimum key-value pair from the skip list
 // Returns the key, value, and a boolean indicating success
 func (sl *SkipList) GetMin(readTimestamp int64) ([]byte, []byte, bool) {
-	// Start at the header node
 	curr := sl.header
 
 	// Get the first node at level 0
@@ -649,7 +641,6 @@ func (sl *SkipList) GetMin(readTimestamp int64) ([]byte, []byte, bool) {
 // GetMax retrieves the maximum key-value pair from the skip list
 // Returns the key, value, and a boolean indicating success
 func (sl *SkipList) GetMax(readTimestamp int64) ([]byte, []byte, bool) {
-	// Start at the header node
 	curr := sl.header
 	var lastVisible *Node
 	var lastVisibleVersion *ValueVersion
@@ -684,9 +675,8 @@ func (sl *SkipList) GetMax(readTimestamp int64) ([]byte, []byte, bool) {
 
 // Count returns the number of entries visible at the given timestamp
 func (sl *SkipList) Count(readTimestamp int64) int {
-	// Start at the header node
 	curr := sl.header
-	count := 0
+	count := int64(0) // Use int64 for atomic operations
 
 	// Traverse all nodes at level 0
 	currPtr := atomic.LoadPointer(&curr.forward[0])
@@ -696,7 +686,7 @@ func (sl *SkipList) Count(readTimestamp int64) int {
 		// Check if this node has a visible version at the given timestamp
 		version := curr.findVisibleVersion(readTimestamp)
 		if version != nil && version.Type != Delete {
-			count++
+			atomic.AddInt64(&count, 1)
 		}
 
 		// Move to the next node
@@ -704,14 +694,13 @@ func (sl *SkipList) Count(readTimestamp int64) int {
 		curr = (*Node)(currPtr)
 	}
 
-	return count
+	return int(atomic.LoadInt64(&count))
 }
 
 // DeleteCount returns the number of delete operations visible at the given timestamp
 func (sl *SkipList) DeleteCount(readTimestamp int64) int {
-	// Start at the header node
 	curr := sl.header
-	count := 0
+	count := int64(0)
 
 	// Traverse all nodes at level 0
 	currPtr := atomic.LoadPointer(&curr.forward[0])
@@ -721,7 +710,7 @@ func (sl *SkipList) DeleteCount(readTimestamp int64) int {
 		// Check if this node has a visible version at the given timestamp
 		version := curr.findVisibleVersion(readTimestamp)
 		if version != nil && version.Type == Delete {
-			count++
+			atomic.AddInt64(&count, 1)
 		}
 
 		// Move to the next node
@@ -729,7 +718,7 @@ func (sl *SkipList) DeleteCount(readTimestamp int64) int {
 		curr = (*Node)(currPtr)
 	}
 
-	return count
+	return int(atomic.LoadInt64(&count))
 }
 
 // hasPrefix checks if the key has the specified prefix
@@ -759,7 +748,6 @@ func (sl *SkipList) NewPrefixIterator(prefix []byte, readTimestamp int64) (*Pref
 		return nil, errors.New("prefix cannot be nil or empty")
 	}
 
-	// Start at the header node
 	curr := sl.header
 
 	// Traverse to find the first node with the prefix or the position where it would be
@@ -939,6 +927,7 @@ func (it *PrefixIterator) Prev() ([]byte, []byte, int64, bool) {
 	if it.current != nil && it.current != it.SkipList.header {
 		// Check if the key has the required prefix
 		if !hasPrefix(it.current.key, it.prefix) {
+
 			// No more keys with this prefix in the backward direction
 			it.current = nil
 			return nil, nil, 0, false
@@ -1005,7 +994,6 @@ func (it *RangeIterator) Key() []byte {
 
 // ToLast moves the range iterator to the last node within the specified range
 func (it *RangeIterator) ToLast() {
-	// Find the last node within the range
 	var lastValidNode *Node = nil
 
 	// Start from current position and scan forward to find last valid node
@@ -1072,12 +1060,12 @@ func (it *RangeIterator) Next() ([]byte, []byte, int64, bool) {
 		return nil, nil, 0, false
 	}
 
-	// Move to the next node
 	currPtr := atomic.LoadPointer(&it.current.forward[0])
 	it.current = (*Node)(currPtr)
 
 	// Check if we have a valid node and it's within the range
 	if it.current != nil {
+
 		// Check if the key is within the range
 		if !it.SkipList.isInRange(it.current.key, it.startKey, it.endKey) {
 			// We've moved outside the range
@@ -1141,6 +1129,7 @@ func (it *RangeIterator) Prev() ([]byte, []byte, int64, bool) {
 	if it.current != nil && it.current != it.SkipList.header {
 		// Check if the key is within the range
 		if !it.SkipList.isInRange(it.current.key, it.startKey, it.endKey) {
+
 			// We've moved outside the range
 			it.current = nil
 			return nil, nil, 0, false
@@ -1201,10 +1190,8 @@ func (it *RangeIterator) Peek() ([]byte, []byte, int64, bool) {
 func (sl *SkipList) GetLatestTimestamp() int64 {
 	var latestTimestamp int64 = 0
 
-	// Start at the header node
 	curr := sl.header
 
-	// Traverse all nodes at level 0 (bottom level contains all nodes)
 	currPtr := atomic.LoadPointer(&curr.forward[0])
 	curr = (*Node)(currPtr)
 
@@ -1212,9 +1199,17 @@ func (sl *SkipList) GetLatestTimestamp() int64 {
 		// Get the latest version for this node (head of version chain)
 		latestVersion := curr.getLatestVersion()
 
-		// Check if this version has a newer timestamp
-		if latestVersion != nil && latestVersion.Timestamp > latestTimestamp {
-			latestTimestamp = latestVersion.Timestamp
+		// Atomically update latest timestamp if newer
+		if latestVersion != nil {
+			for {
+				currentLatest := atomic.LoadInt64(&latestTimestamp)
+				if latestVersion.Timestamp <= currentLatest {
+					break
+				}
+				if atomic.CompareAndSwapInt64(&latestTimestamp, currentLatest, latestVersion.Timestamp) {
+					break
+				}
+			}
 		}
 
 		// Move to the next node
@@ -1222,7 +1217,7 @@ func (sl *SkipList) GetLatestTimestamp() int64 {
 		curr = (*Node)(currPtr)
 	}
 
-	return latestTimestamp
+	return atomic.LoadInt64(&latestTimestamp)
 }
 
 // ToFirst moves the iterator to the first node in the skip list
@@ -1288,4 +1283,14 @@ func (it *RangeIterator) ToFirst() {
 	}
 
 	it.current = nil
+}
+
+// atomicLoadVersion safely loads a ValueVersion pointer
+func atomicLoadVersion(ptr *unsafe.Pointer) *ValueVersion {
+	return (*ValueVersion)(atomic.LoadPointer(ptr))
+}
+
+// atomicStoreVersion safely stores a ValueVersion pointer
+func atomicStoreVersion(ptr *unsafe.Pointer, version *ValueVersion) {
+	atomic.StorePointer(ptr, unsafe.Pointer(version))
 }
