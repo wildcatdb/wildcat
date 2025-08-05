@@ -140,7 +140,7 @@ func (mi *MergeIterator) initializeIterator(it *iterator) error {
 		}
 
 		if it.ascending {
-			// Find first valid entry with timestamp filtering
+
 			for {
 				key, value, ts, ok := t.Next()
 				if !ok {
@@ -161,7 +161,6 @@ func (mi *MergeIterator) initializeIterator(it *iterator) error {
 			}
 			t.ToLast()
 
-			// Find last valid entry with timestamp filtering
 			for {
 				key, value, ts, ok := t.Peek()
 				if !ok {
@@ -422,16 +421,14 @@ func (mi *MergeIterator) nextAscending() ([]byte, []byte, int64, bool) {
 		return nil, nil, 0, false
 	}
 
-	// Get the iterator with the smallest key
 	current := heap.Pop(&mi.ascendingHeap).(*iterator)
 
-	// Return direct references to avoid allocation
 	key := current.currentKey
 	value := current.currentValue
 	timestamp := current.currentTimestamp
 
 	// Batch process all duplicates with the same key
-	mi.duplicateBuffer = mi.duplicateBuffer[:0] // Reuse buffer
+	mi.duplicateBuffer = mi.duplicateBuffer[:0]
 	for mi.ascendingHeap.Len() > 0 && bytes.Equal(mi.ascendingHeap[0].currentKey, key) {
 		duplicate := heap.Pop(&mi.ascendingHeap).(*iterator)
 		mi.duplicateBuffer = append(mi.duplicateBuffer, duplicate)
@@ -444,7 +441,6 @@ func (mi *MergeIterator) nextAscending() ([]byte, []byte, int64, bool) {
 		putIterator(current)
 	}
 
-	// Advance all duplicate iterators
 	for _, duplicate := range mi.duplicateBuffer {
 		mi.advanceIterator(duplicate)
 		if !duplicate.exhausted {
@@ -466,16 +462,14 @@ func (mi *MergeIterator) nextDescending() ([]byte, []byte, int64, bool) {
 		return nil, nil, 0, false
 	}
 
-	// Get the iterator with the largest key
 	current := heap.Pop(&mi.descendingHeap).(*iterator)
 
-	// Return direct references to avoid allocation
 	key := current.currentKey
 	value := current.currentValue
 	timestamp := current.currentTimestamp
 
 	// Batch process all duplicates with the same key
-	mi.duplicateBuffer = mi.duplicateBuffer[:0] // Reuse buffer
+	mi.duplicateBuffer = mi.duplicateBuffer[:0]
 
 	for mi.descendingHeap.Len() > 0 && bytes.Equal(mi.descendingHeap[0].currentKey, key) {
 		duplicate := heap.Pop(&mi.descendingHeap).(*iterator)
