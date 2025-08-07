@@ -19,7 +19,7 @@ Wildcat is a high-performance embedded key-value database (or storage engine) wr
 - SSTables are immutable BTrees
 - Configurable durability levels `None` (fastest), `Partial` (balanced), `Full` (most durable)
 - Snapshot-isolated MVCC with timestamp-based reads
-- Crash recovery preserves committed transactions and maintains access to incomplete transactions
+- Crash recovery preserves committed transactions and maintains access to incomplete transactions if configured with `RecoverUncommittedTxns`
 - Automatic multi-threaded background compaction with configurable concurrency
 - ACID transaction support with configurable durability guarantees
 - Range, prefix, and full iteration support with bidirectional traversal
