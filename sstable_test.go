@@ -174,7 +174,7 @@ func TestSSTable_ConcurrentAccess(t *testing.T) {
 		}
 	}
 
-	forceManyWrites(t, db, 100)
+	testForceManyWrites(t, db, 100)
 	time.Sleep(500 * time.Millisecond) // Allow background flush to complete
 
 	// Number of concurrent readers and operations per reader
@@ -297,9 +297,10 @@ func TestSSTable_ConcurrentAccess(t *testing.T) {
 	}
 }
 
-// Helper function to force a flush to SSTable by writing many keys
-func forceManyWrites(t *testing.T, db *DB, count int) {
-	// Write enough data to trigger memtable flush
+// forceManyWrites Helper function to force a flush to SSTable by writing many keys
+func testForceManyWrites(t *testing.T, db *DB, count int) {
+
+	// Write enough data to trigger memtable flush(es) for testing
 	for i := 0; i < count; i++ {
 		key := fmt.Sprintf("flush_key%d", i)
 		value := fmt.Sprintf("flush_value%d", i)
@@ -311,19 +312,6 @@ func forceManyWrites(t *testing.T, db *DB, count int) {
 			t.Fatalf("Failed to insert data for flushing: %v", err)
 		}
 	}
-}
-
-// Helper function to check if a byte slice starts with a prefix
-func startsWith(data, prefix []byte) bool {
-	if len(data) < len(prefix) {
-		return false
-	}
-	for i := 0; i < len(prefix); i++ {
-		if data[i] != prefix[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func TestSSTable_MVCCWithMultipleVersions(t *testing.T) {

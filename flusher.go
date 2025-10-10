@@ -29,8 +29,9 @@ func newFlusher(db *DB) *Flusher {
 
 // queueMemtable queues the current active memtable for flushing to disk.
 func (flusher *Flusher) queueMemtable() error {
+	currentMemtable := flusher.db.memtable.Load().(*Memtable)
 
-	if atomic.LoadInt64(&flusher.lastQueuedId) == flusher.db.memtable.Load().(*Memtable).id {
+	if atomic.LoadInt64(&flusher.lastQueuedId) == currentMemtable.id {
 		return nil // Already queued
 	}
 
@@ -54,17 +55,16 @@ func (flusher *Flusher) queueMemtable() error {
 
 	// Add the new WAL to the LRU cache
 	flusher.db.lru.Put(newMemtable.wal.path, walBm, func(key string, value interface{}) {
+
 		// Close the block manager when evicted from LRU
 		if bm, ok := value.(*blockmanager.BlockManager); ok {
 			_ = bm.Close()
 		}
 	})
 
-	lastMemt := flusher.db.memtable.Load().(*Memtable)
-
 	// Push the current memtable to the immutable queue
-	flusher.immutable.Enqueue(lastMemt)
-	atomic.StoreInt64(&flusher.lastQueuedId, lastMemt.id)
+	flusher.immutable.Enqueue(currentMemtable)
+	atomic.StoreInt64(&flusher.lastQueuedId, currentMemtable.id)
 
 	flusher.db.log(fmt.Sprintf("Flusher: new active memtable created with WAL %s", newMemtable.wal.path))
 
