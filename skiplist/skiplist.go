@@ -39,16 +39,16 @@ const (
 
 // ValueVersion represents a single version of a value in MVCC
 type ValueVersion struct {
-	Data      []byte                   // Value data
-	Timestamp int64                    // Version timestamp
-	Type      ValueVersionType         // Type of version (write or delete)
+	Data      []byte                       // Value data
+	Timestamp int64                        // Version timestamp
+	Type      ValueVersionType             // Type of version (write or delete)
 	Next      atomic.Pointer[ValueVersion] // Atomic pointer to the previous version
 }
 
 // Node represents a node in the skip list
 type Node struct {
 	forward  [MaxLevel]atomic.Pointer[Node] // Array of atomic pointers to Node
-	backward atomic.Pointer[Node]          // Atomic pointer to the previous node
+	backward atomic.Pointer[Node]           // Atomic pointer to the previous node
 	key      []byte                         // Key used for searches
 	versions atomic.Pointer[ValueVersion]   // Atomic pointer to the head of version chain
 }
@@ -158,7 +158,9 @@ func (n *Node) getLatestVersion() *ValueVersion {
 	return n.versions.Load()
 }
 
-// findVisibleVersion finds the latest version visible at the given timestamp
+// findVisibleVersion finds the latest version visible at the given timestamp.
+// Returns the version even if it is a Delete marker. Callers must check
+// version.Type to distinguish between live values and tombstones.
 func (n *Node) findVisibleVersion(readTimestamp int64) *ValueVersion {
 	if n == nil {
 		return nil
@@ -170,12 +172,6 @@ func (n *Node) findVisibleVersion(readTimestamp int64) *ValueVersion {
 	// Traverse the version chain atomically
 	for version != nil {
 		if version.Timestamp <= readTimestamp {
-			// Check if it's a delete version
-			if version.Type == Delete {
-				// This key was deleted at or before our read timestamp
-				return nil
-			}
-			// Found a valid version
 			return version
 		}
 		// Try older version - atomic load
@@ -382,58 +378,110 @@ func (sl *SkipList) Put(searchKey []byte, newValue []byte, writeTimestamp int64)
 }
 
 // Delete adds a delete marker in the version chain at the given timestamp
-// This follows MVCC principles where deletes are just another version
+// This follows MVCC principles where deletes are just another version.
+// If the key does not exist in the skip list, a new node is created with
+// a delete marker to ensure the tombstone is persisted through flush to SSTable.
 func (sl *SkipList) Delete(searchKey []byte, deleteTimestamp int64) bool {
-	var prev *Node
-	var curr *Node
+	topLevel := 0
 
-	prev = sl.header
+	for {
+		var existingNode *Node
+		var update [MaxLevel]*Node
+		var prev *Node
+		var curr *Node
 
-	// Get current level
-	currentLevel := sl.getLevel()
+		prev = sl.header
+		currentLevel := sl.getLevel()
 
-	// For each level, starting at the highest level in the list
-	for i := currentLevel - 1; i >= 0; i-- {
-		// Get the next node (atomic load)
-		curr = prev.forward[i].Load()
+		// Navigate to the target position
+		for i := currentLevel - 1; i >= 0; i-- {
+			curr = prev.forward[i].Load()
+			for curr != nil {
+				if sl.comparator(curr.key, searchKey) >= 0 {
+					break
+				}
+				prev = curr
+				curr = curr.forward[i].Load()
+			}
+			update[i] = prev
+		}
 
-		// Traverse the current level
+		// Check for existing key at level 0
+		curr = prev.forward[0].Load()
 		for curr != nil {
-
-			// If the current key is greater or equal, stop traversing this level
-			if sl.comparator(curr.key, searchKey) >= 0 {
+			cmp := sl.comparator(curr.key, searchKey)
+			if cmp == 0 {
+				existingNode = curr
 				break
 			}
-
-			// Move forward
+			if cmp > 0 {
+				break
+			}
 			prev = curr
-			curr = curr.forward[i].Load()
+			curr = curr.forward[0].Load()
+			update[0] = prev
 		}
-	}
 
-	// Check bottom level for exact match
-	curr = prev.forward[0].Load()
-
-	// Search for the node at level 0
-	for curr != nil {
-
-		// Check if we found the key
-		cmp := sl.comparator(curr.key, searchKey)
-		if cmp == 0 {
-			curr.addVersion(nil, deleteTimestamp, Delete)
+		// If key exists, add delete version to existing node
+		if existingNode != nil {
+			existingNode.addVersion(nil, deleteTimestamp, Delete)
 			return true
 		}
 
-		// If we've gone too far, the key doesn't exist
-		if cmp > 0 {
-			return false
+		// Key not found — insert a new node with a Delete version.
+		// This is essential for keys previously flushed to SSTables:
+		// without a tombstone in the memtable, the delete would be lost on flush.
+		if topLevel == 0 {
+			topLevel = sl.randomLevel()
 		}
 
-		// Move to the next node
-		curr = curr.forward[0].Load()
-	}
+		if topLevel > currentLevel {
+			for i := currentLevel; i < topLevel; i++ {
+				update[i] = sl.header
+			}
+			sl.level.CompareAndSwap(currentLevel, topLevel)
+		}
 
-	return false
+		keyClone := make([]byte, len(searchKey))
+		copy(keyClone, searchKey)
+
+		newNode := &Node{
+			key: keyClone,
+		}
+		newNode.addVersion(nil, deleteTimestamp, Delete)
+
+		insertSuccess := true
+		for i := 0; i < topLevel; i++ {
+			for {
+				next := update[i]
+				if next == nil {
+					insertSuccess = false
+					break
+				}
+				nextNode := next.forward[i].Load()
+				newNode.forward[i].Store(nextNode)
+				if next.forward[i].CompareAndSwap(nextNode, newNode) {
+					if i == 0 {
+						if nextNode != nil {
+							nextNode.backward.Store(newNode)
+						}
+						newNode.backward.Store(next)
+					}
+					break
+				}
+				insertSuccess = false
+				break
+			}
+			if !insertSuccess {
+				break
+			}
+		}
+
+		if insertSuccess {
+			return true
+		}
+		// Retry if insertion failed due to concurrent modifications
+	}
 }
 
 // NewIterator creates a new iterator starting at the given key
@@ -504,8 +552,9 @@ func (it *Iterator) Value() ([]byte, int64, bool) {
 	return nil, 0, false
 }
 
-// Next moves the iterator to the next node and returns the key and visible version
-// Returns nil, nil, false if there are no more nodes or no visible versions
+// Next moves the iterator to the next node and returns the key and visible version.
+// Delete markers are returned with nil data so callers (e.g. the flusher) can
+// persist tombstones. Nodes with no visible version are skipped.
 func (it *Iterator) Next() ([]byte, []byte, int64, bool) {
 	if it.current == nil {
 		return nil, nil, 0, false
@@ -517,7 +566,7 @@ func (it *Iterator) Next() ([]byte, []byte, int64, bool) {
 	// Return the key and visible version at the read timestamp
 	if it.current != nil {
 		version := it.current.findVisibleVersion(it.readTimestamp)
-		if version != nil && version.Type != Delete {
+		if version != nil {
 			return it.current.key, version.Data, version.Timestamp, true
 		}
 
@@ -641,6 +690,48 @@ func (sl *SkipList) GetMax(readTimestamp int64) ([]byte, []byte, bool) {
 
 	// No visible nodes found
 	return nil, nil, false
+}
+
+// GetMinKey retrieves the minimum key from the skip list, including delete markers.
+// This is used for SSTable metadata to ensure tombstone keys are included in the key range.
+func (sl *SkipList) GetMinKey(readTimestamp int64) ([]byte, bool) {
+	curr := sl.header
+	curr = curr.forward[0].Load()
+
+	for curr != nil {
+		version := curr.findVisibleVersion(readTimestamp)
+		if version != nil {
+			return curr.key, true
+		}
+		curr = curr.forward[0].Load()
+	}
+
+	return nil, false
+}
+
+// GetMaxKey retrieves the maximum key from the skip list, including delete markers.
+// This is used for SSTable metadata to ensure tombstone keys are included in the key range.
+func (sl *SkipList) GetMaxKey(readTimestamp int64) ([]byte, bool) {
+	curr := sl.header
+	var lastKey []byte
+
+	for {
+		curr = curr.forward[0].Load()
+		if curr == nil {
+			break
+		}
+
+		version := curr.findVisibleVersion(readTimestamp)
+		if version != nil {
+			lastKey = curr.key
+		}
+	}
+
+	if lastKey != nil {
+		return lastKey, true
+	}
+
+	return nil, false
 }
 
 // Count returns the number of entries visible at the given timestamp
@@ -1227,4 +1318,3 @@ func (it *RangeIterator) ToFirst() {
 
 	it.current = nil
 }
-

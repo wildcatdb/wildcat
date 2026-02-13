@@ -1188,11 +1188,12 @@ func TestGetLatestTimestamp(t *testing.T) {
 		t.Errorf("Expected latest timestamp %d after delete with older timestamp, got %d", baseTS+400, latestTS)
 	}
 
-	// Delete non-existent key should not affect timestamp
+	// Delete non-existent key now inserts a tombstone node, updating the timestamp.
+	// This is required so tombstones for previously-flushed keys are persisted to SSTables.
 	sl.Delete([]byte("nonexistent"), baseTS+500)
 	latestTS = sl.GetLatestTimestamp()
-	if latestTS != baseTS+400 {
-		t.Errorf("Expected latest timestamp %d after deleting non-existent key, got %d", baseTS+400, latestTS)
+	if latestTS != baseTS+500 {
+		t.Errorf("Expected latest timestamp %d after deleting non-existent key, got %d", baseTS+500, latestTS)
 	}
 
 	// Add another write operation with the highest timestamp yet

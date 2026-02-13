@@ -3,15 +3,16 @@ package wildcat
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"sync/atomic"
+
 	"github.com/wildcatdb/wildcat/v2/blockmanager"
 	"github.com/wildcatdb/wildcat/v2/bloomfilter"
 	"github.com/wildcatdb/wildcat/v2/tree"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
-	"os"
-	"strconv"
-	"strings"
-	"sync/atomic"
 )
 
 // SSTable represents a sorted string table
@@ -144,7 +145,7 @@ func (sst *SSTable) get(key []byte, readTimestamp int64) ([]byte, int64) {
 
 	// Only return if this version is visible to the read timestamp
 	if entry.Timestamp <= readTimestamp {
-		if entry.ValueBlockID == -1 {
+		if entry.ValueBlockID == TombstoneBlockID {
 			return nil, entry.Timestamp // Return nil value but valid timestamp for deletion
 		}
 		v := sst.readValueFromVLog(entry.ValueBlockID)

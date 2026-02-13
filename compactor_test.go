@@ -2217,3 +2217,236 @@ func TestCompactor_CooldownPeriod(t *testing.T) {
 	}
 	db.compactor.scoreLock.Unlock()
 }
+
+// TestZombieEntry_DirectReproduction verifies that a deleted key does not reappear
+// when SSTables containing the original value and its tombstone are compacted separately.
+// This is a regression test for the zombie entry bug in size-tiered compaction.
+func TestZombieEntry_DirectReproduction(t *testing.T) {
+	dir, err := os.MkdirTemp("", "zombie_direct_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	opts := &Options{
+		Directory:       dir,
+		WriteBufferSize: 8 * 1024,
+		SyncOption:      SyncNone,
+		STDOutLogging:   true,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	targetKey := []byte("direct_zombie_key")
+	originalValue := []byte("alive")
+
+	// Step 1: Create SSTable A with target key
+	err = db.Update(func(txn *Txn) error {
+		return txn.Put(targetKey, originalValue)
+	})
+	if err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+	db.ForceFlush()
+	time.Sleep(200 * time.Millisecond)
+
+	// Get SSTable A reference
+	levels := db.levels.Load()
+	l1 := (*levels)[0]
+	sstablesL1 := l1.sstables.Load()
+	sstA := (*sstablesL1)[0]
+	sstAId := sstA.Id
+	t.Logf("SSTable A: ID=%d, Size=%d", sstA.Id, sstA.Size)
+
+	// Step 2: Delete key and create SSTable B with lots of padding
+	err = db.Update(func(txn *Txn) error {
+		if err := txn.Delete(targetKey); err != nil {
+			return err
+		}
+		// Add padding to make it larger (creates size disparity)
+		for i := 0; i < 100; i++ {
+			if err := txn.Put([]byte(fmt.Sprintf("pad%04d", i)), make([]byte, 50)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Delete/padding failed: %v", err)
+	}
+	db.ForceFlush()
+	time.Sleep(200 * time.Millisecond)
+
+	// Find SSTable B
+	sstablesL1 = l1.sstables.Load()
+	var sstB *SSTable
+	var sstBId int64
+	for _, sst := range *sstablesL1 {
+		if sst.Id != sstAId && (sstB == nil || sst.Size > sstB.Size) {
+			sstB = sst
+			sstBId = sst.Id
+		}
+	}
+	t.Logf("SSTable B: ID=%d, Size=%d", sstB.Id, sstB.Size)
+	t.Logf("Size ratio B/A: %.2f (threshold is 1.5)", float64(sstB.Size)/float64(sstA.Size))
+
+	// Step 3: Compact SSTable A alone to L2
+	sstablesL1 = l1.sstables.Load()
+	var freshA *SSTable
+	for _, sst := range *sstablesL1 {
+		if sst.Id == sstAId {
+			freshA = sst
+			break
+		}
+	}
+	atomic.StoreInt32(&freshA.isMerging, 1)
+	err = db.compactor.compactSSTables([]*SSTable{freshA}, 0, 1)
+	if err != nil {
+		t.Fatalf("Compaction of A failed: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// Step 4: Compact SSTable B alone to L2
+	sstablesL1 = l1.sstables.Load()
+	var freshB *SSTable
+	for _, sst := range *sstablesL1 {
+		if sst.Id == sstBId {
+			freshB = sst
+			break
+		}
+	}
+	if freshB != nil {
+		atomic.StoreInt32(&freshB.isMerging, 1)
+		db.compactor.compactSSTables([]*SSTable{freshB}, 0, 1)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// Step 5: Check for zombie - the deleted key must NOT reappear
+	var val []byte
+	var getErr error
+	db.View(func(txn *Txn) error {
+		val, getErr = txn.Get(targetKey)
+		return nil
+	})
+
+	if getErr == nil && val != nil {
+		t.Errorf("ZOMBIE DETECTED: Expected key to be deleted, but got: %s", string(val))
+	} else {
+		t.Logf("PASS: Key correctly remains deleted after separate compactions")
+	}
+}
+
+// TestZombieEntry_SizeTieredCompactionVulnerability tests a more realistic scenario with
+// multiple SSTables where size-tiered grouping could separate tombstones from their targets.
+func TestZombieEntry_SizeTieredCompactionVulnerability(t *testing.T) {
+	dir, err := os.MkdirTemp("", "zombie_entry_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	opts := &Options{
+		Directory:                           dir,
+		WriteBufferSize:                     512,
+		SyncOption:                          SyncNone,
+		CompactionSizeThreshold:             4,
+		CompactionBatchSize:                 2,
+		CompactionSizeTieredSimilarityRatio: 1.5,
+		CompactionCooldownPeriod:            50 * time.Millisecond,
+		CompactorTickerInterval:             100 * time.Millisecond,
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	targetKey := []byte("zombie_key")
+	originalValue := []byte("i_should_be_dead")
+
+	// Step 1: Create small SSTable with target key
+	db.Update(func(txn *Txn) error {
+		return txn.Put(targetKey, originalValue)
+	})
+	db.ForceFlush()
+	time.Sleep(100 * time.Millisecond)
+
+	levels := db.levels.Load()
+	level1 := (*levels)[0]
+	sstableA := (*level1.sstables.Load())[0]
+	t.Logf("SSTable A: ID=%d, Size=%d bytes", sstableA.Id, sstableA.Size)
+
+	// Step 2: Create medium-sized SSTables (similar size group)
+	for batch := 0; batch < 3; batch++ {
+		db.Update(func(txn *Txn) error {
+			for i := 0; i < 20; i++ {
+				key := []byte(fmt.Sprintf("medium_batch%d_key%03d", batch, i))
+				value := make([]byte, 50)
+				txn.Put(key, value)
+			}
+			return nil
+		})
+		db.ForceFlush()
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Step 3: Delete target key and create LARGE SSTable
+	db.Update(func(txn *Txn) error {
+		txn.Delete(targetKey)
+		for i := 0; i < 150; i++ {
+			key := []byte(fmt.Sprintf("padding_key_%04d", i))
+			value := make([]byte, 100)
+			txn.Put(key, value)
+		}
+		return nil
+	})
+	db.ForceFlush()
+	time.Sleep(100 * time.Millisecond)
+
+	// Find large SSTable with tombstone
+	sstablesAfterLarge := level1.sstables.Load()
+	var sstableLarge *SSTable
+	for _, sst := range *sstablesAfterLarge {
+		if sst.Id != sstableA.Id && (sstableLarge == nil || sst.Size > sstableLarge.Size) {
+			sstableLarge = sst
+		}
+	}
+
+	ratio := float64(sstableLarge.Size) / float64(sstableA.Size)
+	t.Logf("SSTable Large: ID=%d, Size=%d bytes", sstableLarge.Id, sstableLarge.Size)
+	t.Logf("Size ratio: %.2f (threshold is 1.5)", ratio)
+
+	// Step 4: Compact large SSTable (with tombstone) to L2
+	atomic.StoreInt32(&sstableLarge.isMerging, 1)
+	db.compactor.compactSSTables([]*SSTable{sstableLarge}, 0, 1)
+	time.Sleep(200 * time.Millisecond)
+
+	// Step 5: Compact small SSTable (with value) to L2
+	sstablesL1 := level1.sstables.Load()
+	for _, sst := range *sstablesL1 {
+		if sst.Id == sstableA.Id {
+			atomic.StoreInt32(&sst.isMerging, 1)
+			db.compactor.compactSSTables([]*SSTable{sst}, 0, 1)
+			break
+		}
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// Step 6: Check for zombie - the deleted key must NOT reappear
+	var val []byte
+	db.View(func(txn *Txn) error {
+		val, _ = txn.Get(targetKey)
+		return nil
+	})
+
+	if val != nil {
+		t.Errorf("ZOMBIE DETECTED: Expected key to be deleted, but got: %s", string(val))
+	} else {
+		t.Logf("PASS: Key correctly remains deleted after size-disparate compactions")
+	}
+}

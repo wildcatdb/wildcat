@@ -22,6 +22,14 @@ import (
 	"math"
 )
 
+const (
+	LowFPRThreshold      = 0.01 // False positive rate below which extra space is allocated
+	LowFPRSizeMultiplier = 1.2  // Multiplier for extra space when FPR is below threshold (20% extra)
+	SmallDataThreshold   = 8    // Byte count below which extra hash mixing is applied
+	HashMixRightShift    = 13   // Right shift for hash mixing of small data
+	HashMixLeftShift     = 37   // Left shift for hash mixing of small data
+)
+
 // BloomFilter struct represents a Bloom filter
 type BloomFilter struct {
 	Bitset    []int8      // Bitset, each int8 can store 8 bits
@@ -43,9 +51,8 @@ func New(expectedItems uint, falsePositiveRate float64) (*BloomFilter, error) {
 
 	// Calculate optimal size and add a safety margin for low FPR cases
 	size := optimalSize(expectedItems, falsePositiveRate)
-	if falsePositiveRate < 0.01 {
-		// Add 20% extra space for very low FPR targets
-		size = uint(float64(size) * 1.2)
+	if falsePositiveRate < LowFPRThreshold {
+		size = uint(float64(size) * LowFPRSizeMultiplier)
 	}
 
 	// Make size a prime number (or at least odd) to improve hash distribution
@@ -133,9 +140,8 @@ func (bf *BloomFilter) getTwoHashes(data []byte) (uint64, uint64, error) {
 
 	// It's possible for small data inputs, FNV hashes might be too similar..
 	// Thus we add an extra mixing step if data is small
-	if len(data) < 8 {
-		// Mix h1 and h2 with different patterns
-		h2 = h2 ^ (h1 >> 13) ^ (h1 << 37)
+	if len(data) < SmallDataThreshold {
+		h2 = h2 ^ (h1 >> HashMixRightShift) ^ (h1 << HashMixLeftShift)
 	}
 
 	return h1, h2, nil
