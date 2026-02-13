@@ -19,7 +19,6 @@ import (
 	"errors"
 	"github.com/wildcatdb/wildcat/v2/queue"
 	"sync/atomic"
-	"unsafe"
 )
 
 // entry is a buffer entry
@@ -29,9 +28,9 @@ type entry struct {
 
 // Buffer is a concurrent lock-free buffer with ID/Slot-based access
 type Buffer struct {
-	buffer         []unsafe.Pointer // Slice of pointers to entries
-	capacity       int64            // Maximum capacity of the buffer
-	availableSlots *queue.Queue     // Queue of available slots for new entries
+	buffer         []atomic.Pointer[entry] // Slice of pointers to entries
+	capacity       int64                    // Maximum capacity of the buffer
+	availableSlots *queue.Queue             // Queue of available slots for new entries
 }
 
 // New creates a new atomic buffer with the specified capacity
@@ -41,7 +40,7 @@ func New(capacity int) (*Buffer, error) {
 	}
 
 	buff := &Buffer{
-		buffer:         make([]unsafe.Pointer, capacity),
+		buffer:         make([]atomic.Pointer[entry], capacity),
 		capacity:       int64(capacity),
 		availableSlots: queue.New(),
 	}
@@ -80,7 +79,7 @@ func (buff *Buffer) Add(item interface{}) (int64, error) {
 		value: item,
 	}
 
-	atomic.StorePointer(&buff.buffer[slot], unsafe.Pointer(e))
+	buff.buffer[slot].Store(e)
 
 	return slot, nil
 }
@@ -91,12 +90,11 @@ func (buff *Buffer) Get(slot int64) (interface{}, error) {
 		return nil, errors.New("invalid slot ID")
 	}
 
-	ptr := atomic.LoadPointer(&buff.buffer[slot])
-	if ptr == nil {
+	e := buff.buffer[slot].Load()
+	if e == nil {
 		return nil, errors.New("item not found")
 	}
 
-	e := (*entry)(ptr)
 	return e.value, nil
 }
 
@@ -106,13 +104,13 @@ func (buff *Buffer) Remove(slot int64) error {
 		return errors.New("invalid slot ID")
 	}
 
-	ptr := atomic.LoadPointer(&buff.buffer[slot])
-	if ptr == nil {
+	e := buff.buffer[slot].Load()
+	if e == nil {
 		return errors.New("item not found")
 	}
 
 	// Atomically clear the slot using CompareAndSwap to prevent race conditions
-	if !atomic.CompareAndSwapPointer(&buff.buffer[slot], ptr, nil) {
+	if !buff.buffer[slot].CompareAndSwap(e, nil) {
 		// Another thread removed the item between our load and CAS
 		return errors.New("item was already removed")
 	}
@@ -130,16 +128,15 @@ func (buff *Buffer) Update(slot int64, newValue interface{}) error {
 	}
 
 	newEntry := &entry{value: newValue}
-	newPtr := unsafe.Pointer(newEntry)
 
 	// Keep trying until we successfully update or determine slot is empty
 	for {
-		oldPtr := atomic.LoadPointer(&buff.buffer[slot])
-		if oldPtr == nil {
+		oldEntry := buff.buffer[slot].Load()
+		if oldEntry == nil {
 			return errors.New("item not found")
 		}
 
-		if atomic.CompareAndSwapPointer(&buff.buffer[slot], oldPtr, newPtr) {
+		if buff.buffer[slot].CompareAndSwap(oldEntry, newEntry) {
 			return nil
 		}
 		// If CAS failed, retry - another thread might have updated the slot
@@ -172,9 +169,8 @@ func (buff *Buffer) List() []interface{} {
 	var result []interface{}
 
 	for i := int64(0); i < buff.capacity; i++ {
-		ptr := atomic.LoadPointer(&buff.buffer[i])
-		if ptr != nil {
-			e := (*entry)(ptr)
+		e := buff.buffer[i].Load()
+		if e != nil {
 			result = append(result, e.value)
 		}
 	}
@@ -187,9 +183,8 @@ func (buff *Buffer) List() []interface{} {
 // *This is not atomic across all slots
 func (buff *Buffer) ForEach(f func(slot int64, item interface{}) bool) {
 	for i := int64(0); i < buff.capacity; i++ {
-		ptr := atomic.LoadPointer(&buff.buffer[i])
-		if ptr != nil {
-			e := (*entry)(ptr)
+		e := buff.buffer[i].Load()
+		if e != nil {
 			if !f(i, e.value) {
 				return
 			}
