@@ -16,6 +16,7 @@
 package tree
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/wildcatdb/wildcat/v2/blockmanager"
 	"math/rand"
@@ -246,6 +247,229 @@ func TestBTreeLargeDataset(t *testing.T) {
 		if val.(string) != expectedValue {
 			t.Errorf("key %s: expected %s, got %s", key, expectedValue, val.(string))
 		}
+	}
+}
+
+func TestBTreeBulkPutSortedEmpty(t *testing.T) {
+	tree, cleanup := setupTestBTree(t, 3)
+	defer cleanup()
+
+	err := tree.BulkPutSorted(nil)
+	if err != nil {
+		t.Fatalf("BulkPutSorted(nil) failed: %v", err)
+	}
+	err = tree.BulkPutSorted([]KeyValue{})
+	if err != nil {
+		t.Fatalf("BulkPutSorted(empty) failed: %v", err)
+	}
+	// Tree should still be empty (Get any key -> not found)
+	_, ok, _ := tree.Get([]byte("x"))
+	if ok {
+		t.Error("expected no key after empty bulk load")
+	}
+}
+
+func TestBTreeBulkPutSortedNonEmptyTreeReturnsError(t *testing.T) {
+	tree, cleanup := setupTestBTree(t, 3)
+	defer cleanup()
+
+	_ = tree.Put([]byte("a"), "a")
+	entries := []KeyValue{{Key: []byte("b"), Value: "b"}}
+	err := tree.BulkPutSorted(entries)
+	if err == nil {
+		t.Error("expected BulkPutSorted on non-empty tree to return error")
+	}
+}
+
+func TestBTreeBulkPutSortedOneEntry(t *testing.T) {
+	tree, cleanup := setupTestBTree(t, 3)
+	defer cleanup()
+
+	entries := []KeyValue{
+		{Key: []byte("k"), Value: "v"},
+	}
+	err := tree.BulkPutSorted(entries)
+	if err != nil {
+		t.Fatalf("BulkPutSorted failed: %v", err)
+	}
+	val, ok, err := tree.Get([]byte("k"))
+	if err != nil || !ok {
+		t.Fatalf("Get failed: ok=%v err=%v", ok, err)
+	}
+	if val.(string) != "v" {
+		t.Errorf("expected value v, got %v", val)
+	}
+	iter, err := tree.Iterator(true)
+	if err != nil {
+		t.Fatalf("Iterator failed: %v", err)
+	}
+	if !iter.Valid() || string(iter.Key()) != "k" || iter.Value().(string) != "v" {
+		t.Errorf("iterator: key=%s value=%v", iter.Key(), iter.Value())
+	}
+}
+
+func TestBTreeBulkPutSortedOneLeafFull(t *testing.T) {
+	// order 3 -> max 5 keys per leaf; fill one leaf
+	tree, cleanup := setupTestBTree(t, 3)
+	defer cleanup()
+
+	var entries []KeyValue
+	for i := 0; i < 5; i++ {
+		k := fmt.Sprintf("key%02d", i)
+		entries = append(entries, KeyValue{Key: []byte(k), Value: k + "_val"})
+	}
+	err := tree.BulkPutSorted(entries)
+	if err != nil {
+		t.Fatalf("BulkPutSorted failed: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		k := fmt.Sprintf("key%02d", i)
+		val, ok, err := tree.Get([]byte(k))
+		if err != nil || !ok {
+			t.Errorf("Get(%s) failed: ok=%v err=%v", k, ok, err)
+			continue
+		}
+		if val.(string) != k+"_val" {
+			t.Errorf("Get(%s): expected %s_val, got %v", k, k, val)
+		}
+	}
+	n := 0
+	iter, _ := tree.Iterator(true)
+	for iter.Valid() {
+		n++
+		iter.Next()
+	}
+	if n != 5 {
+		t.Errorf("expected 5 keys from iterator, got %d", n)
+	}
+}
+
+func TestBTreeBulkPutSortedMultipleLeaves(t *testing.T) {
+	tree, cleanup := setupTestBTree(t, 3)
+	defer cleanup()
+
+	// More than one leaf: order 3 -> 5 keys/leaf; use 12 keys -> 3 leaves (5+5+2)
+	var entries []KeyValue
+	for i := 0; i < 12; i++ {
+		k := fmt.Sprintf("k%03d", i)
+		entries = append(entries, KeyValue{Key: []byte(k), Value: k})
+	}
+	err := tree.BulkPutSorted(entries)
+	if err != nil {
+		t.Fatalf("BulkPutSorted failed: %v", err)
+	}
+	// Get at boundaries
+	for _, idx := range []int{0, 4, 5, 9, 10, 11} {
+		k := fmt.Sprintf("k%03d", idx)
+		val, ok, err := tree.Get([]byte(k))
+		if err != nil || !ok {
+			t.Errorf("Get(%s) failed: ok=%v err=%v", k, ok, err)
+			continue
+		}
+		if val.(string) != k {
+			t.Errorf("Get(%s): got %v", k, val)
+		}
+	}
+	// Range iterator [k002, k008] inclusive
+	iter, err := tree.RangeIterator([]byte("k002"), []byte("k008"), true)
+	if err != nil {
+		t.Fatalf("RangeIterator failed: %v", err)
+	}
+	var got []string
+	for iter.Valid() {
+		got = append(got, string(iter.Key()))
+		iter.Next()
+	}
+	expected := []string{"k002", "k003", "k004", "k005", "k006", "k007", "k008"}
+	if len(got) != len(expected) {
+		t.Errorf("range: expected %v, got %v", expected, got)
+	} else {
+		for i := range expected {
+			if got[i] != expected[i] {
+				t.Errorf("range at %d: expected %s, got %s", i, expected[i], got[i])
+			}
+		}
+	}
+	// Prefix iterator (if keys share prefix)
+	prefixIter, err := tree.PrefixIterator([]byte("k01"), true)
+	if err != nil {
+		t.Fatalf("PrefixIterator failed: %v", err)
+	}
+	got = nil
+	for prefixIter.Valid() {
+		got = append(got, string(prefixIter.Key()))
+		prefixIter.Next()
+	}
+	expectedPrefix := []string{"k010", "k011"}
+	if len(got) != len(expectedPrefix) {
+		t.Errorf("prefix: expected %v, got %v", expectedPrefix, got)
+	} else {
+		for i := range expectedPrefix {
+			if got[i] != expectedPrefix[i] {
+				t.Errorf("prefix at %d: expected %s, got %s", i, expectedPrefix[i], got[i])
+			}
+		}
+	}
+}
+
+func TestBTreeBulkPutSortedVsSequentialPut(t *testing.T) {
+	order := 5
+	N := 50
+	var sortedEntries []KeyValue
+	for i := 0; i < N; i++ {
+		k := fmt.Sprintf("key_%04d", i)
+		sortedEntries = append(sortedEntries, KeyValue{Key: []byte(k), Value: "val_" + k})
+	}
+	// Already sorted
+
+	// Tree 1: BulkPutSorted
+	tree1, cleanup1 := setupTestBTree(t, order)
+	defer cleanup1()
+	err := tree1.BulkPutSorted(sortedEntries)
+	if err != nil {
+		t.Fatalf("BulkPutSorted failed: %v", err)
+	}
+
+	// Tree 2: sequential Put (same order)
+	tree2, cleanup2 := setupTestBTree(t, order)
+	defer cleanup2()
+	for _, e := range sortedEntries {
+		err := tree2.Put(e.Key, e.Value)
+		if err != nil {
+			t.Fatalf("Put failed: %v", err)
+		}
+	}
+
+	// Same keys and values
+	for i := 0; i < N; i++ {
+		k := fmt.Sprintf("key_%04d", i)
+		key := []byte(k)
+		v1, ok1, _ := tree1.Get(key)
+		v2, ok2, _ := tree2.Get(key)
+		if !ok1 || !ok2 {
+			t.Errorf("key %s: bulk ok=%v seq ok=%v", k, ok1, ok2)
+			continue
+		}
+		if v1.(string) != v2.(string) {
+			t.Errorf("key %s: bulk=%v seq=%v", k, v1, v2)
+		}
+	}
+
+	// Same iteration order (ascending)
+	it1, _ := tree1.Iterator(true)
+	it2, _ := tree2.Iterator(true)
+	for it1.Valid() && it2.Valid() {
+		if !bytes.Equal(it1.Key(), it2.Key()) {
+			t.Errorf("iterator key mismatch: %s vs %s", it1.Key(), it2.Key())
+		}
+		if it1.Value().(string) != it2.Value().(string) {
+			t.Errorf("iterator value mismatch at key %s", it1.Key())
+		}
+		it1.Next()
+		it2.Next()
+	}
+	if it1.Valid() != it2.Valid() {
+		t.Error("iterator length mismatch")
 	}
 }
 
