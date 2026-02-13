@@ -2,12 +2,13 @@ package wildcat
 
 import (
 	"fmt"
-	"github.com/wildcatdb/wildcat/v2/blockmanager"
-	"github.com/wildcatdb/wildcat/v2/bloomfilter"
-	"github.com/wildcatdb/wildcat/v2/skiplist"
 	"os"
 	"sync/atomic"
 	"time"
+
+	"github.com/wildcatdb/wildcat/v2/blockmanager"
+	"github.com/wildcatdb/wildcat/v2/bloomfilter"
+	"github.com/wildcatdb/wildcat/v2/skiplist"
 )
 
 // A memtable contains a skiplist and a write-ahead log (WAL) for durability, they are paired.
@@ -140,7 +141,7 @@ func (memtable *Memtable) replay(activeTxns *[]*Txn) error {
 
 // createBloomFilter Creates a bloom filter from skiplist
 func (memtable *Memtable) createBloomFilter(entries int64) (*bloomfilter.BloomFilter, error) {
-	maxPossibleTs := time.Now().UnixNano() + 10000000000 // Far in the future
+	maxPossibleTs := time.Now().UnixNano() + FarFutureOffsetNs
 	iter, err := memtable.skiplist.NewIterator(nil, maxPossibleTs)
 	if err != nil {
 		return nil, err

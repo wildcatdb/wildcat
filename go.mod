@@ -1,6 +1,6 @@
 module github.com/wildcatdb/wildcat/v2
 
-go 1.25
+go 1.26
 
 require go.mongodb.org/mongo-driver v1.17.3
 

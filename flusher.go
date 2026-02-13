@@ -2,13 +2,14 @@ package wildcat
 
 import (
 	"fmt"
+	"os"
+	"sync/atomic"
+	"time"
+
 	"github.com/wildcatdb/wildcat/v2/blockmanager"
 	"github.com/wildcatdb/wildcat/v2/queue"
 	"github.com/wildcatdb/wildcat/v2/skiplist"
 	"github.com/wildcatdb/wildcat/v2/tree"
-	"os"
-	"sync/atomic"
-	"time"
 )
 
 // Flusher is responsible for queuing and flushing memtables to disk
@@ -108,7 +109,7 @@ func (flusher *Flusher) backgroundProcess() {
 
 // flushMemtable flushes a memtable to disk as an SSTable at level 1
 func (flusher *Flusher) flushMemtable(memt *Memtable) error {
-	maxTimestamp := time.Now().UnixNano() + 10000000000 // Far in the future
+	maxTimestamp := time.Now().UnixNano() + FarFutureOffsetNs
 	entryCount := memt.skiplist.Count(maxTimestamp)
 	deletionCount := memt.skiplist.DeleteCount(maxTimestamp)
 
@@ -128,19 +129,22 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 	sstable := &SSTable{
 		Id:    flusher.db.sstIdGenerator.nextID(),
 		db:    flusher.db,
-		Level: 1, // We always flush to level 1, L0 is active memtable
+		Level: FlushTargetLevel,
 	}
 
 	// Use max timestamp to ensure we get all keys when finding min/max
-	maxPossibleTs := time.Now().UnixNano() + 10000000000 // Far in the future
+	maxPossibleTs := time.Now().UnixNano() + FarFutureOffsetNs
 
 	// Min and max keys are for sstable metadata
-	minKey, _, exists := memt.skiplist.GetMin(maxPossibleTs)
+	// Use GetMinKey/GetMaxKey to include tombstone (delete) keys in the range,
+	// ensuring the SSTable bounds correctly cover all entries for proper lookups
+	// and overlap detection during compaction.
+	minKey, exists := memt.skiplist.GetMinKey(maxPossibleTs)
 	if exists {
 		sstable.Min = minKey
 	}
 
-	maxKey, _, exists := memt.skiplist.GetMax(maxPossibleTs)
+	maxKey, exists := memt.skiplist.GetMaxKey(maxPossibleTs)
 	if exists {
 		sstable.Max = maxKey
 	}
@@ -151,7 +155,8 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 	sstable.Size = atomic.LoadInt64(&memt.size)
 
 	// Use max timestamp to get a count of all entries regardless of version
-	sstable.EntryCount = memt.skiplist.Count(maxPossibleTs)
+	// Include both writes and deletions for accurate entry count
+	sstable.EntryCount = memt.skiplist.Count(maxPossibleTs) + memt.skiplist.DeleteCount(maxPossibleTs)
 	sstable.Timestamp = latestTs
 
 	// We create new sstable files (.klog and .vlog) here
@@ -217,7 +222,7 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 				Value: &KLogEntry{
 					Key:          key,
 					Timestamp:    ts,
-					ValueBlockID: -1, // Special marker for deletion
+					ValueBlockID: TombstoneBlockID,
 				},
 			})
 		} else {

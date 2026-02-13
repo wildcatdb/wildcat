@@ -18,10 +18,6 @@ package wildcat
 import (
 	"errors"
 	"fmt"
-	"github.com/wildcatdb/wildcat/v2/blockmanager"
-	"github.com/wildcatdb/wildcat/v2/buffer"
-	"github.com/wildcatdb/wildcat/v2/lru"
-	"github.com/wildcatdb/wildcat/v2/skiplist"
 	"math"
 	"os"
 	"sort"
@@ -30,6 +26,11 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+
+	"github.com/wildcatdb/wildcat/v2/blockmanager"
+	"github.com/wildcatdb/wildcat/v2/buffer"
+	"github.com/wildcatdb/wildcat/v2/lru"
+	"github.com/wildcatdb/wildcat/v2/skiplist"
 )
 
 // SyncOption is a block manager sync option that can be set for a *DB instance.
@@ -51,6 +52,22 @@ const (
 	VLogExtension     = ".vlog"    // Extension for VLog files
 	IDGSTFileName     = "idgstate" // Filename for ID generator state
 	TempFileExtension = ".tmp"     // Temporary file extension for intermediate files
+)
+
+// Internal constants used across the codebase to avoid magic numbers
+const (
+	FarFutureOffsetNs              = 10_000_000_000 // 10 seconds in nanoseconds; added to time.Now().UnixNano() to scan all versions
+	TombstoneBlockID         int64 = -1             // Sentinel ValueBlockID indicating a deletion marker in KLogEntry
+	FlushTargetLevel               = 1              // Memtables are always flushed to level 1 (L0 is the active memtable)
+	CompactionScoreThreshold       = 1.0            // Compaction score above which a level triggers compaction
+	PartitioningJobPriority        = 10.0           // Highest priority value for last-level partitioning jobs
+	MinSSTablesToCompact           = 2              // Minimum number of SSTables required to perform a compaction
+	SizeTieredMaxLevelIdx          = 2              // Levels with index < this use size-tiered compaction; others use leveled
+	MinLevelsForPartitioning       = 2              // Minimum last-level index required before partitioning is considered
+	MinBTreeOrder                  = 2              // Minimum allowed B-tree order for SSTables
+	BytesPerMB                     = 1024 * 1024    // Bytes in a megabyte, used for human-readable log output
+	JitterFraction                 = 4              // Divides backoff to produce ±25% jitter
+	JitterCoinFlip                 = 2              // Used with rand.Intn for 50/50 jitter direction
 )
 
 // Defaults
@@ -360,7 +377,7 @@ func (opts *Options) setDefaults() error {
 		opts.SSTableBTreeOrder = DefaultSSTableBTreeOrder
 	} else {
 		// Ensure the B-tree order is reasonable
-		if opts.SSTableBTreeOrder < 2 {
+		if opts.SSTableBTreeOrder < MinBTreeOrder {
 			return fmt.Errorf("SSTable B-tree order must be at least 2, got %d", opts.SSTableBTreeOrder)
 		}
 
@@ -743,7 +760,7 @@ func (db *DB) reinstate() error {
 	db.log(fmt.Sprintf("Recovered %d transactions total, %d committed, %d active",
 		len(globalTxnMap), committedCount, activeCount))
 	db.log(fmt.Sprintf("Active memtable size: %d bytes with %d entries",
-		atomic.LoadInt64(&activeMemt.size), activeMemt.skiplist.Count(time.Now().UnixNano()+10000000000)))
+		atomic.LoadInt64(&activeMemt.size), activeMemt.skiplist.Count(time.Now().UnixNano()+FarFutureOffsetNs)))
 
 	return nil
 }
@@ -877,6 +894,15 @@ func (db *DB) ForceFlush() error {
 		return errors.New("database is nil")
 	}
 
+	// Wait for any in-progress background flush to complete.
+	// The background flusher may have already dequeued a memtable from the
+	// immutable queue but not yet finished writing its SSTable. Without this
+	// wait, ForceFlush could return before that SSTable is added to level 1,
+	// causing reads to miss recently committed data.
+	for db.flusher.flushing.Load() != nil {
+		time.Sleep(1 * time.Millisecond)
+	}
+
 	// Force flush all memtables
 	err := db.flusher.flushMemtable(db.memtable.Load().(*Memtable))
 	if err != nil {
@@ -908,19 +934,19 @@ func (db *DB) totalEntries() int64 {
 
 	// Count entries in the active memtable
 	if activeMemt, ok := db.memtable.Load().(*Memtable); ok {
-		total += int64(activeMemt.skiplist.Count(time.Now().UnixNano() + 10000000000))
+		total += int64(activeMemt.skiplist.Count(time.Now().UnixNano() + FarFutureOffsetNs))
 	}
 
 	// We need to check if we have a flushing memtable
 	fmem := db.flusher.flushing.Load()
 	if fmem != nil {
-		total += int64(fmem.skiplist.Count(time.Now().UnixNano() + 10000000000))
+		total += int64(fmem.skiplist.Count(time.Now().UnixNano() + FarFutureOffsetNs))
 	}
 
 	// Count entries in immutable memtables
 	db.flusher.immutable.ForEach(func(item interface{}) bool {
 		if memt, ok := item.(*Memtable); ok {
-			total += int64(memt.skiplist.Count(time.Now().UnixNano() + 10000000000))
+			total += int64(memt.skiplist.Count(time.Now().UnixNano() + FarFutureOffsetNs))
 		}
 		return true // Continue iteration
 	})
@@ -1021,7 +1047,7 @@ func (db *DB) Stats() string {
 			},
 			Values: []any{
 				atomic.LoadInt64(&db.memtable.Load().(*Memtable).size),
-				db.memtable.Load().(*Memtable).skiplist.Count(time.Now().UnixNano() + 10000000000),
+				db.memtable.Load().(*Memtable).skiplist.Count(time.Now().UnixNano() + FarFutureOffsetNs),
 				db.txnBuffer.Count(), len(db.flusher.immutable.List()), func() int {
 					sstables := 0
 					levels := db.levels.Load()

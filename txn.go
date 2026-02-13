@@ -3,8 +3,6 @@ package wildcat
 import (
 	"errors"
 	"fmt"
-	"github.com/wildcatdb/wildcat/v2/blockmanager"
-	"github.com/wildcatdb/wildcat/v2/tree"
 	"math/rand"
 	"os"
 	"strings"
@@ -12,6 +10,9 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/wildcatdb/wildcat/v2/blockmanager"
+	"github.com/wildcatdb/wildcat/v2/tree"
 )
 
 // Txn represents a transaction in a Wildcat DB instance
@@ -64,8 +65,8 @@ func (db *DB) Begin() (*Txn, error) {
 		}
 
 		// Add jitter (± 25% randomization)
-		jitter := time.Duration(rand.Int63n(int64(sleepTime / 4)))
-		if rand.Intn(2) == 0 {
+		jitter := time.Duration(rand.Int63n(int64(sleepTime / JitterFraction)))
+		if rand.Intn(JitterCoinFlip) == 0 {
 			sleepTime += jitter
 		} else {
 			sleepTime -= jitter
