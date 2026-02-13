@@ -202,6 +202,8 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 
 	flusher.db.log(fmt.Sprintf("Starting to flush memtable to SSTable %d", sstable.Id))
 
+	// Collect (key, KLogEntry) from memtable iterator (sorted by key); then bulk load into B-tree
+	var entries []tree.KeyValue
 	for {
 		key, value, ts, ok := iter.Next()
 		if !ok {
@@ -210,37 +212,34 @@ func (flusher *Flusher) flushMemtable(memt *Memtable) error {
 
 		// Check if this is a deletion marker
 		if value == nil {
-			// Write a deletion marker to the SSTable
-			klogEntry := &KLogEntry{
-				Key:          key,
-				Timestamp:    ts,
-				ValueBlockID: -1, // Special marker for deletion
-			}
-
-			err = t.Put(key, klogEntry) // Insert deletion marker into B-tree
-			if err != nil {
-				return fmt.Errorf("failed to insert deletion marker into B-tree: %w", err)
-			}
+			entries = append(entries, tree.KeyValue{
+				Key: key,
+				Value: &KLogEntry{
+					Key:          key,
+					Timestamp:    ts,
+					ValueBlockID: -1, // Special marker for deletion
+				},
+			})
 		} else {
 			// Viewable value, write it to the VLog
 			id, err := vlogBm.Append(value[:])
 			if err != nil {
 				return fmt.Errorf("failed to write VLog: %w", err)
 			}
-
-			klogEntry := &KLogEntry{
-				Key:          key,
-				Timestamp:    ts,
-				ValueBlockID: id,
-			}
-
-			// Insert the KLog entry into the B-tree
-			err = t.Put(key, klogEntry)
-			if err != nil {
-				return fmt.Errorf("failed to insert KLog entry into B-tree: %w", err)
-			}
+			entries = append(entries, tree.KeyValue{
+				Key: key,
+				Value: &KLogEntry{
+					Key:          key,
+					Timestamp:    ts,
+					ValueBlockID: id,
+				},
+			})
 		}
+	}
 
+	err = t.BulkPutSorted(entries)
+	if err != nil {
+		return fmt.Errorf("failed to bulk insert into B-tree: %w", err)
 	}
 
 	flusher.db.log(fmt.Sprintf("Finished flushing memtable to SSTable %d", sstable.Id))

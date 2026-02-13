@@ -686,6 +686,7 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 
 	var entryCount int64
 	var totalSize int64
+	var entries []tree.KeyValue // collect for bulk load (merge output is sorted by key)
 
 	for {
 		var minKey []byte
@@ -728,7 +729,7 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 			return fmt.Errorf("no valid latest state found for key %s", minKey)
 		}
 
-		// Insert if not a tombstone
+		// Collect entry if not a tombstone (merge output is sorted, so we bulk load at the end)
 		if latest != nil && latest.ValueBlockID != -1 {
 
 			// Read the value from the original VLog
@@ -744,18 +745,13 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 					return fmt.Errorf("failed to write to VLog: %w", err)
 				}
 
-				// Create new KLog entry
+				// Create new KLog entry and collect for bulk load
 				klogEntry := &KLogEntry{
 					Key:          latest.Key,
 					Timestamp:    latest.Timestamp,
 					ValueBlockID: vID,
 				}
-
-				// Insert into new KLog
-				if err := bt.Put(latest.Key, klogEntry); err != nil {
-					return fmt.Errorf("failed to insert into KLog: %w", err)
-				}
-
+				entries = append(entries, tree.KeyValue{Key: latest.Key, Value: klogEntry})
 				entryCount++
 				totalSize += int64(len(latest.Key) + len(val))
 			}
@@ -807,6 +803,12 @@ func (compactor *Compactor) mergeSSTables(sstables []*SSTable, klogBm, vlogBm *b
 					it.hasNext = false
 				}
 			}
+		}
+	}
+
+	if len(entries) > 0 {
+		if err := bt.BulkPutSorted(entries); err != nil {
+			return fmt.Errorf("failed to bulk insert into output KLog: %w", err)
 		}
 	}
 
