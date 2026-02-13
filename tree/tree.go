@@ -19,8 +19,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"go.mongodb.org/mongo-driver/bson"
 	"sort"
+
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 const ReservedMetadataBlockID = 2

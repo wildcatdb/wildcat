@@ -17,42 +17,41 @@ package queue
 
 import (
 	"sync/atomic"
-	"unsafe"
 )
 
 // Node represents a node in the queue
 type Node struct {
 	value interface{}
-	next  unsafe.Pointer // *Node
+	next  atomic.Pointer[Node]
 }
 
 // Queue implements a concurrent non-blocking queue
 type Queue struct {
-	head unsafe.Pointer // *Node
-	tail unsafe.Pointer // *Node
-	size int64          // Atomic counter
+	head atomic.Pointer[Node]
+	tail atomic.Pointer[Node]
+	size int64 // Atomic counter
 }
 
 // New creates a new concurrent queue
 func New() *Queue {
 	node := &Node{}
-	nodePtr := unsafe.Pointer(node)
-	return &Queue{
-		head: nodePtr,
-		tail: nodePtr,
-	}
+	q := &Queue{}
+	q.head.Store(node)
+	q.tail.Store(node)
+	return q
 }
 
 // List returns a slice of all values in the queue
 func (q *Queue) List() []interface{} {
 	var result []interface{}
-	headPtr := atomic.LoadPointer(&q.head)
-	head := (*Node)(headPtr)
-	nextPtr := atomic.LoadPointer(&head.next)
-	for nextPtr != nil {
-		next := (*Node)(nextPtr)
+	head := q.head.Load()
+	if head == nil {
+		return result
+	}
+	next := head.next.Load()
+	for next != nil {
 		result = append(result, next.value)
-		nextPtr = atomic.LoadPointer(&next.next)
+		next = next.next.Load()
 	}
 	return result
 }
@@ -60,26 +59,27 @@ func (q *Queue) List() []interface{} {
 // Enqueue adds a value to the queue
 func (q *Queue) Enqueue(value interface{}) {
 	node := &Node{value: value}
-	nodePtr := unsafe.Pointer(node)
 
 	for {
-		tailPtr := atomic.LoadPointer(&q.tail)
-		tail := (*Node)(tailPtr)
-		nextPtr := atomic.LoadPointer(&tail.next)
+		tail := q.tail.Load()
+		if tail == nil {
+			continue
+		}
+		next := tail.next.Load()
 
 		// Check if tail is consistent
-		if tailPtr == atomic.LoadPointer(&q.tail) {
-			if nextPtr == nil {
+		if tail == q.tail.Load() {
+			if next == nil {
 				// Try to link node at the end of the list
-				if atomic.CompareAndSwapPointer(&tail.next, nil, nodePtr) {
+				if tail.next.CompareAndSwap(nil, node) {
 					// Enqueue is done, try to swing tail to the inserted node
-					atomic.CompareAndSwapPointer(&q.tail, tailPtr, nodePtr)
+					q.tail.CompareAndSwap(tail, node)
 					atomic.AddInt64(&q.size, 1)
 					return
 				}
 			} else {
 				// Tail was not pointing to the last node, try to advance tail
-				atomic.CompareAndSwapPointer(&q.tail, tailPtr, nextPtr)
+				q.tail.CompareAndSwap(tail, next)
 			}
 		}
 	}
@@ -89,28 +89,32 @@ func (q *Queue) Enqueue(value interface{}) {
 // Returns nil if the queue is empty
 func (q *Queue) Dequeue() interface{} {
 	for {
-		headPtr := atomic.LoadPointer(&q.head)
-		tailPtr := atomic.LoadPointer(&q.tail)
-		head := (*Node)(headPtr)
-		nextPtr := atomic.LoadPointer(&head.next)
+		head := q.head.Load()
+		tail := q.tail.Load()
+		if head == nil {
+			continue
+		}
+		next := head.next.Load()
 
 		// Check if head, tail, and next are consistent
-		if headPtr == atomic.LoadPointer(&q.head) {
+		if head == q.head.Load() {
 			// Is queue empty or tail falling behind?
-			if headPtr == tailPtr {
+			if head == tail {
 				// Is queue empty?
-				if nextPtr == nil {
+				if next == nil {
 					return nil // Queue is empty
 				}
 				// Tail is falling behind. Try to advance it
-				atomic.CompareAndSwapPointer(&q.tail, tailPtr, nextPtr)
+				q.tail.CompareAndSwap(tail, next)
 			} else {
 				// Queue is not empty, read value before CAS
-				next := (*Node)(nextPtr)
+				if next == nil {
+					continue
+				}
 				value := next.value
 
 				// Try to swing Head to the next node
-				if atomic.CompareAndSwapPointer(&q.head, headPtr, nextPtr) {
+				if q.head.CompareAndSwap(head, next) {
 					atomic.AddInt64(&q.size, -1) // Decrement counter
 					return value                 // Dequeue is done
 				}
@@ -121,35 +125,39 @@ func (q *Queue) Dequeue() interface{} {
 
 // IsEmpty returns true if the queue is empty
 func (q *Queue) IsEmpty() bool {
-	headPtr := atomic.LoadPointer(&q.head)
-	head := (*Node)(headPtr)
-	return atomic.LoadPointer(&head.next) == nil
+	head := q.head.Load()
+	if head == nil {
+		return true
+	}
+	return head.next.Load() == nil
 }
 
 // Peek returns the value at the front of the queue without removing it
 // Returns nil if the queue is empty
 func (q *Queue) Peek() interface{} {
-	headPtr := atomic.LoadPointer(&q.head)
-	head := (*Node)(headPtr)
-	nextPtr := atomic.LoadPointer(&head.next)
-	if nextPtr == nil {
+	head := q.head.Load()
+	if head == nil {
+		return nil
+	}
+	next := head.next.Load()
+	if next == nil {
 		return nil // Queue is empty
 	}
-	next := (*Node)(nextPtr)
 	return next.value
 }
 
 // ForEach iterates over the queue and applies the function f to each item
 func (q *Queue) ForEach(f func(item interface{}) bool) {
-	headPtr := atomic.LoadPointer(&q.head)
-	head := (*Node)(headPtr)
-	nextPtr := atomic.LoadPointer(&head.next)
-	for nextPtr != nil {
-		next := (*Node)(nextPtr)
+	head := q.head.Load()
+	if head == nil {
+		return
+	}
+	next := head.next.Load()
+	for next != nil {
 		if !f(next.value) {
 			return
 		}
-		nextPtr = atomic.LoadPointer(&next.next)
+		next = next.next.Load()
 	}
 }
 

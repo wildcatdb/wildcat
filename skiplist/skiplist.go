@@ -20,7 +20,6 @@ import (
 	"errors"
 	"math/rand"
 	"sync/atomic"
-	"unsafe"
 )
 
 const MaxLevel = 16
@@ -40,18 +39,18 @@ const (
 
 // ValueVersion represents a single version of a value in MVCC
 type ValueVersion struct {
-	Data      []byte           // Value data
-	Timestamp int64            // Version timestamp
-	Type      ValueVersionType // Type of version (write or delete)
-	Next      unsafe.Pointer   // Atomic pointer to the previous version
+	Data      []byte                   // Value data
+	Timestamp int64                    // Version timestamp
+	Type      ValueVersionType         // Type of version (write or delete)
+	Next      atomic.Pointer[ValueVersion] // Atomic pointer to the previous version
 }
 
 // Node represents a node in the skip list
 type Node struct {
-	forward  [MaxLevel]unsafe.Pointer // Array of atomic pointers to Node
-	backward unsafe.Pointer           // Atomic pointer to the previous node
-	key      []byte                   // Key used for searches
-	versions unsafe.Pointer           // Atomic pointer to the head of version chain
+	forward  [MaxLevel]atomic.Pointer[Node] // Array of atomic pointers to Node
+	backward atomic.Pointer[Node]          // Atomic pointer to the previous node
+	key      []byte                         // Key used for searches
+	versions atomic.Pointer[ValueVersion]   // Atomic pointer to the head of version chain
 }
 
 // SkipList represents a concurrent skip list data structure with MVCC
@@ -124,10 +123,7 @@ func NewWithComparator(cmp KeyComparator) *SkipList {
 		key: []byte{},
 	}
 
-	// Initialize all forward pointers to nil
-	for i := 0; i < MaxLevel; i++ {
-		header.forward[i] = nil
-	}
+	// Initialize all forward pointers to nil (zero value of atomic.Pointer is nil)
 
 	sl := &SkipList{
 		header:     header,
@@ -159,8 +155,7 @@ func (n *Node) getLatestVersion() *ValueVersion {
 	if n == nil {
 		return nil
 	}
-	ptr := atomic.LoadPointer(&n.versions)
-	return (*ValueVersion)(ptr)
+	return n.versions.Load()
 }
 
 // findVisibleVersion finds the latest version visible at the given timestamp
@@ -184,7 +179,7 @@ func (n *Node) findVisibleVersion(readTimestamp int64) *ValueVersion {
 			return version
 		}
 		// Try older version - atomic load
-		version = atomicLoadVersion(&version.Next)
+		version = version.Next.Load()
 	}
 
 	// No visible version found
@@ -202,10 +197,10 @@ func (n *Node) addVersion(data []byte, timestamp int64, versionType ValueVersion
 	for {
 		currentHead := n.getLatestVersion()
 
-		atomicStoreVersion(&newVersion.Next, currentHead)
+		newVersion.Next.Store(currentHead)
 
 		// Try to atomically update the head of the version chain
-		if atomic.CompareAndSwapPointer(&n.versions, unsafe.Pointer(currentHead), unsafe.Pointer(newVersion)) {
+		if n.versions.CompareAndSwap(currentHead, newVersion) {
 			// Success - the new version is now the head
 			break
 		}
@@ -217,7 +212,6 @@ func (n *Node) addVersion(data []byte, timestamp int64, versionType ValueVersion
 func (sl *SkipList) Get(searchKey []byte, readTimestamp int64) ([]byte, int64, bool) {
 	var prev *Node
 	var curr *Node
-	var currPtr unsafe.Pointer
 
 	prev = sl.header
 
@@ -226,8 +220,7 @@ func (sl *SkipList) Get(searchKey []byte, readTimestamp int64) ([]byte, int64, b
 	// For each level, starting at the highest level in the list
 	for i := currentLevel - 1; i >= 0; i-- {
 		// Get the next node (atomic load)
-		currPtr = atomic.LoadPointer(&prev.forward[i])
-		curr = (*Node)(currPtr)
+		curr = prev.forward[i].Load()
 
 		// Traverse the current level
 		for curr != nil {
@@ -239,14 +232,12 @@ func (sl *SkipList) Get(searchKey []byte, readTimestamp int64) ([]byte, int64, b
 
 			// Move forward
 			prev = curr
-			currPtr = atomic.LoadPointer(&curr.forward[i])
-			curr = (*Node)(currPtr)
+			curr = curr.forward[i].Load()
 		}
 	}
 
 	// Check bottom level for exact match
-	currPtr = atomic.LoadPointer(&prev.forward[0])
-	curr = (*Node)(currPtr)
+	curr = prev.forward[0].Load()
 
 	// Search for the node at level 0
 	for curr != nil {
@@ -267,8 +258,7 @@ func (sl *SkipList) Get(searchKey []byte, readTimestamp int64) ([]byte, int64, b
 		}
 
 		// Move to the next node
-		currPtr = atomic.LoadPointer(&curr.forward[0])
-		curr = (*Node)(currPtr)
+		curr = curr.forward[0].Load()
 	}
 
 	return nil, 0, false
@@ -284,30 +274,26 @@ func (sl *SkipList) Put(searchKey []byte, newValue []byte, writeTimestamp int64)
 		var update [MaxLevel]*Node
 		var prev *Node
 		var curr *Node
-		var currPtr unsafe.Pointer
 
 		prev = sl.header
 		currentLevel := sl.getLevel()
 
 		// Navigate to insertion point
 		for i := currentLevel - 1; i >= 0; i-- {
-			currPtr = atomic.LoadPointer(&prev.forward[i])
-			curr = (*Node)(currPtr)
+			curr = prev.forward[i].Load()
 
 			for curr != nil {
 				if sl.comparator(curr.key, searchKey) >= 0 {
 					break
 				}
 				prev = curr
-				currPtr = atomic.LoadPointer(&curr.forward[i])
-				curr = (*Node)(currPtr)
+				curr = curr.forward[i].Load()
 			}
 			update[i] = prev
 		}
 
 		// Check for existing key at level 0
-		currPtr = atomic.LoadPointer(&prev.forward[0])
-		curr = (*Node)(currPtr)
+		curr = prev.forward[0].Load()
 
 		for curr != nil {
 			cmp := sl.comparator(curr.key, searchKey)
@@ -319,8 +305,7 @@ func (sl *SkipList) Put(searchKey []byte, newValue []byte, writeTimestamp int64)
 				break
 			}
 			prev = curr
-			currPtr = atomic.LoadPointer(&curr.forward[0])
-			curr = (*Node)(currPtr)
+			curr = curr.forward[0].Load()
 			update[0] = prev
 		}
 
@@ -364,20 +349,19 @@ func (sl *SkipList) Put(searchKey []byte, newValue []byte, writeTimestamp int64)
 					break
 				}
 
-				nextPtr := atomic.LoadPointer(&next.forward[i])
-				nextNode := (*Node)(nextPtr)
+				nextNode := next.forward[i].Load()
 
 				// Set new node's forward pointer
-				atomic.StorePointer(&newNode.forward[i], unsafe.Pointer(nextNode))
+				newNode.forward[i].Store(nextNode)
 
 				// Try to insert atomically
-				if atomic.CompareAndSwapPointer(&next.forward[i], nextPtr, unsafe.Pointer(newNode)) {
+				if next.forward[i].CompareAndSwap(nextNode, newNode) {
 					if i == 0 {
 						// Update backward pointer for level 0 atomically
 						if nextNode != nil {
-							atomic.StorePointer(&nextNode.backward, unsafe.Pointer(newNode))
+							nextNode.backward.Store(newNode)
 						}
-						atomic.StorePointer(&newNode.backward, unsafe.Pointer(next))
+						newNode.backward.Store(next)
 					}
 					break
 				}
@@ -402,7 +386,6 @@ func (sl *SkipList) Put(searchKey []byte, newValue []byte, writeTimestamp int64)
 func (sl *SkipList) Delete(searchKey []byte, deleteTimestamp int64) bool {
 	var prev *Node
 	var curr *Node
-	var currPtr unsafe.Pointer
 
 	prev = sl.header
 
@@ -412,8 +395,7 @@ func (sl *SkipList) Delete(searchKey []byte, deleteTimestamp int64) bool {
 	// For each level, starting at the highest level in the list
 	for i := currentLevel - 1; i >= 0; i-- {
 		// Get the next node (atomic load)
-		currPtr = atomic.LoadPointer(&prev.forward[i])
-		curr = (*Node)(currPtr)
+		curr = prev.forward[i].Load()
 
 		// Traverse the current level
 		for curr != nil {
@@ -425,14 +407,12 @@ func (sl *SkipList) Delete(searchKey []byte, deleteTimestamp int64) bool {
 
 			// Move forward
 			prev = curr
-			currPtr = atomic.LoadPointer(&curr.forward[i])
-			curr = (*Node)(currPtr)
+			curr = curr.forward[i].Load()
 		}
 	}
 
 	// Check bottom level for exact match
-	currPtr = atomic.LoadPointer(&prev.forward[0])
-	curr = (*Node)(currPtr)
+	curr = prev.forward[0].Load()
 
 	// Search for the node at level 0
 	for curr != nil {
@@ -450,8 +430,7 @@ func (sl *SkipList) Delete(searchKey []byte, deleteTimestamp int64) bool {
 		}
 
 		// Move to the next node
-		currPtr = atomic.LoadPointer(&curr.forward[0])
-		curr = (*Node)(currPtr)
+		curr = curr.forward[0].Load()
 	}
 
 	return false
@@ -467,8 +446,7 @@ func (sl *SkipList) NewIterator(startKey []byte, readTimestamp int64) (*Iterator
 		// Traverse to find the node right before the start key
 		for i := sl.getLevel() - 1; i >= 0; i-- {
 			for {
-				currPtr := atomic.LoadPointer(&curr.forward[i])
-				next := (*Node)(currPtr)
+				next := curr.forward[i].Load()
 				if next == nil || sl.comparator(next.key, startKey) >= 0 {
 					break
 				}
@@ -490,8 +468,7 @@ func (sl *SkipList) NewIterator(startKey []byte, readTimestamp int64) (*Iterator
 func (it *Iterator) ToLast() {
 	// Move to the last node
 	for {
-		currPtr := atomic.LoadPointer(&it.current.forward[0])
-		next := (*Node)(currPtr)
+		next := it.current.forward[0].Load()
 		if next == nil {
 			break
 		}
@@ -535,8 +512,7 @@ func (it *Iterator) Next() ([]byte, []byte, int64, bool) {
 	}
 
 	// Move to the next node
-	currPtr := atomic.LoadPointer(&it.current.forward[0])
-	it.current = (*Node)(currPtr)
+	it.current = it.current.forward[0].Load()
 
 	// Return the key and visible version at the read timestamp
 	if it.current != nil {
@@ -560,8 +536,7 @@ func (it *Iterator) Prev() ([]byte, []byte, int64, bool) {
 	}
 
 	// Move to the previous node
-	currPtr := atomic.LoadPointer(&it.current.backward)
-	it.current = (*Node)(currPtr)
+	it.current = it.current.backward.Load()
 
 	// Return the key and visible version at the read timestamp
 	if it.current != nil && it.current != it.SkipList.header {
@@ -585,16 +560,14 @@ func (it *Iterator) Peek() ([]byte, []byte, int64, bool) {
 
 	// If we're at the header, advance to first valid node
 	if it.current == it.SkipList.header {
-		currPtr := atomic.LoadPointer(&it.current.forward[0])
-		next := (*Node)(currPtr)
+		next := it.current.forward[0].Load()
 
 		for next != nil {
 			version := next.findVisibleVersion(it.readTimestamp)
 			if version != nil && version.Type != Delete {
 				return next.key, version.Data, version.Timestamp, true
 			}
-			currPtr = atomic.LoadPointer(&next.forward[0])
-			next = (*Node)(currPtr)
+			next = next.forward[0].Load()
 		}
 		return nil, nil, 0, false
 	}
@@ -614,8 +587,7 @@ func (sl *SkipList) GetMin(readTimestamp int64) ([]byte, []byte, bool) {
 	curr := sl.header
 
 	// Get the first node at level 0
-	currPtr := atomic.LoadPointer(&curr.forward[0])
-	curr = (*Node)(currPtr)
+	curr = curr.forward[0].Load()
 
 	// If the list is empty, return false
 	if curr == nil {
@@ -630,8 +602,7 @@ func (sl *SkipList) GetMin(readTimestamp int64) ([]byte, []byte, bool) {
 		}
 
 		// Move to the next node
-		currPtr = atomic.LoadPointer(&curr.forward[0])
-		curr = (*Node)(currPtr)
+		curr = curr.forward[0].Load()
 	}
 
 	// No visible nodes found
@@ -647,8 +618,7 @@ func (sl *SkipList) GetMax(readTimestamp int64) ([]byte, []byte, bool) {
 
 	// Traverse the list to find the last node with a visible version
 	for {
-		currPtr := atomic.LoadPointer(&curr.forward[0])
-		curr = (*Node)(currPtr)
+		curr = curr.forward[0].Load()
 
 		if curr == nil {
 			break
@@ -679,8 +649,7 @@ func (sl *SkipList) Count(readTimestamp int64) int {
 	count := int64(0) // Use int64 for atomic operations
 
 	// Traverse all nodes at level 0
-	currPtr := atomic.LoadPointer(&curr.forward[0])
-	curr = (*Node)(currPtr)
+	curr = curr.forward[0].Load()
 
 	for curr != nil {
 		// Check if this node has a visible version at the given timestamp
@@ -690,8 +659,7 @@ func (sl *SkipList) Count(readTimestamp int64) int {
 		}
 
 		// Move to the next node
-		currPtr = atomic.LoadPointer(&curr.forward[0])
-		curr = (*Node)(currPtr)
+		curr = curr.forward[0].Load()
 	}
 
 	return int(atomic.LoadInt64(&count))
@@ -703,8 +671,7 @@ func (sl *SkipList) DeleteCount(readTimestamp int64) int {
 	count := int64(0)
 
 	// Traverse all nodes at level 0
-	currPtr := atomic.LoadPointer(&curr.forward[0])
-	curr = (*Node)(currPtr)
+	curr = curr.forward[0].Load()
 
 	for curr != nil {
 		// Check if this node has a visible version at the given timestamp
@@ -714,8 +681,7 @@ func (sl *SkipList) DeleteCount(readTimestamp int64) int {
 		}
 
 		// Move to the next node
-		currPtr = atomic.LoadPointer(&curr.forward[0])
-		curr = (*Node)(currPtr)
+		curr = curr.forward[0].Load()
 	}
 
 	return int(atomic.LoadInt64(&count))
@@ -753,8 +719,7 @@ func (sl *SkipList) NewPrefixIterator(prefix []byte, readTimestamp int64) (*Pref
 	// Traverse to find the first node with the prefix or the position where it would be
 	for i := sl.getLevel() - 1; i >= 0; i-- {
 		for {
-			currPtr := atomic.LoadPointer(&curr.forward[i])
-			next := (*Node)(currPtr)
+			next := curr.forward[i].Load()
 			if next == nil || sl.comparator(next.key, prefix) >= 0 {
 				break
 			}
@@ -790,8 +755,7 @@ func (sl *SkipList) NewRangeIterator(startKey, endKey []byte, readTimestamp int6
 		// Traverse to find the node right before the start key
 		for i := sl.getLevel() - 1; i >= 0; i-- {
 			for {
-				currPtr := atomic.LoadPointer(&curr.forward[i])
-				next := (*Node)(currPtr)
+				next := curr.forward[i].Load()
 				if next == nil || sl.comparator(next.key, startKey) >= 0 {
 					break
 				}
@@ -821,8 +785,7 @@ func (it *PrefixIterator) Key() []byte {
 func (it *PrefixIterator) ToLast() {
 	// Move to the last node with the prefix
 	for {
-		currPtr := atomic.LoadPointer(&it.current.forward[0])
-		next := (*Node)(currPtr)
+		next := it.current.forward[0].Load()
 		if next == nil || !hasPrefix(next.key, it.prefix) {
 			break
 		}
@@ -859,8 +822,7 @@ func (it *PrefixIterator) Next() ([]byte, []byte, int64, bool) {
 	}
 
 	// Move to the next node
-	currPtr := atomic.LoadPointer(&it.current.forward[0])
-	it.current = (*Node)(currPtr)
+	it.current = it.current.forward[0].Load()
 
 	// Check if we have a valid node and it matches the prefix
 	if it.current != nil {
@@ -893,8 +855,7 @@ func (it *PrefixIterator) Prev() ([]byte, []byte, int64, bool) {
 		var lastValidNode *Node
 
 		// Traverse to find the last node with the prefix
-		currPtr := atomic.LoadPointer(&curr.forward[0])
-		curr = (*Node)(currPtr)
+		curr = curr.forward[0].Load()
 
 		for curr != nil {
 			if hasPrefix(curr.key, it.prefix) {
@@ -907,8 +868,7 @@ func (it *PrefixIterator) Prev() ([]byte, []byte, int64, bool) {
 				break
 			}
 
-			currPtr = atomic.LoadPointer(&curr.forward[0])
-			curr = (*Node)(currPtr)
+			curr = curr.forward[0].Load()
 		}
 
 		if lastValidNode != nil {
@@ -920,8 +880,7 @@ func (it *PrefixIterator) Prev() ([]byte, []byte, int64, bool) {
 	}
 
 	// Move to the previous node
-	currPtr := atomic.LoadPointer(&it.current.backward)
-	it.current = (*Node)(currPtr)
+	it.current = it.current.backward.Load()
 
 	// Check if we have a valid node and it's not the header
 	if it.current != nil && it.current != it.SkipList.header {
@@ -954,8 +913,7 @@ func (it *PrefixIterator) Peek() ([]byte, []byte, int64, bool) {
 
 	// If we're at the header, find first valid node with prefix
 	if it.current == it.SkipList.header {
-		currPtr := atomic.LoadPointer(&it.current.forward[0])
-		next := (*Node)(currPtr)
+		next := it.current.forward[0].Load()
 
 		for next != nil {
 			if hasPrefix(next.key, it.prefix) {
@@ -967,8 +925,7 @@ func (it *PrefixIterator) Peek() ([]byte, []byte, int64, bool) {
 				// Gone past prefix range
 				break
 			}
-			currPtr = atomic.LoadPointer(&next.forward[0])
-			next = (*Node)(currPtr)
+			next = next.forward[0].Load()
 		}
 		return nil, nil, 0, false
 	}
@@ -1012,8 +969,7 @@ func (it *RangeIterator) ToLast() {
 		}
 
 		// Move to next node
-		currPtr := atomic.LoadPointer(&curr.forward[0])
-		next := (*Node)(currPtr)
+		next := curr.forward[0].Load()
 
 		// Stop if next node is out of range
 		if next == nil || !it.SkipList.isInRange(next.key, it.startKey, it.endKey) {
@@ -1060,8 +1016,7 @@ func (it *RangeIterator) Next() ([]byte, []byte, int64, bool) {
 		return nil, nil, 0, false
 	}
 
-	currPtr := atomic.LoadPointer(&it.current.forward[0])
-	it.current = (*Node)(currPtr)
+	it.current = it.current.forward[0].Load()
 
 	// Check if we have a valid node and it's within the range
 	if it.current != nil {
@@ -1095,8 +1050,7 @@ func (it *RangeIterator) Prev() ([]byte, []byte, int64, bool) {
 		var lastValidNode *Node
 
 		// Traverse to find the last node in the range
-		currPtr := atomic.LoadPointer(&curr.forward[0])
-		curr = (*Node)(currPtr)
+		curr = curr.forward[0].Load()
 
 		for curr != nil {
 			if it.SkipList.isInRange(curr.key, it.startKey, it.endKey) {
@@ -1109,8 +1063,7 @@ func (it *RangeIterator) Prev() ([]byte, []byte, int64, bool) {
 				break
 			}
 
-			currPtr = atomic.LoadPointer(&curr.forward[0])
-			curr = (*Node)(currPtr)
+			curr = curr.forward[0].Load()
 		}
 
 		if lastValidNode != nil {
@@ -1122,8 +1075,7 @@ func (it *RangeIterator) Prev() ([]byte, []byte, int64, bool) {
 	}
 
 	// Move to the previous node
-	currPtr := atomic.LoadPointer(&it.current.backward)
-	it.current = (*Node)(currPtr)
+	it.current = it.current.backward.Load()
 
 	// Check if we have a valid node and it's not the header
 	if it.current != nil && it.current != it.SkipList.header {
@@ -1156,8 +1108,7 @@ func (it *RangeIterator) Peek() ([]byte, []byte, int64, bool) {
 
 	// If we're at the header, find first valid node in range
 	if it.current == it.SkipList.header {
-		currPtr := atomic.LoadPointer(&it.current.forward[0])
-		next := (*Node)(currPtr)
+		next := it.current.forward[0].Load()
 
 		for next != nil {
 			if it.SkipList.isInRange(next.key, it.startKey, it.endKey) {
@@ -1169,8 +1120,7 @@ func (it *RangeIterator) Peek() ([]byte, []byte, int64, bool) {
 				// Gone past end of range
 				break
 			}
-			currPtr = atomic.LoadPointer(&next.forward[0])
-			next = (*Node)(currPtr)
+			next = next.forward[0].Load()
 		}
 		return nil, nil, 0, false
 	}
@@ -1192,8 +1142,7 @@ func (sl *SkipList) GetLatestTimestamp() int64 {
 
 	curr := sl.header
 
-	currPtr := atomic.LoadPointer(&curr.forward[0])
-	curr = (*Node)(currPtr)
+	curr = curr.forward[0].Load()
 
 	for curr != nil {
 		// Get the latest version for this node (head of version chain)
@@ -1213,8 +1162,7 @@ func (sl *SkipList) GetLatestTimestamp() int64 {
 		}
 
 		// Move to the next node
-		currPtr = atomic.LoadPointer(&curr.forward[0])
-		curr = (*Node)(currPtr)
+		curr = curr.forward[0].Load()
 	}
 
 	return atomic.LoadInt64(&latestTimestamp)
@@ -1224,8 +1172,7 @@ func (sl *SkipList) GetLatestTimestamp() int64 {
 func (it *Iterator) ToFirst() {
 	it.current = it.SkipList.header
 
-	currPtr := atomic.LoadPointer(&it.current.forward[0])
-	it.current = (*Node)(currPtr)
+	it.current = it.current.forward[0].Load()
 
 	if it.current != nil {
 		version := it.current.findVisibleVersion(it.readTimestamp)
@@ -1238,8 +1185,7 @@ func (it *Iterator) ToFirst() {
 // ToFirst moves the prefix iterator to the first node with the matching prefix
 func (it *PrefixIterator) ToFirst() {
 	it.current = it.SkipList.header
-	currPtr := atomic.LoadPointer(&it.current.forward[0])
-	next := (*Node)(currPtr)
+	next := it.current.forward[0].Load()
 
 	for next != nil {
 		if hasPrefix(next.key, it.prefix) {
@@ -1253,8 +1199,7 @@ func (it *PrefixIterator) ToFirst() {
 			return
 		}
 
-		currPtr = atomic.LoadPointer(&next.forward[0])
-		next = (*Node)(currPtr)
+		next = next.forward[0].Load()
 	}
 	it.current = nil
 }
@@ -1263,8 +1208,7 @@ func (it *PrefixIterator) ToFirst() {
 func (it *RangeIterator) ToFirst() {
 	it.current = it.SkipList.header
 
-	currPtr := atomic.LoadPointer(&it.current.forward[0])
-	next := (*Node)(currPtr)
+	next := it.current.forward[0].Load()
 
 	for next != nil {
 		if it.SkipList.isInRange(next.key, it.startKey, it.endKey) {
@@ -1278,19 +1222,9 @@ func (it *RangeIterator) ToFirst() {
 			return
 		}
 
-		currPtr = atomic.LoadPointer(&next.forward[0])
-		next = (*Node)(currPtr)
+		next = next.forward[0].Load()
 	}
 
 	it.current = nil
 }
 
-// atomicLoadVersion safely loads a ValueVersion pointer
-func atomicLoadVersion(ptr *unsafe.Pointer) *ValueVersion {
-	return (*ValueVersion)(atomic.LoadPointer(ptr))
-}
-
-// atomicStoreVersion safely stores a ValueVersion pointer
-func atomicStoreVersion(ptr *unsafe.Pointer, version *ValueVersion) {
-	atomic.StorePointer(ptr, unsafe.Pointer(version))
-}
